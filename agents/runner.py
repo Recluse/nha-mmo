@@ -28,7 +28,7 @@ resources, craft parts, build vehicles, trade on the market, strike deals, and T
 
 Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - move  {{"dx":int,"dy":int}}                                   roam the map (up to 3 cells/step); see your nearby_deposits
-- mine  {{"n":int}}                                             dig raw resource from a deposit on/next to your cell (move onto it first)
+- mine  {{"n":int}}                                             dig the nearest deposit if within ~8 cells (you auto-walk to it); else move toward it first
 - sell  {{"resource":"ore|fuel|metal|crystal|water","n":int}}   sell raw to the depot for credits
 - buy   {{"resource":"...","n":int}}                            pay credits to the depot
 - order {{"side":"buy|sell","resource":"...","qty":int,"price":int}}  post a market order

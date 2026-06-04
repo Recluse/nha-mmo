@@ -260,18 +260,21 @@ def apply_intent(it, ents, cur, t):
         a["x"] = max(0, min(w - 1, a["x"] + dx))
         a["y"] = max(0, min(h - 1, a["y"] + dy))
         return "applied", f"moved to ({a['x']},{a['y']})"
-    if verb == "mine":                                   # extract raw resource from a deposit on/next to you
+    if verb == "mine":                                   # dig from the nearest deposit (auto-walk if within reach)
         n = int(args.get("n", 5))
-        dep = next((x for x in ents.values() if x["type"] == "deposit"
-                    and abs(x["x"] - a["x"]) <= 1 and abs(x["y"] - a["y"]) <= 1
-                    and int(x["attrs"].get("amount", 0)) > 0), None)
-        if not dep:
-            return "rejected", "no deposit here — move onto one (see nearby_deposits)"
+        deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0]
+        if not deps:
+            return "rejected", "no deposits left on the map"
+        dep = min(deps, key=lambda x: abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]))
+        dist = abs(dep["x"] - a["x"]) + abs(dep["y"] - a["y"])
+        if dist > 8:
+            return "rejected", f"nearest deposit is {dist} cells away — move toward it first (see nearby_deposits)"
+        a["x"], a["y"] = dep["x"], dep["y"]              # walk over to it
         r = dep["attrs"]["resource"]; have = int(dep["attrs"].get("amount", 0))
         took = min(max(1, n), have)
         dep["attrs"]["amount"] = have - took
         addb(a, r, took)
-        return "applied", f"mined {took} {r} (deposit #{dep['id']} has {have - took} left)"
+        return "applied", f"mined {took} {r} at ({dep['x']},{dep['y']}); deposit #{dep['id']} has {have - took} left"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------
