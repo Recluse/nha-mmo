@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS intents (id bigserial PRIMARY KEY, agent bigint NOT N
 CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, tick int NOT NULL,
   entity bigint, kind text NOT NULL, data jsonb NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS tick_hashes (tick int PRIMARY KEY, hash text NOT NULL);
+CREATE TABLE IF NOT EXISTS market_orders (id bigserial PRIMARY KEY, agent bigint NOT NULL,
+  side text NOT NULL, resource text NOT NULL, qty int NOT NULL, price int NOT NULL,
+  status text NOT NULL DEFAULT 'open', created int);
+CREATE INDEX IF NOT EXISTS market_open_idx ON market_orders(resource, side, status);
+CREATE TABLE IF NOT EXISTS trades (id bigserial PRIMARY KEY, proposer bigint NOT NULL,
+  target bigint NOT NULL, give jsonb NOT NULL, want jsonb NOT NULL,
+  status text NOT NULL DEFAULT 'open', created int);
+CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, tick int NOT NULL,
+  sender bigint NOT NULL, recipient bigint, text text NOT NULL);
 """
 
 # ---------- buffer helpers (integer, conserved) ----------
@@ -120,7 +129,7 @@ def behave(e, ents, ports, links, t, events):
         e["attrs"]["prices"] = {r: depot_price(e, r) for r in e["attrs"]["base"]}   # publish for spectator
 
 # ---------- intents (the only agent->world channel) ----------
-def apply_intent(it, ents, cur):
+def apply_intent(it, ents, cur, t):
     a, args, verb = ents.get(it["agent"]), it["args"], it["verb"]
     if not a:
         return "rejected", "no agent"
@@ -177,7 +186,116 @@ def apply_intent(it, ents, cur):
             return "rejected", f"need {cost} credits (have {get(a, 'credits')})"
         addb(a, "credits", -cost); addb(a, r, n)
         return "applied", f"bought {n} {r} for {cost} credits"
+    if verb == "order":                                  # post a market order (escrow up front)
+        side, r = args.get("side"), args.get("resource")
+        qty, price = int(args.get("qty", 0)), int(args.get("price", 0))
+        if side not in ("buy", "sell") or qty < 1 or price < 1:
+            return "rejected", "bad order"
+        if side == "sell":
+            if get(a, r) < qty:
+                return "rejected", "insufficient resource"
+            addb(a, r, -qty)
+        else:
+            if get(a, "credits") < qty * price:
+                return "rejected", "insufficient credits"
+            addb(a, "credits", -qty * price)
+        cur.execute("INSERT INTO market_orders(agent,side,resource,qty,price,created) "
+                    "VALUES(%s,%s,%s,%s,%s,%s) RETURNING id", (a["id"], side, r, qty, price, t))
+        return "applied", f"order #{cur.fetchone()['id']}: {side} {qty} {r} @ {price}"
+    if verb == "cancel":
+        cur.execute("SELECT agent,side,resource,qty,price,status FROM market_orders WHERE id=%s",
+                    (int(args.get("order_id", 0)),))
+        o = cur.fetchone()
+        if not o or o["status"] != "open" or o["agent"] != a["id"]:
+            return "rejected", "no such open order of yours"
+        if o["side"] == "sell":
+            addb(a, o["resource"], o["qty"])
+        else:
+            addb(a, "credits", o["qty"] * o["price"])
+        cur.execute("UPDATE market_orders SET status='cancelled' WHERE id=%s", (int(args["order_id"]),))
+        return "applied", f"cancelled order #{args['order_id']}"
+    if verb == "trade":                                  # propose a P2P swap (escrow the 'give')
+        target, give, want = args.get("to"), args.get("give", {}), args.get("want", {})
+        if target not in ents:
+            return "rejected", "no such target"
+        if any(get(a, res) < int(q) for res, q in give.items()):
+            return "rejected", "insufficient to give"
+        for res, q in give.items():
+            addb(a, res, -int(q))
+        cur.execute("INSERT INTO trades(proposer,target,give,want,created) VALUES(%s,%s,%s,%s,%s) RETURNING id",
+                    (a["id"], int(target), Json(give), Json(want), t))
+        return "applied", f"trade #{cur.fetchone()['id']} -> #{target}: give {give} want {want}"
+    if verb == "accept":
+        cur.execute("SELECT proposer,target,give,want,status FROM trades WHERE id=%s",
+                    (int(args.get("trade_id", 0)),))
+        tr = cur.fetchone()
+        if not tr or tr["status"] != "open" or tr["target"] != a["id"]:
+            return "rejected", "no such open trade for you"
+        if any(get(a, res) < int(q) for res, q in tr["want"].items()):
+            return "rejected", "can't afford 'want'"
+        prop = ents.get(tr["proposer"])
+        for res, q in tr["want"].items():
+            addb(a, res, -int(q))
+            if prop:
+                addb(prop, res, int(q))
+        for res, q in tr["give"].items():
+            addb(a, res, int(q))                         # 'give' was escrowed from the proposer
+        cur.execute("UPDATE trades SET status='accepted' WHERE id=%s", (int(args["trade_id"]),))
+        return "applied", f"accepted trade #{args['trade_id']}"
+    if verb in ("say", "tell"):                          # agent↔agent communication (observable)
+        cur.execute("SELECT 1 FROM messages WHERE sender=%s AND tick=%s LIMIT 1", (a["id"], t))
+        if cur.fetchone():
+            return "rejected", "one message per tick"
+        text = str(args.get("text", ""))[:280]
+        rcpt = int(args["to"]) if verb == "tell" else None
+        cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,%s,%s)",
+                    (t, a["id"], rcpt, text))
+        return "applied", (f"tell #{rcpt}: " if rcpt else "say: ") + text[:60]
     return "rejected", "unknown verb"
+
+# ---------- market clearing + trade expiry (run each tick) ----------
+def match_market(ents, cur, t, events):
+    """Cross open sell/buy orders per resource at the resting order's price (price-time priority)."""
+    mkt = next((x for x in ents.values() if x["type"] == "market"), None)
+    cur.execute("SELECT DISTINCT resource FROM market_orders WHERE status='open'")
+    for row in cur.fetchall():
+        res = row["resource"]
+        while True:
+            cur.execute("SELECT id,agent,qty,price FROM market_orders WHERE status='open' "
+                        "AND side='sell' AND resource=%s ORDER BY price ASC, id ASC LIMIT 1", (res,))
+            sell = cur.fetchone()
+            cur.execute("SELECT id,agent,qty,price FROM market_orders WHERE status='open' "
+                        "AND side='buy' AND resource=%s ORDER BY price DESC, id ASC LIMIT 1", (res,))
+            buy = cur.fetchone()
+            if not sell or not buy or sell["price"] > buy["price"]:
+                break
+            clearing = sell["price"] if sell["id"] < buy["id"] else buy["price"]
+            qty = min(sell["qty"], buy["qty"])
+            seller, buyer = ents.get(sell["agent"]), ents.get(buy["agent"])
+            if seller:
+                addb(seller, "credits", qty * clearing)
+            if buyer:
+                addb(buyer, res, qty)
+                addb(buyer, "credits", (buy["price"] - clearing) * qty)   # refund overpayment
+            for o in (sell, buy):
+                left = o["qty"] - qty
+                cur.execute("UPDATE market_orders SET qty=%s, status=%s WHERE id=%s",
+                            (left, "open" if left > 0 else "filled", o["id"]))
+            if mkt is not None:
+                mkt["attrs"].setdefault("last", {})[res] = clearing
+            events.append((t, None, "market",
+                           {"resource": res, "qty": qty, "price": clearing,
+                            "seller": sell["agent"], "buyer": buy["agent"]}))
+
+def expire_trades(ents, cur, t, ttl=80):
+    """Refund the escrowed 'give' for trade offers nobody accepted within ttl ticks."""
+    cur.execute("SELECT id,proposer,give FROM trades WHERE status='open' AND created < %s", (t - ttl,))
+    for tr in cur.fetchall():
+        prop = ents.get(tr["proposer"])
+        if prop:
+            for res, q in tr["give"].items():
+                addb(prop, res, int(q))
+        cur.execute("UPDATE trades SET status='expired' WHERE id=%s", (tr["id"],))
 
 # ---------- tick ----------
 def tick(conn):
@@ -201,10 +319,13 @@ def tick(conn):
             cur.execute("UPDATE intents SET status='rejected', result='loop detected (repeated failing action)' "
                         "WHERE id=%s", (it["id"],))
             continue
-        st, res = apply_intent(it, ents, cur)
+        st, res = apply_intent(it, ents, cur, t)
         cur.execute("UPDATE intents SET status=%s, result=%s WHERE id=%s", (st, res, it["id"]))
+        events.append((t, it["agent"], "act", {"verb": it["verb"], "status": st, "result": res}))
     for e in list(ents.values()):
         behave(e, ents, ports, links, t, events)
+    match_market(ents, cur, t, events)
+    expire_trades(ents, cur, t)
     for e in ents.values():
         cur.execute("UPDATE entities SET buffers=%s, attrs=%s WHERE id=%s",
                     (Json(e["buffers"]), Json(e["attrs"]), e["id"]))
@@ -239,6 +360,7 @@ def seed_demo(conn):
     drill   = ent("drill", 1, 0)                                   # on the deposit's cell
     ore_c   = ent("container", 1, 0, buffers={"ore": 0}, attrs={"resource": "ore", "cap": 1000})
     ent("depot", 0, 0, attrs={"base": {"ore": 2, "fuel": 1, "crystal": 8, "metal": 5, "water": 1}})
+    ent("market", 0, 0, attrs={"last": {}})
     bp = port(battery, "power", "bi")
     link(port(solar, "power", "out"), bp)
     link(port(gen, "power", "out"), bp)

@@ -27,7 +27,17 @@ def observe(cur, agent_id):
                 "attrs->>'v_ground' vg, attrs->>'v_air' va FROM entities "
                 "WHERE type='vehicle' AND owner=%s", (agent_id,))
     vehicles = [dict(r) for r in cur.fetchall()]
-    return {"inventory": inv, "loose_parts": loose, "vehicles": vehicles}
+    cur.execute("SELECT id,side,resource,qty,price FROM market_orders "
+                "WHERE agent=%s AND status='open' ORDER BY id", (agent_id,))
+    orders = [dict(r) for r in cur.fetchall()]
+    cur.execute("SELECT id,proposer,give,want FROM trades "
+                "WHERE target=%s AND status='open' ORDER BY id", (agent_id,))
+    offers = [dict(r) for r in cur.fetchall()]
+    cur.execute("SELECT tick,sender,recipient,text FROM messages "
+                "WHERE recipient IS NULL OR recipient=%s ORDER BY id DESC LIMIT 15", (agent_id,))
+    inbox = [dict(r) for r in cur.fetchall()]
+    return {"inventory": inv, "loose_parts": loose, "vehicles": vehicles,
+            "orders": orders, "trade_offers": offers, "messages": inbox}
 
 
 def can_afford(inv, part):
