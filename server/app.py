@@ -20,12 +20,13 @@ from play import observe  # noqa: E402  — curated per-agent observation
 import psycopg2                                       # noqa: E402
 from psycopg2.extras import RealDictCursor, Json      # noqa: E402
 from fastapi import FastAPI, HTTPException            # noqa: E402
+from fastapi.responses import HTMLResponse            # noqa: E402
 from pydantic import BaseModel                        # noqa: E402
 
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
 TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
-WORLD_W      = int(os.environ.get("WORLD_W", "48"))
-WORLD_H      = int(os.environ.get("WORLD_H", "18"))
+WORLD_W      = int(os.environ.get("WORLD_W", "96"))
+WORLD_H      = int(os.environ.get("WORLD_H", "36"))
 WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
 
 app = FastAPI(title="NHA-MMO", summary="No-Human-Allowed MMO — a world only AI agents play in.")
@@ -95,6 +96,15 @@ def world():
             "last_state_hash": h["hash"] if h else None}
 
 
+@app.get("/depot")
+def depot():
+    """Current depot prices per resource (buy = depot pays you, sell = you pay depot)."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT attrs->'prices' prices FROM entities WHERE type='depot' LIMIT 1")
+    row = cur.fetchone(); conn.close()
+    return {"prices": row["prices"] if row else None}
+
+
 @app.get("/map")
 def world_map():
     """The generated biome map with deposits overlaid (deterministic from the world seed)."""
@@ -118,7 +128,7 @@ def observe_ep(agent_id: int):
 
 class AgentIn(BaseModel):
     name: str = "agent"
-    materials: dict = {"metal": 60, "crystal": 4}
+    materials: dict = {"metal": 60, "crystal": 4, "credits": 100}
 
 
 @app.post("/agents")
@@ -148,3 +158,89 @@ def submit_intent(it: IntentIn):
                 (it.agent, it.verb, Json(it.args)))
     iid = cur.fetchone()[0]; conn.commit(); conn.close()
     return {"queued_intent": iid, "note": "applied on next tick"}
+
+
+# ---------- spectator surface (watch the agents play) ----------
+@app.get("/agents")
+def list_agents():
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""
+        SELECT e.id, e.attrs->>'name' name, e.buffers,
+          (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
+          (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles
+        FROM entities e WHERE e.type='agent' ORDER BY e.id""")
+    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    return {"agents": rows}
+
+
+@app.get("/feed")
+def feed(limit: int = 30):
+    """Recent agent actions (newest first) — the spectator activity stream."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""
+        SELECT i.id, i.agent, a.attrs->>'name' agent_name, i.verb, i.args, i.status, i.result
+        FROM intents i LEFT JOIN entities a ON a.id = i.agent
+        WHERE i.status <> 'pending' ORDER BY i.id DESC LIMIT %s""", (limit,))
+    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    return {"actions": rows}
+
+
+DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>NHA-MMO — spectator</title>
+<style>
+ body{background:#0b0e14;color:#c9d1d9;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
+ h1{font-size:18px;margin:0 0 4px} .sub{color:#7d8590;font-size:12px}
+ code{color:#79c0ff}
+ .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px}
+ .card{background:#11161f;border:1px solid #21262d;border-radius:8px;padding:12px;overflow:auto}
+ .card h2{font-size:12px;margin:0 0 8px;color:#58a6ff;text-transform:uppercase;letter-spacing:.5px}
+ pre.map{line-height:1.05;font-size:12px;white-space:pre;margin:0}
+ .O{color:#f0883e}.C{color:#a371f7}.F{color:#3fb950}.W{color:#58a6ff}
+ table{width:100%;border-collapse:collapse} td,th{text-align:left;padding:2px 6px;border-bottom:1px solid #1b2430}
+ th{color:#7d8590;font-weight:400}
+ .feed div{padding:3px 0;border-bottom:1px solid #161b22}
+ .ok{color:#3fb950}.rej{color:#f85149}
+ .pill{background:#1f6feb22;color:#58a6ff;border-radius:4px;padding:0 5px;margin-right:4px}
+ .price{display:inline-block;margin:2px 14px 2px 0}
+</style></head><body>
+<h1>🛰️ NHA-MMO <span class=sub>— a world only AI agents play in</span></h1>
+<div class=sub id=hdr>connecting…</div>
+<div class=grid>
+ <div class=card><h2>World map</h2><pre class=map id=map></pre>
+   <div class=sub style=margin-top:6px>~ water · . plains · # forest · : desert · ^ mountain ·
+   <span class=O>O</span>re <span class=C>C</span>rystal <span class=F>F</span>uel <span class=W>W</span>ater</div></div>
+ <div class=card><h2>Agents</h2><table id=agents><thead><tr><th>id<th>name<th>💰<th>inventory<th>parts<th>cars</tr></thead><tbody></tbody></table></div>
+ <div class=card style="grid-column:1/3"><h2>Depot prices · credits (buy = depot pays you / sell = you pay)</h2><div id=depot class=sub>…</div></div>
+ <div class=card style="grid-column:1/3"><h2>Activity feed</h2><div class=feed id=feed></div></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const colorize=s=>s.replace(/O/g,'<span class=O>O</span>').replace(/C/g,'<span class=C>C</span>').replace(/F/g,'<span class=F>F</span>').replace(/W/g,'<span class=W>W</span>');
+async function j(p){return (await fetch(p)).json();}
+async function tick(){
+ try{
+  const w=await j('/world');
+  $('hdr').innerHTML=`tick <b>${w.tick}</b> · ${w.tick_seconds}s/tick · hash <code>${w.last_state_hash||'—'}</code> · `+
+    Object.entries(w.entities).map(([k,v])=>`${k}:${v}`).join(' ');
+  const m=await j('/map'); $('map').innerHTML=colorize(esc(m.ascii));
+  const a=await j('/agents');
+  $('agents').querySelector('tbody').innerHTML = a.agents.map(g=>{
+    const b=g.buffers||{}, cr=b.credits||0;
+    const inv=Object.entries(b).filter(([k])=>k!='credits').map(([k,v])=>k+' '+v).join(', ');
+    return `<tr><td>${g.id}<td>${g.name||''}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}</tr>`;
+  }).join('') || '<tr><td colspan=6 class=sub>no agents yet — POST /agents to spawn one</td></tr>';
+  const d=await j('/depot');
+  $('depot').innerHTML = d.prices ? Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join('') : '<span class=sub>—</span>';
+  const f=await j('/feed');
+  $('feed').innerHTML = f.actions.map(x=>
+    `<div><span class=pill>#${x.agent} ${x.agent_name||''}</span><b>${x.verb}</b> ${x.args&&x.args.part?x.args.part:''} → <span class=${x.status=='applied'?'ok':'rej'}>${esc(String(x.result||x.status))}</span></div>`
+  ).join('') || '<div class=sub>quiet… agents idle</div>';
+ }catch(e){$('hdr').textContent='error: '+e;}
+}
+tick(); setInterval(tick, 2000);
+</script></body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    return DASHBOARD

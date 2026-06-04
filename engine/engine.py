@@ -76,6 +76,15 @@ def container_of(eid, ents, ports, links, resource):
             return c
     return None
 
+def depot_price(depot, r):
+    """Floating depot price for resource r: glut (recent sells) pushes the buy price down."""
+    base = depot["attrs"]["base"].get(r)
+    if base is None:
+        return None
+    g = depot["attrs"].get("glut", {}).get(r, 0)
+    buy = max(1, base * 10 // (10 + g))          # more glut → lower buy price
+    return {"buy": buy, "sell": buy + base}      # depot resells at buy + base markup
+
 # ---------- per-component behaviors (run each tick) ----------
 def behave(e, ents, ports, links, t, events):
     typ = e["type"]
@@ -102,6 +111,13 @@ def behave(e, ents, ports, links, t, events):
         if (b and oc and mc and get(b, "energy") >= 5 and get(oc, "ore") >= 2 and get(e, "fuel") >= 1):
             addb(b, "energy", -5); addb(oc, "ore", -2); addb(e, "fuel", -1); addb(mc, "metal", 1)
             ev("smelt", metal=1)
+    elif typ == "depot":                                 # floating-price market maker
+        glut = e["attrs"].setdefault("glut", {})
+        for r in list(glut):
+            glut[r] = glut[r] * 4 // 5                    # decay the glut 20%/tick → prices recover
+            if glut[r] <= 0:
+                del glut[r]
+        e["attrs"]["prices"] = {r: depot_price(e, r) for r in e["attrs"]["base"]}   # publish for spectator
 
 # ---------- intents (the only agent->world channel) ----------
 def apply_intent(it, ents, cur):
@@ -142,6 +158,25 @@ def apply_intent(it, ents, cur):
         cur.execute("UPDATE entities SET attrs = attrs || '{\"used\":true}' WHERE id = ANY(%s)",
                     ([r["id"] for r in rows],))
         return "applied", f"vehicle #{vid} drives={st['drives']} v={st['v_ground']} flies={st['flies']}"
+    if verb in ("sell", "buy"):                          # trade raw/refined with the depot for credits
+        r, n = args["resource"], int(args.get("n", 1))
+        depot = next((x for x in ents.values() if x["type"] == "depot"), None)
+        if not depot:
+            return "rejected", "no depot"
+        price = depot_price(depot, r)
+        if not price:
+            return "rejected", f"depot doesn't trade {r}"
+        if verb == "sell":
+            if get(a, r) < n:
+                return "rejected", "insufficient"
+            addb(a, r, -n); addb(a, "credits", n * price["buy"])
+            depot["attrs"].setdefault("glut", {})[r] = depot["attrs"].get("glut", {}).get(r, 0) + n
+            return "applied", f"sold {n} {r} for {n * price['buy']} credits"
+        cost = n * price["sell"]
+        if get(a, "credits") < cost:
+            return "rejected", f"need {cost} credits (have {get(a, 'credits')})"
+        addb(a, "credits", -cost); addb(a, r, n)
+        return "applied", f"bought {n} {r} for {cost} credits"
     return "rejected", "unknown verb"
 
 # ---------- tick ----------
@@ -203,6 +238,7 @@ def seed_demo(conn):
     gen     = ent("generator", 0, 0, buffers={"fuel": 5})
     drill   = ent("drill", 1, 0)                                   # on the deposit's cell
     ore_c   = ent("container", 1, 0, buffers={"ore": 0}, attrs={"resource": "ore", "cap": 1000})
+    ent("depot", 0, 0, attrs={"base": {"ore": 2, "fuel": 1, "crystal": 8, "metal": 5, "water": 1}})
     bp = port(battery, "power", "bi")
     link(port(solar, "power", "out"), bp)
     link(port(gen, "power", "out"), bp)
