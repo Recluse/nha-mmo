@@ -15,6 +15,7 @@ import os, sys, json, hashlib
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json
 import vehicles   # PART / BUILD_COST / finalize() — for the build & finalize intents
+import crafting   # PROPS / RULES / combine() — emergent physics crafting
 
 DSN = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=postgres")
 LOOP_N = 3   # engine-enforced: reject an intent identical to the agent's last LOOP_N applied ones
@@ -47,6 +48,8 @@ CREATE TABLE IF NOT EXISTS trades (id bigserial PRIMARY KEY, proposer bigint NOT
   status text NOT NULL DEFAULT 'open', created int);
 CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, tick int NOT NULL,
   sender bigint NOT NULL, recipient bigint, text text NOT NULL);
+CREATE TABLE IF NOT EXISTS discoveries (rule_key text PRIMARY KEY, name text NOT NULL,
+  discoverer bigint NOT NULL, tick int NOT NULL, points int NOT NULL DEFAULT 0);
 """
 
 # ---------- buffer helpers (integer, conserved) ----------
@@ -275,6 +278,33 @@ def apply_intent(it, ents, cur, t):
         dep["attrs"]["amount"] = have - took
         addb(a, r, took)
         return "applied", f"mined {took} {r} at ({dep['x']},{dep['y']}); deposit #{dep['id']} has {have - took} left"
+    if verb == "combine":                                # mix resources into a NEW item by physics rules
+        ings = args.get("ingredients", {}) or {}
+        try:
+            ings = {str(k): int(v) for k, v in ings.items() if int(v) > 0}
+        except Exception:
+            return "rejected", "bad ingredients"
+        if not ings:
+            return "rejected", "no ingredients"
+        if any(get(a, k) < q for k, q in ings.items()):
+            return "rejected", "you don't hold those ingredients"
+        rule = crafting.combine(ings)
+        if not rule:
+            return "rejected", "inert mixture — no reaction (try other resources)"
+        for k, q in ings.items():                        # consume the inputs
+            addb(a, k, -q)
+        cur.execute("SELECT name FROM discoveries WHERE rule_key=%s", (rule,))
+        disc = cur.fetchone()
+        if disc:
+            addb(a, rule, 1)
+            return "applied", f"crafted {disc['name']} ({rule})"
+        item_name = (str(args.get("name", "")).strip()[:32] or rule)
+        pts = 5 + 2 * len(ings)
+        cur.execute("INSERT INTO discoveries(rule_key, name, discoverer, tick, points) VALUES(%s,%s,%s,%s,%s)",
+                    (rule, item_name, a["id"], t, pts))
+        a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
+        addb(a, rule, 1)
+        return "applied", f"INVENTED '{item_name}' ({rule}) +{pts} inventor pts!"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------
@@ -383,7 +413,8 @@ def seed_demo(conn):
     gen     = ent("generator", 0, 0, buffers={"fuel": 5})
     drill   = ent("drill", 1, 0)                                   # on the deposit's cell
     ore_c   = ent("container", 1, 0, buffers={"ore": 0}, attrs={"resource": "ore", "cap": 1000})
-    ent("depot", 0, 0, attrs={"base": {"ore": 2, "fuel": 1, "crystal": 8, "metal": 5, "water": 1}})
+    ent("depot", 0, 0, attrs={"base": {"ore": 2, "fuel": 1, "crystal": 8, "metal": 5, "water": 1,
+        "copper": 4, "iron": 3, "aluminum": 4, "carbon": 2, "silicon": 6, "salt": 1, "sulfur": 3, "oil": 4}})
     ent("market", 0, 0, attrs={"last": {}})
     bp = port(battery, "power", "bi")
     link(port(solar, "power", "out"), bp)

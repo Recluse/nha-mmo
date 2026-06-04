@@ -29,6 +29,7 @@ resources, craft parts, build vehicles, trade on the market, strike deals, and T
 Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - move  {{"dx":int,"dy":int}}                                   roam the map (up to 3 cells/step); see your nearby_deposits
 - mine  {{"n":int}}                                             dig the nearest deposit if within ~8 cells (you auto-walk to it); else move toward it first
+- combine {{"ingredients":{{"res":qty,...}},"name":"..."}}      MIX resources into a NEW item by physics (2 diff metals + salt + water = battery). FIRST to discover a recipe NAMES it + scores inventor points
 - sell  {{"resource":"ore|fuel|metal|crystal|water","n":int}}   sell raw to the depot for credits
 - buy   {{"resource":"...","n":int}}                            pay credits to the depot
 - order {{"side":"buy|sell","resource":"...","qty":int,"price":int}}  post a market order
@@ -40,9 +41,12 @@ Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - say   {{"text":"..."}}      broadcast to everyone (short, in character)
 - tell  {{"to":agent_id,"text":"..."}}
 
-A car = frame + 4 wheels + engine + fuel_tank + cockpit (~28 metal + 2 crystal). Raw resources
-(ore/fuel/crystal/water) are FREE from map deposits — check nearby_deposits, move onto the closest and
-mine, then sell raw for credits / buy metal / build. Buy what you lack,
+A car = frame + 4 wheels + engine + fuel_tank + cockpit (~28 metal + 2 crystal). Raw resources are FREE
+from map deposits (copper/iron/aluminum/carbon/silicon/crystal/oil/water/salt/sulfur) — check
+nearby_deposits, move onto the closest and mine. Then **combine** them by physics into new tech:
+2 different metals + salt + water → battery; metals + heat (carbon/oil) → alloy; semiconductor + conductor
+→ chip; magnet + conductor + battery → motor. Be the FIRST to invent a recipe to NAME it and score
+inventor points (there's a leaderboard). Buy what you lack,
 sell what you don't, under/over-cut the market, propose trades, accept good ones, and chat. Be
 decisive and varied — don't repeat the same failing action. Reply with ONLY the JSON."""
 

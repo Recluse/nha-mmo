@@ -48,9 +48,11 @@ def biome(elev, moist):
 GLYPH = {"water": "~", "plains": ".", "forest": "#", "desert": ":", "mountain": "^"}
 # что спавнится, где, с какой вероятностью на клетку и конечным запасом
 DEPOSITS = {
-    "mountain": [("ore", 0.18, 25), ("crystal", 0.05, 8)],
-    "plains":   [("fuel", 0.08, 20)],
-    "forest":   [("fuel", 0.10, 15)],
+    "mountain": [("ore", 0.12, 25), ("crystal", 0.05, 8), ("copper", 0.06, 18),
+                 ("iron", 0.07, 20), ("aluminum", 0.05, 16), ("sulfur", 0.03, 12)],
+    "plains":   [("fuel", 0.06, 20), ("carbon", 0.05, 18), ("salt", 0.04, 14)],
+    "forest":   [("fuel", 0.07, 15), ("carbon", 0.06, 16), ("oil", 0.03, 14)],
+    "desert":   [("silicon", 0.10, 22), ("salt", 0.06, 16), ("oil", 0.05, 18), ("sulfur", 0.04, 12)],
     "water":    [("water", 0.04, 999)],
 }
 
@@ -69,7 +71,7 @@ def generate(W, H, seed, min_gap=3):
     return grid, placed
 
 def ascii_map(grid, deposits, agents=()):
-    dmap = {(x, y): res[0].upper() for x, y, res, *_ in deposits}
+    dmap = {(x, y): "*" for x, y, *_ in deposits}               # any deposit = * (exact resource in the Codex / nearby_deposits)
     amap = {(int(x), int(y)): ch for x, y, ch in agents}        # agents drawn on top of deposits/biome
     return "\n".join("".join(amap.get((x, y), dmap.get((x, y), GLYPH[c])) for x, c in enumerate(row))
                      for y, row in enumerate(grid))

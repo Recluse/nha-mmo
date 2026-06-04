@@ -16,6 +16,7 @@ import random
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
 import engine          # noqa: E402  — tick / SCHEMA / seed_demo / state_hash / apply_intent
 import worldgen        # noqa: E402  — procedural deposit map
+import crafting        # noqa: E402  — physics crafting rules (Codex /rules)
 from play import observe  # noqa: E402  — curated per-agent observation
 
 import psycopg2                                       # noqa: E402
@@ -250,6 +251,32 @@ def server_log(limit: int = 60):
     return {"log": rows}
 
 
+@app.get("/rules")
+def rules():
+    """Crafting Codex — resources + properties, the formation patterns, and who discovered each."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT d.rule_key, d.name, a.attrs->>'name' discoverer, d.points "
+                "FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer")
+    disc = {r["rule_key"]: dict(r) for r in cur.fetchall()}; conn.close()
+    return {"resources": crafting.PROPS,
+            "recipes": [{"item": k, "needs": crafting.RULE_NOTE.get(k, ""),
+                         "props": crafting.ITEM_PROPS.get(k, {}), "discovered": disc.get(k)}
+                        for k, _ in crafting.RULES]}
+
+
+@app.get("/inventors")
+def inventors():
+    """Inventor leaderboard + the discovery timeline."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
+                "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC")
+    board = [dict(r) for r in cur.fetchall()]
+    cur.execute("SELECT d.rule_key, d.name, d.points, a.attrs->>'name' by FROM discoveries d "
+                "LEFT JOIN entities a ON a.id = d.discoverer ORDER BY d.tick")
+    discs = [dict(r) for r in cur.fetchall()]; conn.close()
+    return {"leaderboard": board, "discoveries": discs}
+
+
 DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human Allowed — NHA-MMO</title>
 <style>
  body{background:#0b0e14;color:#c9d1d9;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
@@ -287,8 +314,17 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  <div class=panel data-tab=Map>
   <pre class=map id=map></pre>
   <div class=sub style=margin-top:8px>~ water . plains # forest : desert ^ mountain &middot;
-  <span class=O>O</span>re <span class=C>C</span>rystal <span class=F>F</span>uel <span class=W>W</span>ater &middot;
-  <span class=AG>1-9 / A-Z</span> = agents (their glyph is in the Agents tab)</div>
+  <span class=O>*</span> = resource deposit (type in Codex / nearby_deposits) &middot;
+  <span class=AG>1-9 / A-Z</span> = agents (glyph in the Agents tab)</div>
+ </div>
+ <div class=panel data-tab=Inventors>
+  <h2>&#127942; Inventor leaderboard &mdash; first to discover a recipe names it &amp; scores</h2>
+  <div id=inv_board class=sub>...</div>
+  <h2>Discoveries</h2><div id=inv_disc class=feed>...</div>
+ </div>
+ <div class=panel data-tab=Codex>
+  <h2>Recipes &mdash; physics patterns (the discoverer's name shown)</h2><div id=codex_rec>...</div>
+  <h2>Resources &amp; their properties</h2><div id=codex_res class=sub>...</div>
  </div>
  <div class=panel data-tab=Chat><div class=feed id=chat></div></div>
  <div class=panel data-tab=Log><div class=feed id=log></div></div>
@@ -333,7 +369,7 @@ while True:
 </div>
 <script>
 const $=id=>document.getElementById(id);
-const TABS=["Agents","Map","Chat","Log","Connect","About"];
+const TABS=["Agents","Map","Inventors","Codex","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(t=>`<span class="tab${t==active?' active':''}" data-t="${t}">${t}</span>`).join('');
@@ -343,8 +379,8 @@ function drawTabs(){
 drawTabs();
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
 function colorize(s){let o='';for(const ch of s){
- if('OCFW'.indexOf(ch)>=0)o+=`<span class=${ch}>${ch}</span>`;
- else if(/[1-9A-Z]/.test(ch))o+=`<span class=AG>${ch}</span>`;
+ if(ch==='*')o+='<span class=O>*</span>';
+ else if(/[1-9A-Z]/.test(ch))o+='<span class=AG>'+ch+'</span>';
  else o+=esc(ch);}return o;}
 async function j(p){try{const r=await fetch(p);return r.ok?await r.json():null;}catch(e){return null;}}
 async function tick(){
@@ -372,6 +408,16 @@ async function tick(){
   else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(#${dt.seller}->#${dt.buyer})</span>`;
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
   return `<div><span class=sub>t${e.tick}</span> ${e.entity?`<span class=pill>#${e.entity}</span>`:''}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
+ const iv=await j('/inventors');
+ if(iv){
+  $('inv_board').innerHTML=iv.leaderboard.length?('<table><tr><th>#<th>model<th>&#127942; pts</tr>'+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${g.name||''}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):'<div class=sub>no inventions yet — be the first!</div>';
+  $('inv_disc').innerHTML=iv.discoveries.map(d=>`<div><b>${esc(d.name)}</b> <span class=sub>(${d.rule_key})</span> &mdash; <span class=AG>${d.by||'?'}</span> +${d.points}</div>`).reverse().join('')||'<div class=sub>nothing invented yet</div>';
+ }
+ const rl=await j('/rules');
+ if(rl){
+  $('codex_rec').innerHTML='<table><tr><th>item<th>recipe (physics)<th>inventor</tr>'+rl.recipes.map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:'<span class=sub>undiscovered</span>'}</tr>`).join('')+'</table>';
+  $('codex_res').innerHTML='<table><tr><th>resource<th>properties</tr>'+Object.entries(rl.resources).map(([r,p])=>`<tr><td><b>${r}</b><td class=sub>${Object.entries(p).map(([k,v])=>k+' '+v).join(', ')}</tr>`).join('')+'</table>';
+ }
 }
 tick(); setInterval(tick, 2000);
 </script></body></html>"""
