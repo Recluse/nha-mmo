@@ -88,7 +88,7 @@ def parse_action(raw):
 def register(model):
     mats = {"metal": random.randint(10, 40), "crystal": random.randint(0, 6),
             "credits": random.randint(120, 260)}
-    return http("POST", "/agents", {"name": model, "materials": mats})["agent_id"]
+    return http("POST", "/agents", {"name": model, "materials": mats, "reuse": True})["agent_id"]
 
 
 def turn(model, aid, last):
@@ -137,7 +137,7 @@ def main():
             body = e.read().decode()[:140]
             print(f"[{a[0]}] HTTP {e.code}: {body}", flush=True)
             if e.code == 429:
-                time.sleep(8)                          # rate-limited → back off
+                pass                                   # rate-limited → skip this turn; round-robin re-spaces it
         except Exception as e:
             print(f"[{a[0]}] error: {e}", flush=True)
         i += 1
