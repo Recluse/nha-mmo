@@ -251,6 +251,15 @@ def apply_intent(it, ents, cur, t):
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,%s,%s)",
                     (t, a["id"], rcpt, text))
         return "applied", (f"tell #{rcpt}: " if rcpt else "say: ") + text[:60]
+    if verb == "move":                                   # roam the map (dx,dy, up to 3 cells/step)
+        mkt = next((x for x in ents.values() if x["type"] == "market"), None)
+        w = int(mkt["attrs"].get("w", 96)) if mkt else 96
+        h = int(mkt["attrs"].get("h", 36)) if mkt else 36
+        dx = max(-3, min(3, int(args.get("dx", 0))))
+        dy = max(-3, min(3, int(args.get("dy", 0))))
+        a["x"] = max(0, min(w - 1, a["x"] + dx))
+        a["y"] = max(0, min(h - 1, a["y"] + dy))
+        return "applied", f"moved to ({a['x']},{a['y']})"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------
@@ -327,8 +336,8 @@ def tick(conn):
     match_market(ents, cur, t, events)
     expire_trades(ents, cur, t)
     for e in ents.values():
-        cur.execute("UPDATE entities SET buffers=%s, attrs=%s WHERE id=%s",
-                    (Json(e["buffers"]), Json(e["attrs"]), e["id"]))
+        cur.execute("UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s",
+                    (e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), e["id"]))
     for (tk, eid, kind, data) in events:
         cur.execute("INSERT INTO events(tick, entity, kind, data) VALUES(%s,%s,%s,%s)",
                     (tk, eid, kind, Json(data)))

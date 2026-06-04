@@ -68,9 +68,10 @@ def generate(W, H, seed, min_gap=3):
                     placed.append((x, y, res, amt, grid[y][x])); break
     return grid, placed
 
-def ascii_map(grid, deposits):
+def ascii_map(grid, deposits, agents=()):
     dmap = {(x, y): res[0].upper() for x, y, res, *_ in deposits}
-    return "\n".join("".join(dmap.get((x, y), GLYPH[c]) for x, c in enumerate(row))
+    amap = {(int(x), int(y)): ch for x, y, ch in agents}        # agents drawn on top of deposits/biome
+    return "\n".join("".join(amap.get((x, y), dmap.get((x, y), GLYPH[c])) for x, c in enumerate(row))
                      for y, row in enumerate(grid))
 
 def write_deposits(conn, deposits, seed):

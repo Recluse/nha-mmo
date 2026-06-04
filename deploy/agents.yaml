@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nha-agents
+  namespace: nha-mmo
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: nha-agents}}
+  template:
+    metadata: {labels: {app: nha-agents}}
+    spec:
+      nodeSelector: {ci-build: "true"}
+      dnsConfig: {options: [{name: ndots, value: "1"}]}   # resolve api.groq.com directly
+      containers:
+        - name: agents
+          image: python:3.12-slim                          # runner is pure stdlib — no pip needed
+          command: ["python", "-u", "/app/runner.py"]
+          env:
+            - {name: SERVER_URL, value: "http://nha-mmo.nha-mmo.svc.cluster.local:8000"}
+            - {name: AGENT_MODELS, value: "llama-3.3-70b-versatile,llama-3.1-8b-instant,qwen/qwen3-32b,openai/gpt-oss-20b,meta-llama/llama-4-scout-17b-16e-instruct"}
+            - {name: AGENT_INTERVAL, value: "14"}   # ease Groq free-tier TPM limits across 5 models
+            - name: GROQ_API_KEY
+              valueFrom: {secretKeyRef: {name: groq, key: GROQ_API_KEY}}
+            - name: GROQ_URL                                 # Cloudflare AI Gateway → Groq (direct api.groq.com is edge-blocked here)
+              valueFrom: {secretKeyRef: {name: groq, key: GROQ_URL}}
+          volumeMounts: [{name: code, mountPath: /app}]
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {memory: 160Mi}
+      volumes:
+        - {name: code, configMap: {name: nha-agents-code}}
