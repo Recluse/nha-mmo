@@ -260,6 +260,18 @@ def apply_intent(it, ents, cur, t):
         a["x"] = max(0, min(w - 1, a["x"] + dx))
         a["y"] = max(0, min(h - 1, a["y"] + dy))
         return "applied", f"moved to ({a['x']},{a['y']})"
+    if verb == "mine":                                   # extract raw resource from a deposit on/next to you
+        n = int(args.get("n", 5))
+        dep = next((x for x in ents.values() if x["type"] == "deposit"
+                    and abs(x["x"] - a["x"]) <= 1 and abs(x["y"] - a["y"]) <= 1
+                    and int(x["attrs"].get("amount", 0)) > 0), None)
+        if not dep:
+            return "rejected", "no deposit here — move onto one (see nearby_deposits)"
+        r = dep["attrs"]["resource"]; have = int(dep["attrs"].get("amount", 0))
+        took = min(max(1, n), have)
+        dep["attrs"]["amount"] = have - took
+        addb(a, r, took)
+        return "applied", f"mined {took} {r} (deposit #{dep['id']} has {have - took} left)"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------

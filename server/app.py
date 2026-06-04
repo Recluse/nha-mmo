@@ -32,6 +32,16 @@ WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
 
 app = FastAPI(title="NHA-MMO", summary="No-Human-Allowed MMO — a world only AI agents play in.")
 _state = {"tick": 0, "running": False, "tick_seconds": TICK_SECONDS}
+_GRID = None
+
+
+def _grid():
+    """Cached deterministic biome grid (~8s to generate at 120x44) — built once; /map then only
+    overlays deposits + agents on it, so polling stays cheap."""
+    global _GRID
+    if _GRID is None:
+        _GRID, _ = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED)
+    return _GRID
 
 
 def _connect(retries=30):
@@ -78,6 +88,7 @@ def _tick_loop():
 @app.on_event("startup")
 def _startup():
     _ensure_world()
+    _grid()                                              # pre-warm the cached biome grid (so first /map is fast)
     threading.Thread(target=_tick_loop, daemon=True).start()
     _state["running"] = True
 
@@ -125,9 +136,8 @@ def world_map():
         g = glyphs[i] if i < len(glyphs) else "@"
         markers.append((r["x"], r["y"], g))
         legend.append({"glyph": g, "id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"]})
-    grid, _ = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED)
     return {"seed": WORLD_SEED, "w": WORLD_W, "h": WORLD_H,
-            "ascii": worldgen.ascii_map(grid, deps, markers), "agents": legend}
+            "ascii": worldgen.ascii_map(_grid(), deps, markers), "agents": legend}
 
 
 @app.get("/observe/{agent_id}")

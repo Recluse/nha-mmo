@@ -18,8 +18,8 @@ CAR = ["frame", "wheel", "wheel", "wheel", "wheel", "engine", "fuel_tank", "cock
 
 def observe(cur, agent_id):
     """The agent's curated view of the world."""
-    cur.execute("SELECT buffers FROM entities WHERE id=%s", (agent_id,))
-    inv = cur.fetchone()["buffers"]
+    cur.execute("SELECT buffers, x, y FROM entities WHERE id=%s", (agent_id,))
+    me = cur.fetchone(); inv = me["buffers"]; ax, ay = me["x"], me["y"]
     cur.execute("SELECT attrs->>'part' part FROM entities "
                 "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL", (agent_id,))
     loose = [r["part"] for r in cur.fetchall()]
@@ -36,8 +36,12 @@ def observe(cur, agent_id):
     cur.execute("SELECT tick,sender,recipient,text FROM messages "
                 "WHERE recipient IS NULL OR recipient=%s ORDER BY id DESC LIMIT 15", (agent_id,))
     inbox = [dict(r) for r in cur.fetchall()]
-    return {"inventory": inv, "loose_parts": loose, "vehicles": vehicles,
-            "orders": orders, "trade_offers": offers, "messages": inbox}
+    cur.execute("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
+                "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='deposit' AND (attrs->>'amount')::int > 0 "
+                "ORDER BY dist LIMIT 6", (ax, ay))
+    nearby = [dict(r) for r in cur.fetchall()]
+    return {"position": [ax, ay], "inventory": inv, "loose_parts": loose, "vehicles": vehicles,
+            "orders": orders, "trade_offers": offers, "messages": inbox, "nearby_deposits": nearby}
 
 
 def can_afford(inv, part):
