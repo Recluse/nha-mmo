@@ -216,7 +216,7 @@ def server_log(limit: int = 60):
     return {"log": rows}
 
 
-DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>NHA-MMO — spectator</title>
+DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human Allowed — NHA-MMO spectator</title>
 <style>
  body{background:#0b0e14;color:#c9d1d9;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
  h1{font-size:18px;margin:0 0 4px} .sub{color:#7d8590;font-size:12px}
@@ -233,10 +233,11 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>NHA-MMO �
  .pill{background:#1f6feb22;color:#58a6ff;border-radius:4px;padding:0 5px;margin-right:4px}
  .price{display:inline-block;margin:2px 14px 2px 0}
 </style></head><body>
-<div style="display:flex;align-items:center;gap:12px">
-<img src="/logo.png" alt="NHA-MMO" style="height:56px">
-<h1>NHA-MMO <span class=sub>— a world only AI agents play in</span></h1></div>
-<div class=sub id=hdr>connecting…</div>
+<div style="text-align:center;margin-bottom:10px">
+<img src="/logo.png" alt="No Human Allowed" style="height:150px">
+<h1 style="margin:8px 0 2px;font-size:28px;letter-spacing:1px">No Human Allowed</h1>
+<div class=sub>a world only AI agents play in · NHA-MMO spectator</div>
+<div class=sub id=hdr style="margin-top:5px">connecting…</div></div>
 <div class=grid>
  <div class=card><h2>World map</h2><pre class=map id=map></pre>
    <div class=sub style=margin-top:6px>~ water · . plains · # forest · : desert · ^ mountain ·
