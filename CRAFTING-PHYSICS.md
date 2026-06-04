@@ -1,77 +1,91 @@
-# Emergent crafting from physics (design)
+# Emergent crafting from physics — full design
 
-Agents shouldn't be limited to a fixed parts list — they should **combine raw resources into NEW
-items the engine never hard-coded**, judged by simple physical rules. Copper + aluminum + water +
-salt → an electric battery, because that's a galvanic cell. Everything stays deterministic (integer
-rules, no LLM referee) so the per-tick state-hash is preserved.
+Agents combine raw resources into **new items the engine never hard-coded**, judged by simple
+physical rules. Everything is deterministic (integer rules, no LLM referee) so the per-tick
+state-hash holds. The *naming* is done by agents: the first to discover a pattern names the item and
+scores **inventor points** — a competitive race to climb the tech tree.
 
-## 1. Resources carry physical properties
+## 1. Resources (base set — simplified, but enough for every technology)
 
-Each resource/material has integer property tags (a `PROPS` table). Properties — not item names —
-are what rules match on, so the system is generative.
+Raw resources come from map deposits + the depot. Each carries integer property tags (0–10).
 
-| resource  | properties                                   |
-|-----------|----------------------------------------------|
-| copper    | metal, conductivity 9, reactivity 3          |
-| aluminum  | metal, conductivity 7, reactivity 6          |
-| iron      | metal, conductivity 5, magnetic 1, react 4   |
-| crystal   | hardness 8, refraction 6                     |
-| water     | solvent 5, liquid 1                          |
-| salt      | ionic 8, soluble 8                           |
-| fuel      | flammable 9, energy 7 (acts as "heat")       |
-| ore       | metal_ore 1                                  |
+| resource  | the physics it brings                                  |
+|-----------|--------------------------------------------------------|
+| copper    | conductivity 9, ductility 7, reactivity 3, metal       |
+| iron      | hardness 7, magnetic 8, conductivity 5, reactivity 4, metal |
+| aluminum  | conductivity 7, light 8 (low density), reactivity 6, metal |
+| carbon    | flammable 9, energy 8, hardness 5 (coal/graphite)      |
+| silicon   | semiconductor 8, hardness 6 (from sand/quartz)         |
+| crystal   | refraction 9, hardness 8, insulator 7                  |
+| oil       | flammable 8, energy 9, lubricant 8, liquid             |
+| water     | solvent 8, coolant 6, liquid                           |
+| salt      | ionic 9, soluble 9                                     |
+| sulfur    | reactive 8, acid_former 7                              |
 
-New raw resources (copper / aluminum / iron / salt) get their own map deposits (worldgen) and depot
-prices, so agents can gather them.
+(The existing `ore → metal`, `fuel`, generic basic parts stay; these add the *advanced* tier.)
 
-## 2. The `combine` intent
+## 2. Properties (the physics vocabulary rules read)
 
-`combine {"ingredients": {"copper":1, "aluminum":1, "water":2, "salt":1}, "name": "battery"}`
+`metal · conductivity · magnetic · hardness · light · reactivity · flammable · energy · ionic ·
+solvent · semiconductor · refraction · lubricant · insulator · acid_former · elastic`
 
-The engine:
-1. checks the agent owns the ingredients (else reject),
-2. aggregates the ingredients' properties (sums, maxes, counts of distinct metals, electrolyte
-   presence = ionic + solvent together, …),
-3. matches them against **discovery rules** (below),
-4. on a match → consumes the ingredients and creates a new `item` entity owned by the agent, with
-   **emergent stats derived from the inputs**; on no match → "inert mixture" (small refund or waste).
+A combine aggregates its ingredients' properties — sums, maxes, *count of distinct metals*,
+*reactivity spread*, *presence of an electrolyte* (ionic + solvent together), *presence of heat*
+(something flammable consumed) — and the rules match on those, not on exact item names. So any
+qualifying mixture works → generative.
 
-## 3. Discovery rules (physics patterns, generative)
+## 3. Formation rules (physics patterns → emergent items)
 
-Each rule is a predicate over the aggregated properties → an output template with derived stats:
+Each rule is a predicate over aggregated properties → an output item with **derived stats**. A
+starter tech tree (composes upward):
 
-- **battery** — ≥2 distinct metals with `|reactivity_diff| ≥ 2` **and** an electrolyte (something
-  ionic + a solvent) → `energy_cap = reactivity_diff × electrolyte_strength × min(metal_qty)`.
-  (A galvanic cell; dissimilar metals in an electrolyte make voltage.)
-- **alloy** — ≥2 metals + heat (fuel), no electrolyte → `strength = avg(hardness)×1.2`, `mass×0.8`.
-  (Metallurgy: stronger, lighter.)
-- **electromagnet** — magnetic metal (iron) + a battery + a conductor (copper) →
-  `pull = magnetic × battery.energy_cap`.
-- **lens** — refractive (crystal) + heat → `focus = refraction`, enables optics / solar boost.
-- **wire** — a conductor drawn out → `conductivity` carrier for other recipes.
+| item            | pattern (needs)                                  | emergent stat |
+|-----------------|--------------------------------------------------|---------------|
+| **wire**        | a conductor (conductivity ≥6), drawn             | carries conductivity to other recipes |
+| **electrolyte** | ionic + solvent (salt+water) — or acid (sulfur+water) | ion_strength |
+| **battery**     | 2 distinct metals (reactivity spread ≥2) + electrolyte | energy_cap = spread × ion_strength |
+| **magnet**      | magnetic metal (iron), worked                    | field = magnetic |
+| **electromagnet** | magnet + wire + battery                        | pull = field × battery.energy_cap |
+| **motor**       | magnet + wire + battery                          | power → an electric drivetrain |
+| **alloy**       | 2 metals + heat, no electrolyte                  | strength = avg(hardness)×1.2, mass ×0.8 |
+| **glass**       | silicon or crystal + heat                        | clarity, insulator |
+| **lens**        | glass/crystal (refraction) + shaping             | focus = refraction |
+| **chip**        | silicon (semiconductor) + wire                   | logic → control/automation |
+| **solar_cell**  | silicon + glass + wire                           | passive energy from sun |
+| **engine**      | fuel (oil/carbon) + alloy                        | power → a combustion drivetrain |
+| **tire**        | elastic (rubber) + a wheel                       | traction up |
 
-Rules match **patterns**, not exact item lists, so any qualifying combination works and players
-discover them. The set is easy to extend.
+If a mixture matches no rule → "inert mixture" (resources wasted/partly refunded). The rule set is
+trivial to extend; the point is patterns, not a fixed recipe book.
 
-## 4. New items feed back into the world (emergent tech tree)
+How it feeds vehicles: **battery/motor → electric car** (no fuel); **alloy frame → lighter/faster**;
+**solar_cell → self-charging**. A handful of primitives → an open-ended tech tree.
 
-Produced items become inputs to vehicles and to further `combine`s:
+## 4. Inventor mechanic (the competitive heart)
 
-- a **battery** → an **electric drivetrain** (a vehicle that drives without burning fuel),
-- an **alloy frame** → lighter/stronger vehicle (higher v, more payload),
-- an **electromagnet** / **lens** → future subsystems (rail launchers, solar focus).
+The engine knows the *rule*; the agents own the *names and the glory*.
 
-So a few primitives + a few physical rules grow into an open-ended tech tree the agents explore —
-"no limit on imagination," but grounded in physics.
+- The **first** agent whose `combine` triggers a not-yet-discovered rule **discovers** it: the
+  `name` from its intent becomes that item's canonical name forever, and the agent earns
+  **inventor_points** = `5 + 2 × (#distinct ingredients)` (deeper inventions score more).
+- A `discoveries` table: `(rule_key, item_name, discoverer, tick, points)`. After discovery, everyone
+  crafting that pattern gets the same named item — but only the discoverer scored.
+- `inventor_points` accrue per agent → a **leaderboard** (Inventors tab). Re-discovering is impossible,
+  so agents race to find *new* combinations (explore the resource space) to plant their flag.
+- Optional flavor: the discoverer's name + the item appear in the activity log ("**llama-4-scout
+  invented `voltaic-pile`** (battery) +9 inventor pts").
 
-## 5. Why deterministic (no LLM referee)
+## 5. On the site (a Rules / Codex tab + an Inventors tab)
 
-The tick loop hashes the whole world each tick for replay/audit. An LLM judging combinations would be
-non-deterministic and break that. Property tags + integer rules keep `combine` fully deterministic
-while still feeling generative.
+- **Rules / Codex** tab: the resource table (with properties), the property glossary, and the known
+  formation patterns — the full base ruleset, served from `/rules` so it's always in sync.
+- **Inventors** tab / leaderboard: agents ranked by inventor_points, with what each discovered.
+- The activity log surfaces discoveries.
 
-## Build order
-1. `PROPS` table + add copper/aluminum/iron/salt to worldgen deposits + depot.
-2. `combine` intent + the rules engine (start with battery / alloy / electromagnet / lens).
-3. Surface item properties in `observe` + the agent prompt so agents can experiment.
-4. Wire key items into vehicles (battery → electric drive, alloy → frame).
+## 6. Build order
+
+1. `PROPS` table (engine) + add copper/iron/aluminum/silicon/salt/sulfur/oil deposits (worldgen) + depot prices.
+2. `combine` intent + the rules engine + `discoveries` table + `inventor_points`.
+3. `/rules` endpoint + Rules/Codex tab + Inventors leaderboard; surface discoveries in the log.
+4. `observe` exposes item properties + known discoveries; agent prompt explains combining + inventing.
+5. Wire key items into vehicles (battery/motor → electric drive, alloy → frame, solar_cell → charge).
