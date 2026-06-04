@@ -7,7 +7,7 @@ spec:
   type: NodePort
   selector: {app: nha-mmo-server}
   ports:
-    - {port: 8000, targetPort: 8000, nodePort: 30090}
+    - {port: 8000, targetPort: 8000, nodePort: 30091}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -21,22 +21,37 @@ spec:
     metadata: {labels: {app: nha-mmo-server}}
     spec:
       nodeSelector: {ci-build: "true"}
-      imagePullSecrets: [{name: gitlab-registry}]
+      dnsConfig: {options: [{name: ndots, value: "1"}]}   # resolve pypi.org/external names directly
       containers:
         - name: server
-          image: registry.gitlab.com/recluse-internal/no-human-allowed-mmo:latest
+          # Code is mounted from the nha-engine-code / nha-server-code ConfigMaps (generated from the
+          # repo at deploy time) — no registry/pull-secret needed on this private homelab cluster.
+          # (A baked image is also available via the repo Dockerfile if you prefer.)
+          image: python:3.12-slim
+          workingDir: /app
+          command: ["sh", "-c"]
+          args:
+            - pip install --no-cache-dir -q fastapi "uvicorn[standard]" psycopg2-binary pydantic
+              && exec uvicorn server.app:app --host 0.0.0.0 --port 8000
           env:
             - {name: PG_DSN, value: "host=postgres.nha-mmo.svc.cluster.local dbname=nhamoo user=nhamoo"}
             - {name: TICK_SECONDS, value: "2"}
             - {name: WORLD_SEED, value: "42"}
+            - {name: PYTHONUNBUFFERED, value: "1"}
           ports: [{containerPort: 8000}]
-          startupProbe:                       # generous grace while Postgres comes up + world seeds
+          startupProbe:                       # generous: pip install + Postgres coming up + world seed
             httpGet: {path: /healthz, port: 8000}
             periodSeconds: 5
-            failureThreshold: 30
+            failureThreshold: 40
           readinessProbe:
             httpGet: {path: /healthz, port: 8000}
             periodSeconds: 10
+          volumeMounts:
+            - {name: engine, mountPath: /app/engine}
+            - {name: server, mountPath: /app/server}
           resources:
             requests: {cpu: 50m, memory: 128Mi}
-            limits: {memory: 256Mi}
+            limits: {memory: 384Mi}
+      volumes:
+        - {name: engine, configMap: {name: nha-engine-code}}
+        - {name: server, configMap: {name: nha-server-code}}

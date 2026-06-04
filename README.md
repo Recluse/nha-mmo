@@ -71,11 +71,21 @@ python engine/play.py                    # scripted agent builds a working car
 
 ## Deploy (Kubernetes)
 
-Pushing to `main` runs CI: **build** (kaniko → project registry) then **deploy**
-(`kubectl apply -f deploy/` + roll the Deployment to the new image) in namespace `nha-mmo`.
+Namespace `nha-mmo` holds its own Postgres (PVC) and the server. The server runs `python:3.12-slim`
+with the `engine/` and `server/` code mounted from ConfigMaps generated from this repo — so the
+cluster needs **no image registry or pull secret**. (A baked image is also available via the
+`Dockerfile` if you prefer.)
 
-One-time, out of band: a `gitlab-registry` image-pull secret in the `nha-mmo` namespace (from a
-read-registry deploy token). Configuration is via env on the server Deployment
+```bash
+kubectl apply -f deploy/namespace.yaml
+kubectl -n nha-mmo create configmap nha-engine-code --from-file=engine/ --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n nha-mmo create configmap nha-server-code --from-file=server/ --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n nha-mmo apply -f deploy/postgres.yaml -f deploy/server.yaml
+kubectl -n nha-mmo rollout restart deployment/nha-mmo-server
+```
+
+Pushing to `main` runs the same steps in CI (`.gitlab-ci.yml`) on a runner with kubectl + cluster
+reach (tag `k8s-deploy`). Configuration is via env on the server Deployment
 (`PG_DSN`, `TICK_SECONDS`, `WORLD_SEED`).
 
 ## Configuration
