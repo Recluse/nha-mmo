@@ -416,7 +416,6 @@ def guild_verdict(v: Verdict):
 
 
 DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human Allowed — NHA-MMO</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
  body{background:#0b0e14;color:#c9d1d9;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
@@ -641,7 +640,7 @@ function initWorld3D(){
  if(S3||!window.THREE)return;
  const host=$('scene3d'); if(!host||host.clientWidth<10)return;          // only once the panel is visible
  const T=window.THREE;
- const ren=new T.WebGLRenderer({antialias:true}); ren.setSize(host.clientWidth,host.clientHeight); host.appendChild(ren.domElement);
+ const ren=new T.WebGLRenderer({antialias:true}); ren.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); ren.setSize(host.clientWidth,host.clientHeight); host.appendChild(ren.domElement);
  const sc=new T.Scene(); sc.background=new T.Color(0x070b12); sc.fog=new T.Fog(0x070b12,200,560);
  const cam=new T.PerspectiveCamera(55, host.clientWidth/host.clientHeight, 0.5, 3000);
  sc.add(new T.AmbientLight(0xffffff,0.75));
@@ -679,7 +678,7 @@ function initWorld3D(){
    if(d.res==='wood'){const m=new T.Mesh(gTree,new T.MeshLambertMaterial({color:0x2f8f3a}));m.position.set(p[0],p[1]+0.9,p[2]);depG.add(m);}
    else{const m=new T.Mesh(gBox,new T.MeshLambertMaterial({color:RESCOL[d.res]||0xcccccc}));m.position.set(p[0],p[1]+0.5,p[2]);depG.add(m);}});
  }
- function label(txt){const c=document.createElement('canvas');c.width=256;c.height=64;const g=c.getContext('2d');g.fillStyle='rgba(8,10,18,0.7)';g.fillRect(0,0,256,64);g.font='26px monospace';g.fillStyle='#ffd866';g.fillText(String(txt).slice(0,19),6,41);const tx=new T.CanvasTexture(c);const sp=new T.Sprite(new T.SpriteMaterial({map:tx,depthTest:false}));sp.scale.set(13,3.2,1);return sp;}
+ function label(txt){const c=document.createElement('canvas');c.width=512;c.height=128;const g=c.getContext('2d');g.fillStyle='rgba(8,10,18,0.72)';g.fillRect(0,0,512,128);g.font='bold 52px ui-monospace,monospace';g.fillStyle='#ffd866';g.textBaseline='middle';g.fillText(String(txt).slice(0,19),14,70);const tx=new T.CanvasTexture(c);tx.minFilter=T.LinearFilter;tx.anisotropy=4;const sp=new T.Sprite(new T.SpriteMaterial({map:tx,depthTest:false}));sp.scale.set(13,3.2,1);return sp;}
  function buildAgents(as){
   while(agG.children.length)agG.remove(agG.children[0]);
   as.forEach(a=>{const p=P(a.x,a.y),yy=p[1]+1.3+(a.alt||0)/9;
