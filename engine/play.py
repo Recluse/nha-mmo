@@ -33,8 +33,9 @@ def observe(cur, agent_id):
     cur.execute("SELECT id,proposer,give,want FROM trades "
                 "WHERE target=%s AND status='open' ORDER BY id", (agent_id,))
     offers = [dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT tick,sender,recipient,text FROM messages "
-                "WHERE recipient IS NULL OR recipient=%s ORDER BY id DESC LIMIT 15", (agent_id,))
+    cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
+                "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
+                "WHERE m.recipient IS NULL OR m.recipient=%s ORDER BY m.id DESC LIMIT 15", (agent_id,))
     inbox = [dict(r) for r in cur.fetchall()]
     cur.execute("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
                 "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='deposit' AND (attrs->>'amount')::int > 0 "
