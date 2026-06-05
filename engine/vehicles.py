@@ -34,21 +34,49 @@ BUILD_COST = {
     "cockpit": {"metal": 4, "crystal": 1}, "fuel_tank": {"metal": 3}, "landing_gear": {"metal": 3},
 }
 
+# crafted items that UPGRADE a part (consumed 1 each, on top of the base cost) → flat stat bonuses.
+# This is what ties the physics-crafting tree to vehicles: steel/alloy/motor/chip/glass/bearing matter.
+PART_UPGRADES = {
+    "frame":     {"steel": {"strength": 150}, "alloy": {"strength": 80, "mass": -30}},
+    "wheel":     {"alloy": {"traction": 60, "mass": -8}, "bearing": {"traction": 40}},
+    "engine":    {"engine": {"power": 150}, "motor": {"power": 100}, "steel": {"power": 60}},
+    "wing":      {"alloy": {"wing_area": 6, "mass": -15}},
+    "tail":      {"alloy": {"maneuver": 4, "mass": -8}},
+    "propeller": {"bearing": {"thrust_pp": 1}, "alloy": {"mass": -12}},
+    "jet":       {"steel": {"thrust": 150, "mass": 20}},
+    "cockpit":   {"chip": {"maneuver": 5, "control": 1}, "glass": {"maneuver": 2}, "lens": {"control": 1}},
+    "fuel_tank": {"steel": {"fuel_cap": 120}},
+}
+
+
+def part_stats(part, upgrades=()):
+    """Base PART stats with crafted-item upgrades applied (flat deltas)."""
+    st = dict(PART[part])
+    for u in upgrades:
+        for k, dv in PART_UPGRADES.get(part, {}).get(u, {}).items():
+            st[k] = st.get(k, 0) + dv
+    return st
+
 K_V, K_LIFT, G = 90, 1, 10   # коэффициенты-болванка под тюнинг
 
 
 def finalize(parts):
-    """parts: список имён деталей → агрегатные ТТХ + вердикт (всё целочисленно)."""
-    s = lambda k: sum(PART[p].get(k, 0) for p in parts)
+    """parts: список имён деталей (без апгрейдов) → ТТХ (back-compat wrapper)."""
+    return finalize_stats([PART[p] for p in parts])
+
+
+def finalize_stats(stats_list):
+    """stats_list: список per-part stat-словарей (возможно с апгрейдами) → агрегатные ТТХ + вердикт."""
+    s = lambda k: sum(d.get(k, 0) for d in stats_list)
     mass      = s("mass")
     power     = s("power")
     traction  = s("traction")
-    n_wheels  = sum(1 for p in parts if PART[p].get("drive"))
+    n_wheels  = sum(1 for d in stats_list if d.get("drive"))
     wing_area = s("wing_area")
     control   = s("control")
     drag      = max(1, mass // 20)                 # лобовое сопротивление (упрощённо ∝ масса)
     drive     = min(power, traction)               # тяга колёс, ограничена сцеплением шин
-    thrust    = s("thrust") + sum(PART[p].get("thrust_pp", 0) for p in parts) * power
+    thrust    = s("thrust") + sum(d.get("thrust_pp", 0) for d in stats_list) * power
     lift_coef = wing_area * K_LIFT
     v_ground  = math.isqrt(K_V * drive  // drag) if drive  else 0
     v_air     = math.isqrt(K_V * thrust // drag) if thrust else 0

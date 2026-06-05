@@ -152,25 +152,38 @@ def apply_intent(it, ents, cur, t):
         if src and dst and get(src, r) >= n:
             addb(src, r, -n); addb(dst, r, n); return "applied", f"{verb} {n} {r}"
         return "rejected", "insufficient"
-    if verb == "build":                                  # craft one part from the agent's materials
+    if verb == "build":                                  # craft one part, optionally upgraded with crafted items
         part = args.get("part"); cost = vehicles.BUILD_COST.get(part)
         if not cost:
             return "rejected", f"unknown part {part}"
-        if not all(get(a, res) >= q for res, q in cost.items()):
-            return "rejected", f"insufficient for {part} (need {cost})"
-        for res, q in cost.items():
+        ups = args.get("with") or []
+        if isinstance(ups, str):
+            ups = [ups]
+        ups = [str(u) for u in ups][:3]
+        allowed = vehicles.PART_UPGRADES.get(part, {})
+        bad = [u for u in ups if u not in allowed]
+        if bad:
+            return "rejected", f"{part} can't use {bad} (upgrade options: {list(allowed) or 'none'})"
+        need = dict(cost)
+        for u in ups:
+            need[u] = need.get(u, 0) + 1                  # one of each upgrade item, on top of base cost
+        if not all(get(a, res) >= q for res, q in need.items()):
+            return "rejected", f"insufficient for {part} (need {need})"
+        for res, q in need.items():
             addb(a, res, -q)
+        stats = vehicles.part_stats(part, ups)
         cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('part',%s,%s,%s,%s)",
-                    (a["x"], a["y"], a["id"], Json({"part": part})))
-        return "applied", f"built {part}"
+                    (a["x"], a["y"], a["id"], Json({"part": part, "stats": stats, "upgrades": ups})))
+        return "applied", f"built {part}" + (f" [+{'+'.join(ups)}]" if ups else "")
     if verb == "finalize":                               # assemble the agent's loose parts into a vehicle
-        cur.execute("SELECT id, attrs->>'part' part FROM entities "
+        cur.execute("SELECT id, attrs->>'part' part, attrs->'stats' stats FROM entities "
                     "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL", (a["id"],))
         rows = cur.fetchall()
         if not rows:
             return "rejected", "no loose parts"
         parts = [r["part"] for r in rows]
-        st = vehicles.finalize(parts)
+        stats_list = [r["stats"] or vehicles.PART.get(r["part"], {}) for r in rows]
+        st = vehicles.finalize_stats(stats_list)
         cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('vehicle',0,0,%s,%s) RETURNING id",
                     (a["id"], Json({"name": args.get("name", "vehicle"), "parts": parts, **st})))
         vid = cur.fetchone()["id"]

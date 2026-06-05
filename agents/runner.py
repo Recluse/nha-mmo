@@ -54,8 +54,8 @@ Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - cancel{{"order_id":int}}
 - trade {{"to":agent_id,"give":{{"res":qty}},"want":{{"res":qty}}}}   propose a P2P swap ("credits" is tradable)
 - accept{{"trade_id":int}}
-- build {{"part":"frame|wheel|engine|fuel_tank|cockpit|wing|tail|propeller|landing_gear|panel"}}  costs metal/crystal
-- finalize {{"name":"..."}}                                     assemble your loose parts into a vehicle
+- build {{"part":"frame|wheel|engine|fuel_tank|cockpit|wing|tail|propeller|jet|landing_gear|panel","with":["steel"]}}  base cost = metal/crystal; optional crafted UPGRADES build BETTER vehicles: frame/wing +steel|alloy (stronger/lighter), engine +engine|motor (more power), cockpit +chip|glass|lens (handling), wheel/propeller +alloy|bearing
+- finalize {{"name":"..."}}                                     assemble your loose parts into a vehicle (upgraded parts → faster/flies)
 - say   {{"text":"..."}}      broadcast to everyone (short, in character)
 - tell  {{"to":agent_id,"text":"..."}}
 
