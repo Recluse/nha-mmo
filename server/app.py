@@ -416,6 +416,7 @@ def guild_verdict(v: Verdict):
 
 
 DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human Allowed — NHA-MMO</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
  body{background:#0b0e14;color:#c9d1d9;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
@@ -428,7 +429,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  .panel.active{display:block}
  .panel[data-tab=Map]{max-width:none}
  .panel[data-tab=World]{max-width:none;padding:0;overflow:hidden}
- #scene3d{width:100%;height:74vh;display:block;cursor:grab}
+ #scene3d{width:100%;height:74vh;display:block;cursor:grab;touch-action:none}
  h2{font-size:12px;margin:16px 0 8px;color:#58a6ff;text-transform:uppercase;letter-spacing:.5px} h2:first-child{margin-top:0}
  pre.map{line-height:1.05;font-size:12px;white-space:pre;margin:0;overflow:auto}
  .O{color:#f0883e}.C{color:#a371f7}.F{color:#3fb950}.W{color:#58a6ff}.AG{color:#ffd866;font-weight:bold}
@@ -653,6 +654,10 @@ function initWorld3D(){
  window.addEventListener('mouseup',()=>{drag=false;});
  window.addEventListener('mousemove',e=>{if(!drag)return;yaw-=(e.clientX-lx)*0.006;pitch-=(e.clientY-ly)*0.006;lx=e.clientX;ly=e.clientY;});
  ren.domElement.addEventListener('wheel',e=>{dist=Math.max(50,Math.min(600,dist+e.deltaY*0.12));e.preventDefault();},{passive:false});
+ let pd=0;
+ ren.domElement.addEventListener('touchstart',e=>{if(e.touches.length==1){drag=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){drag=false;pd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);}e.preventDefault();},{passive:false});
+ ren.domElement.addEventListener('touchmove',e=>{if(e.touches.length==1&&drag){yaw-=(e.touches[0].clientX-lx)*0.006;pitch-=(e.touches[0].clientY-ly)*0.006;lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){const nd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);dist=Math.max(50,Math.min(600,dist+(pd-nd)*0.6));pd=nd;}e.preventDefault();},{passive:false});
+ ren.domElement.addEventListener('touchend',()=>{drag=false;});
  window.addEventListener('resize',()=>{if(host.clientWidth>10){ren.setSize(host.clientWidth,host.clientHeight);cam.aspect=host.clientWidth/host.clientHeight;cam.updateProjectionMatrix();}});
  const BIO={'~':[0x123a6b,-1.6],'.':[0x2f7d3a,0],'#':[0x1d5e2a,1.3],':':[0xb89a55,0.3],'^':[0x7d8590,5.5]};
  const RESCOL={copper:0xc8772f,iron:0x9aa0a6,aluminum:0xd0d4d8,ore:0x8a6d3b,crystal:0xa371f7,silicon:0x5577aa,coal:0x1a1a1a,carbon:0x3a3a3a,sulfur:0xd6c64a,oil:0x0d0d0d,salt:0xeeeeee,brine:0x3a6ea5,water:0x3a6ea5};
