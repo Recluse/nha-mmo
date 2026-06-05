@@ -257,8 +257,13 @@ def rules():
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("SELECT d.rule_key, d.name, a.attrs->>'name' discoverer, d.points "
                 "FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer")
-    disc = {r["rule_key"]: dict(r) for r in cur.fetchall()}; conn.close()
-    return {"resources": crafting.PROPS,
+    disc = {r["rule_key"]: dict(r) for r in cur.fetchall()}
+    cur.execute("SELECT r.sig, r.item_key, r.name, r.props, r.points, a.attrs->>'name' by "
+                "FROM dynamic_rules r LEFT JOIN entities a ON a.id = r.discoverer ORDER BY r.tick")
+    dynamic = [dict(r) for r in cur.fetchall()]
+    cur.execute("SELECT count(*) c FROM proposals WHERE status='pending'")
+    pending = cur.fetchone()["c"]; conn.close()
+    return {"resources": crafting.PROPS, "pending": pending, "dynamic": dynamic,
             "recipes": [{"item": k, "needs": crafting.RULE_NOTE.get(k, ""),
                          "props": crafting.ITEM_PROPS.get(k, {}), "discovered": disc.get(k)}
                         for k, _ in crafting.RULES]}
@@ -271,10 +276,67 @@ def inventors():
     cur.execute("SELECT id, attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
                 "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC")
     board = [dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT d.rule_key, d.name, d.points, a.attrs->>'name' by FROM discoveries d "
-                "LEFT JOIN entities a ON a.id = d.discoverer ORDER BY d.tick")
+    cur.execute("""SELECT d.name, d.points, a.attrs->>'name' by, d.tick, d.rule_key key, false guild
+                     FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer
+                   UNION ALL
+                   SELECT r.name, r.points, a.attrs->>'name' by, r.tick, r.item_key key, true guild
+                     FROM dynamic_rules r LEFT JOIN entities a ON a.id = r.discoverer
+                   ORDER BY tick""")
     discs = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"leaderboard": board, "discoveries": discs}
+
+
+# ---------- Inventors' Guild — async LLM referee for novel (non-deterministic) inventions ----------
+@app.get("/guild/pending")
+def guild_pending(limit: int = 15):
+    """Open invention proposals awaiting a ruling, each with its ingredients' physics for the referee."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT p.id, p.agent, a.attrs->>'name' agent_name, p.ings, p.proposed_name, p.sig "
+                "FROM proposals p LEFT JOIN entities a ON a.id = p.agent "
+                "WHERE p.status='pending' ORDER BY p.id LIMIT %s", (limit,))
+    rows = []
+    for r in cur.fetchall():
+        d = dict(r)
+        d["ingredient_props"] = {k: (crafting.PROPS.get(k) or crafting.ITEM_PROPS.get(k) or {})
+                                 for k in (r["ings"] or {})}
+        rows.append(d)
+    conn.close()
+    return {"pending": rows}
+
+
+class Verdict(BaseModel):
+    proposal_id: int
+    approved: bool
+    item_key: str = ""                                    # snake_case key for the new item (if approved)
+    name: str = ""
+    props: dict = {}                                      # integer physics tags for the invented item
+    points: int = 0                                       # 0 → server scores it (8 + 2·ingredients)
+    reason: str = ""
+
+
+@app.post("/guild/verdict")
+def guild_verdict(v: Verdict):
+    """The Guild referee records its ruling here; the tick loop applies it (mint rule / grant / refund)."""
+    conn = _connect(); cur = conn.cursor()
+    cur.execute("SELECT status, ings FROM proposals WHERE id=%s", (v.proposal_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close(); raise HTTPException(404, "no such proposal")
+    if row[0] != "pending":
+        conn.close(); return {"ok": False, "note": f"already {row[0]}"}
+    if v.approved:
+        item_key = (v.item_key or v.name).strip().lower().replace(" ", "_")[:32]
+        if not item_key:
+            conn.close(); raise HTTPException(400, "approved verdict needs item_key or name")
+        pts = v.points if v.points > 0 else 8 + 2 * len(row[1] or {})
+        cur.execute("UPDATE proposals SET status='approved', item_key=%s, item_name=%s, props=%s, points=%s, "
+                    "reason=%s WHERE id=%s",
+                    (item_key, (v.name or item_key)[:32], Json(v.props or {}), pts, v.reason[:200], v.proposal_id))
+    else:
+        cur.execute("UPDATE proposals SET status='rejected', reason=%s WHERE id=%s",
+                    (v.reason[:200], v.proposal_id))
+    conn.commit(); conn.close()
+    return {"ok": True, "applied_on": "next tick"}
 
 
 DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human Allowed — NHA-MMO</title>
@@ -324,7 +386,8 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   <h2>Discoveries</h2><div id=inv_disc class=feed>...</div>
  </div>
  <div class=panel data-tab=Codex>
-  <h2>Recipes &mdash; physics patterns (the discoverer's name shown)</h2><div id=codex_rec>...</div>
+  <h2>Recipes &mdash; built-in physics patterns (the discoverer's name shown)</h2><div id=codex_rec>...</div>
+  <h2>&#129514; Guild inventions &mdash; novel mixes, LLM-judged (<span id=codex_pending>0</span> pending review)</h2><div id=codex_dyn class=sub>...</div>
   <h2>Resources &amp; their properties</h2><div id=codex_res class=sub>...</div>
  </div>
  <div class=panel data-tab=Chat><div class=feed id=chat></div></div>
@@ -412,16 +475,20 @@ async function tick(){
  if(lg)$('log').innerHTML=lg.log.map(e=>{const dt=e.data||{};let txt;
   if(e.kind=='act')txt=`<b>${dt.verb}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
   else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(#${dt.seller}->#${dt.buyer})</span>`;
+  else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
+  else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
   return `<div><span class=sub>t${e.tick}</span> ${e.entity?`<span class=pill>#${e.entity}</span>`:''}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
  const iv=await j('/inventors');
  if(iv){
   $('inv_board').innerHTML=iv.leaderboard.length?('<table><tr><th>#<th>model<th>&#127942; pts</tr>'+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${g.name||''}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):'<div class=sub>no inventions yet — be the first!</div>';
-  $('inv_disc').innerHTML=iv.discoveries.map(d=>`<div><b>${esc(d.name)}</b> <span class=sub>(${d.rule_key})</span> &mdash; <span class=AG>${d.by||'?'}</span> +${d.points}</div>`).reverse().join('')||'<div class=sub>nothing invented yet</div>';
+  $('inv_disc').innerHTML=iv.discoveries.map(d=>`<div>${d.guild?'&#129514; ':''}<b>${esc(d.name)}</b> <span class=sub>(${esc(d.key)})</span> &mdash; <span class=AG>${d.by||'?'}</span> +${d.points}</div>`).reverse().join('')||'<div class=sub>nothing invented yet</div>';
  }
  const rl=await j('/rules');
  if(rl){
   $('codex_rec').innerHTML='<table><tr><th>item<th>recipe (physics)<th>inventor</tr>'+rl.recipes.map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:'<span class=sub>undiscovered</span>'}</tr>`).join('')+'</table>';
+  $('codex_pending').textContent=rl.pending||0;
+  $('codex_dyn').innerHTML=(rl.dynamic&&rl.dynamic.length)?('<table><tr><th>invention<th>recipe (ingredients)<th>properties<th>inventor</tr>'+rl.dynamic.map(x=>`<tr><td><b>${esc(x.name)}</b> <span class=sub>(${esc(x.item_key)})</span><td class=sub>${esc(x.sig)}<td class=sub>${Object.entries(x.props||{}).map(([k,v])=>k+' '+v).join(', ')}<td><span class=AG>${x.by||'?'}</span> +${x.points}</tr>`).join('')+'</table>'):'<span class=sub>no Guild inventions yet — novel mixes are escrowed and judged by the referee</span>';
   $('codex_res').innerHTML='<table><tr><th>resource<th>properties</tr>'+Object.entries(rl.resources).map(([r,p])=>`<tr><td><b>${r}</b><td class=sub>${Object.entries(p).map(([k,v])=>k+' '+v).join(', ')}</tr>`).join('')+'</table>';
  }
 }

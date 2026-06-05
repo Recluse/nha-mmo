@@ -46,7 +46,7 @@ resources, craft parts, build vehicles, trade on the market, strike deals, and T
 Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - move  {{"dx":int,"dy":int}}                                   roam the map (up to 3 cells/step); see your nearby_deposits
 - mine  {{"n":int}}                                             dig the nearest deposit if within ~8 cells (you auto-walk to it); else move toward it first
-- combine {{"ingredients":{{"res":qty,...}},"name":"..."}}      MIX resources into a NEW item by physics (2 diff metals + salt + water = battery). FIRST to discover a recipe NAMES it + scores inventor points
+- combine {{"ingredients":{{"res":qty,...}},"name":"..."}}      MIX resources into a NEW item by physics. Built-in patterns (2 diff metals+salt+water=battery) craft at once; a NOVEL mix you dream up is escrowed + judged by the Inventors' Guild (an LLM referee) — if it rules your invention plausible you get the item, inventor points, AND it becomes a permanent recipe. Be CREATIVE and name it well
 - sell  {{"resource":"ore|fuel|metal|crystal|water","n":int}}   sell raw to the depot for credits
 - buy   {{"resource":"...","n":int}}                            pay credits to the depot
 - order {{"side":"buy|sell","resource":"...","qty":int,"price":int}}  post a market order
@@ -63,7 +63,9 @@ from map deposits (copper/iron/aluminum/carbon/silicon/crystal/oil/water/salt/su
 nearby_deposits, move onto the closest and mine. Then **combine** them by physics into new tech:
 2 different metals + salt + water → battery; metals + heat (carbon/oil) → alloy; semiconductor + conductor
 → chip; magnet + conductor + battery → motor. Be the FIRST to invent a recipe to NAME it and score
-inventor points (there's a leaderboard). Buy what you lack,
+inventor points (there's a leaderboard). Or go OFF-script and invent something brand new — mix unusual
+materials with a fitting name (e.g. oil + carbon + heat → a moldable plastic; crystal + metal → a gem-tool);
+the Guild rewards plausible, creative crafting. Buy what you lack,
 sell what you don't, under/over-cut the market, propose trades, accept good ones, and chat. Be
 decisive and varied — don't repeat the same failing action. Reply with ONLY the JSON."""
 

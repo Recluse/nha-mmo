@@ -50,6 +50,13 @@ CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, tick int NOT NULL
   sender bigint NOT NULL, recipient bigint, text text NOT NULL);
 CREATE TABLE IF NOT EXISTS discoveries (rule_key text PRIMARY KEY, name text NOT NULL,
   discoverer bigint NOT NULL, tick int NOT NULL, points int NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS proposals (id bigserial PRIMARY KEY, agent bigint NOT NULL,
+  ings jsonb NOT NULL, sig text NOT NULL, proposed_name text,
+  status text NOT NULL DEFAULT 'pending', item_key text, item_name text, props jsonb,
+  points int, reason text, tick int NOT NULL);
+CREATE INDEX IF NOT EXISTS proposals_status_idx ON proposals(status);
+CREATE TABLE IF NOT EXISTS dynamic_rules (sig text PRIMARY KEY, item_key text NOT NULL, name text NOT NULL,
+  props jsonb NOT NULL DEFAULT '{}', discoverer bigint NOT NULL, points int NOT NULL DEFAULT 0, tick int NOT NULL);
 """
 
 # ---------- buffer helpers (integer, conserved) ----------
@@ -289,22 +296,39 @@ def apply_intent(it, ents, cur, t):
         if any(get(a, k) < q for k, q in ings.items()):
             return "rejected", "you don't hold those ingredients"
         rule = crafting.combine(ings)
-        if not rule:
-            return "rejected", "inert mixture — no reaction (try other resources)"
-        for k, q in ings.items():                        # consume the inputs
-            addb(a, k, -q)
-        cur.execute("SELECT name FROM discoveries WHERE rule_key=%s", (rule,))
-        disc = cur.fetchone()
-        if disc:
+        if rule:                                         # matched a built-in physics pattern
+            for k, q in ings.items():                    # consume the inputs
+                addb(a, k, -q)
+            cur.execute("SELECT name FROM discoveries WHERE rule_key=%s", (rule,))
+            disc = cur.fetchone()
+            if disc:
+                addb(a, rule, 1)
+                return "applied", f"crafted {disc['name']} ({rule})"
+            item_name = (str(args.get("name", "")).strip()[:32] or rule)
+            pts = 5 + 2 * len(ings)
+            cur.execute("INSERT INTO discoveries(rule_key, name, discoverer, tick, points) VALUES(%s,%s,%s,%s,%s)",
+                        (rule, item_name, a["id"], t, pts))
+            a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
             addb(a, rule, 1)
-            return "applied", f"crafted {disc['name']} ({rule})"
-        item_name = (str(args.get("name", "")).strip()[:32] or rule)
-        pts = 5 + 2 * len(ings)
-        cur.execute("INSERT INTO discoveries(rule_key, name, discoverer, tick, points) VALUES(%s,%s,%s,%s,%s)",
-                    (rule, item_name, a["id"], t, pts))
-        a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
-        addb(a, rule, 1)
-        return "applied", f"INVENTED '{item_name}' ({rule}) +{pts} inventor pts!"
+            return "applied", f"INVENTED '{item_name}' ({rule}) +{pts} inventor pts!"
+        # no built-in pattern → the Inventors' Guild (async LLM referee) judges this novel mixture
+        sig = ",".join(sorted(ings))
+        cur.execute("SELECT item_key, name FROM dynamic_rules WHERE sig=%s", (sig,))
+        dyn = cur.fetchone()
+        if dyn:                                          # already a Guild-blessed recipe → deterministic craft
+            for k, q in ings.items():
+                addb(a, k, -q)
+            addb(a, dyn["item_key"], 1)
+            return "applied", f"crafted {dyn['name']} ({dyn['item_key']})"
+        cur.execute("SELECT 1 FROM proposals WHERE sig=%s AND status IN ('pending','approved') LIMIT 1", (sig,))
+        if cur.fetchone():
+            return "rejected", "this mixture is already before the Inventors' Guild — try another"
+        for k, q in ings.items():                        # escrow the inputs while the Guild reviews
+            addb(a, k, -q)
+        item_name = str(args.get("name", "")).strip()[:32]
+        cur.execute("INSERT INTO proposals(agent, ings, sig, proposed_name, tick) VALUES(%s,%s,%s,%s,%s)",
+                    (a["id"], Json(ings), sig, item_name, t))
+        return "applied", f"submitted '{item_name or sig}' to the Inventors' Guild for review"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------
@@ -351,6 +375,38 @@ def expire_trades(ents, cur, t, ttl=80):
                 addb(prop, res, int(q))
         cur.execute("UPDATE trades SET status='expired' WHERE id=%s", (tr["id"],))
 
+def resolve_proposals(ents, cur, t, events):
+    """Apply Inventors' Guild verdicts. The async LLM referee only WRITES a verdict onto the proposal
+    (status approved/rejected + the item it blessed); the tick — the single authoritative world-writer —
+    is what actually grants the item, mints the new dynamic rule, or refunds a rejection."""
+    cur.execute("SELECT id, agent, ings, sig, item_key, item_name, props, points, reason, status "
+                "FROM proposals WHERE status IN ('approved','rejected')")
+    for p in cur.fetchall():
+        a = ents.get(p["agent"])
+        if p["status"] == "approved" and p["item_key"]:
+            cur.execute("SELECT item_key FROM dynamic_rules WHERE sig=%s", (p["sig"],))
+            existing = cur.fetchone()
+            if not existing:                              # first to get this recipe blessed: mint it + score
+                pts = int(p["points"] or 0)
+                cur.execute("INSERT INTO dynamic_rules(sig,item_key,name,props,discoverer,points,tick) "
+                            "VALUES(%s,%s,%s,%s,%s,%s,%s)",
+                            (p["sig"], p["item_key"], p["item_name"] or p["item_key"],
+                             Json(p["props"] or {}), p["agent"], pts, t))
+                if a:
+                    addb(a, p["item_key"], 1)
+                    a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
+                events.append((t, p["agent"], "invent",
+                               {"name": p["item_name"], "item": p["item_key"], "points": pts, "guild": True}))
+            elif a:                                       # raced — recipe already exists; just hand over the item
+                addb(a, existing["item_key"], 1)
+            cur.execute("UPDATE proposals SET status='granted' WHERE id=%s", (p["id"],))
+        else:                                             # rejected (or approved with no item) → refund the escrow
+            if a:
+                for k, q in (p["ings"] or {}).items():
+                    addb(a, k, int(q))
+            events.append((t, p["agent"], "reject", {"reason": p["reason"], "sig": p["sig"]}))
+            cur.execute("UPDATE proposals SET status='refunded' WHERE id=%s", (p["id"],))
+
 # ---------- tick ----------
 def tick(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -380,6 +436,7 @@ def tick(conn):
         behave(e, ents, ports, links, t, events)
     match_market(ents, cur, t, events)
     expire_trades(ents, cur, t)
+    resolve_proposals(ents, cur, t, events)
     for e in ents.values():
         cur.execute("UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s",
                     (e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), e["id"]))
