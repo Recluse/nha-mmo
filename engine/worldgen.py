@@ -54,7 +54,7 @@ DEPOSITS = {
     "plains":   [("iron", 0.03, 14), ("copper", 0.03, 12), ("wood", 0.05, 16), ("carbon", 0.05, 18), ("salt", 0.04, 14)],
     "forest":   [("copper", 0.03, 12), ("wood", 0.11, 22), ("coal", 0.04, 16), ("carbon", 0.05, 16), ("oil", 0.03, 14)],
     "desert":   [("aluminum", 0.03, 14), ("silicon", 0.10, 22), ("salt", 0.06, 16), ("oil", 0.05, 18), ("sulfur", 0.04, 12)],
-    "water":    [("water", 0.04, 999)],
+    "water":    [("water", 0.04, 999), ("salt", 0.05, 18), ("brine", 0.06, 40)],   # sea: water + coastal salt + brine
 }
 
 def generate(W, H, seed, min_gap=3):

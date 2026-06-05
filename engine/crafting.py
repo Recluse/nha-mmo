@@ -22,6 +22,7 @@ PROPS = {
     "coal":     {"flammable": 9, "energy": 9, "hardness": 4, "carbon": 6},  # hot carbonaceous fuel — smelt/steel/heat
     "wood":     {"flammable": 7, "energy": 5, "hardness": 3, "light": 5},  # chopped from trees; fuel + light material
     "ore":      {"ore": 8, "hardness": 3},                            # raw ore — smelt with fuel to get metal
+    "brine":    {"solvent": 6, "soluble": 8},                         # sea water — boil off with heat to get salt
 }
 
 # crafted item -> its own properties (so items can be ingredients in further combines → tech tree)
@@ -74,6 +75,7 @@ RULE_NOTE = {
     "casing": "plastic + a metal frame — a shell / container / tank",
     "composite": "a light metal (aluminium) + carbon — carbon-fibre, strong and light",
     "rubber": "sulfur + plastic — vulcanised rubber (tyres, seals)",
+    "salt": "boil brine (sea water) dry with a fuel — sea salt",
 }
 
 
@@ -110,6 +112,7 @@ RULES = [
     ("metal",         lambda a: a["has"]("ore") and a["heat"]),
     ("acid",          lambda a: a["has"]("solvent") and a["has"]("acid_former") and a["n_metals"] == 0),
     ("electrolyte",   lambda a: a["has"]("solvent") and (a["has"]("ionic") or a["has"]("acid_former")) and a["n_metals"] == 0),
+    ("salt",          lambda a: a["has"]("soluble") and a["has"]("solvent") and a["heat"] and a["n_metals"] == 0 and not a["has"]("ionic")),
     ("steam",         lambda a: a["has"]("coolant") and a["heat"] and a["n_metals"] == 0 and not a["electrolyte"]),
     ("plastic",       lambda a: a["has"]("lubricant") and a["has"]("carbon") and a["n_metals"] == 0),
     ("rubber",        lambda a: a["has"]("reactive") and a["has"]("moldable") and a["n_metals"] == 0),

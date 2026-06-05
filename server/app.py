@@ -318,7 +318,7 @@ def rules():
     pending = cur.fetchone()["c"]; conn.close()
     return {"resources": crafting.PROPS, "pending": pending, "dynamic": dynamic,
             "recipes": [{"item": k, "needs": crafting.RULE_NOTE.get(k, ""),
-                         "props": crafting.ITEM_PROPS.get(k, {}), "discovered": disc.get(k)}
+                         "props": (crafting.ITEM_PROPS.get(k) or crafting.PROPS.get(k, {})), "discovered": disc.get(k)}
                         for k, _ in crafting.RULES]}
 
 
