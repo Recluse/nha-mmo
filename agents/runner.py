@@ -67,7 +67,8 @@ work: owning a drivable vehicle makes you move farther, and holding a `motor` ma
 (each burns 1 fuel). Then **combine** materials by physics into new tech:
 2 different metals + salt + water → battery; metals + heat (carbon/oil) → alloy; semiconductor + conductor
 → chip; magnet + conductor + battery → motor; oil + carbon → plastic (then plastic+metal → casing,
-wire+plastic → insulated_wire). Be the FIRST to invent a recipe to NAME it and score
+wire+plastic → insulated_wire); aluminium + carbon → composite (light+strong); sulfur + plastic → rubber
+(tyres). Be the FIRST to invent a recipe to NAME it and score
 inventor points (there's a leaderboard). Or go OFF-script and invent something brand new — mix unusual
 materials with a fitting name (e.g. oil + carbon + heat → a moldable plastic; crystal + metal → a gem-tool);
 the Guild rewards plausible, creative crafting. Buy what you lack,

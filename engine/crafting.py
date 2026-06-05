@@ -46,6 +46,8 @@ ITEM_PROPS = {
     "plastic":       {"insulator": 7, "moldable": 8, "light": 6},          # oil + carbon — polymer (insulation/casings)
     "insulated_wire":{"conductivity": 9, "insulator": 8, "shaped": 1},     # wire + plastic — safe conductor
     "casing":        {"hollow": 1, "light": 6, "insulator": 5, "container": 1},  # molded plastic + metal frame — shell/tank
+    "composite":     {"light": 9, "hardness": 8, "shaped": 1},              # light metal + carbon — carbon-fibre (strong + light)
+    "rubber":        {"elastic": 1, "insulator": 6, "grip": 8, "moldable": 4},  # sulfur + plastic — vulcanised (tyres, seals)
 }
 
 # human-readable note per rule (for the Codex / agent hints)
@@ -70,6 +72,8 @@ RULE_NOTE = {
     "plastic": "oil + carbon — a polymer (insulation, light casings)",
     "insulated_wire": "wire + plastic — a safe insulated conductor",
     "casing": "plastic + a metal frame — a shell / container / tank",
+    "composite": "a light metal (aluminium) + carbon — carbon-fibre, strong and light",
+    "rubber": "sulfur + plastic — vulcanised rubber (tyres, seals)",
 }
 
 
@@ -100,6 +104,7 @@ RULES = [
     ("electromagnet", lambda a: a["mx"]("magnetic") >= 6 and a["has"]("conductivity") and a["has"]("stores_power")),
     ("solar_cell",    lambda a: a["has"]("semiconductor") and a["has"]("insulator") and a["has"]("conductivity")),
     ("chip",          lambda a: a["has"]("semiconductor") and a["has"]("conductivity")),
+    ("composite",     lambda a: a["mx"]("light") >= 6 and a["has"]("carbon") and a["n_metals"] >= 1),
     ("steel",         lambda a: a["n_metals"] >= 1 and a["has"]("carbon") and a["heat"] and not a["electrolyte"]),
     ("alloy",         lambda a: a["n_metals"] >= 2 and a["heat"] and not a["electrolyte"]),
     ("metal",         lambda a: a["has"]("ore") and a["heat"]),
@@ -107,6 +112,7 @@ RULES = [
     ("electrolyte",   lambda a: a["has"]("solvent") and (a["has"]("ionic") or a["has"]("acid_former")) and a["n_metals"] == 0),
     ("steam",         lambda a: a["has"]("coolant") and a["heat"] and a["n_metals"] == 0 and not a["electrolyte"]),
     ("plastic",       lambda a: a["has"]("lubricant") and a["has"]("carbon") and a["n_metals"] == 0),
+    ("rubber",        lambda a: a["has"]("reactive") and a["has"]("moldable") and a["n_metals"] == 0),
     ("insulated_wire",lambda a: a["has"]("shaped") and a["has"]("moldable")),
     ("casing",        lambda a: a["has"]("moldable") and a["n_metals"] >= 1),
     ("magnet",        lambda a: a["mx"]("magnetic") >= 6 and a["n_metals"] >= 1 and len(a["ings"]) <= 2),

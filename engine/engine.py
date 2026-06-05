@@ -492,7 +492,7 @@ def seed_demo(conn):
                     (tp, x, y, Json(buffers or {}), Json(attrs or {})))
         return cur.fetchone()[0]
     ent("agent", 0, 0, buffers={"metal": 0})                       # idle starter agent (play.py demo); live agents self-register
-    ent("depot", 0, 0, attrs={"base": {"ore": 2, "fuel": 1, "crystal": 8, "metal": 5, "water": 1,
+    ent("depot", 0, 0, attrs={"base": {"ore": 2, "crystal": 8, "metal": 5, "water": 1,
         "copper": 4, "iron": 3, "aluminum": 4, "carbon": 2, "silicon": 6, "salt": 1, "sulfur": 3, "oil": 4,
         "coal": 3, "wood": 2}})
     ent("market", 0, 0, attrs={"last": {}})                        # holds last clearing prices + world dims (w/h)
