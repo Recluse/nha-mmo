@@ -25,6 +25,8 @@ PROVIDERS = {
                "key": os.environ.get("GITHUB_TOKEN", "")},
     "gemini": {"url": os.environ.get("GEMINI_URL", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
                "key": os.environ.get("GEMINI_API_KEY", "")},
+    "ollama": {"url": os.environ.get("OLLAMA_URL", "http://localhost:11434/v1/chat/completions"),
+               "key": os.environ.get("OLLAMA_KEY", "ollama")},   # local models (no rate limits) — e.g. ollama:gemma2:9b
 }
 
 
