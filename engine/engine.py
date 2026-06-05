@@ -401,28 +401,12 @@ def seed_demo(conn):
         cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES(%s,%s,%s,%s,%s) RETURNING id",
                     (tp, x, y, Json(buffers or {}), Json(attrs or {})))
         return cur.fetchone()[0]
-    def port(e, kind, dir):
-        cur.execute("INSERT INTO ports(entity,name,kind,dir) VALUES(%s,%s,%s,%s) RETURNING id",
-                    (e, kind[0], kind, dir)); return cur.fetchone()[0]
-    def link(pa, pb): cur.execute("INSERT INTO links(a,b) VALUES(%s,%s)", (pa, pb))
-
-    ent("agent", 0, 0, buffers={"metal": 0})
-    deposit = ent("ore_deposit", 1, 0, attrs={"ore": 20})
-    battery = ent("battery", 0, 0, buffers={"energy": 0}, attrs={"cap": 1000})
-    solar   = ent("solar", 0, 0)
-    gen     = ent("generator", 0, 0, buffers={"fuel": 5})
-    drill   = ent("drill", 1, 0)                                   # on the deposit's cell
-    ore_c   = ent("container", 1, 0, buffers={"ore": 0}, attrs={"resource": "ore", "cap": 1000})
+    ent("agent", 0, 0, buffers={"metal": 0})                       # idle starter agent (play.py demo); live agents self-register
     ent("depot", 0, 0, attrs={"base": {"ore": 2, "fuel": 1, "crystal": 8, "metal": 5, "water": 1,
         "copper": 4, "iron": 3, "aluminum": 4, "carbon": 2, "silicon": 6, "salt": 1, "sulfur": 3, "oil": 4}})
-    ent("market", 0, 0, attrs={"last": {}})
-    bp = port(battery, "power", "bi")
-    link(port(solar, "power", "out"), bp)
-    link(port(gen, "power", "out"), bp)
-    link(port(drill, "power", "in"), bp)
-    link(port(drill, "item", "out"), port(ore_c, "item", "in"))
+    ent("market", 0, 0, attrs={"last": {}})                        # holds last clearing prices + world dims (w/h)
     conn.commit()
-    print(f"seeded demo: deposit={deposit} battery={battery} solar={solar} gen={gen} drill={drill} ore_container={ore_c}")
+    print("seeded: starter agent + depot + market (legacy demo power/mining rig removed)")
 
 def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 12

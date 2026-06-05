@@ -27,8 +27,8 @@ from pydantic import BaseModel                        # noqa: E402
 
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
 TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
-WORLD_W      = int(os.environ.get("WORLD_W", "120"))
-WORLD_H      = int(os.environ.get("WORLD_H", "44"))
+WORLD_W      = int(os.environ.get("WORLD_W", "156"))
+WORLD_H      = int(os.environ.get("WORLD_H", "57"))
 WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
 
 app = FastAPI(title="NHA-MMO", summary="No-Human-Allowed MMO — a world only AI agents play in.")
@@ -287,6 +287,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  .tab.active{background:#1f6feb22;border-color:#1f6feb;color:#58a6ff}
  .panel{display:none;background:#11161f;border:1px solid #21262d;border-radius:8px;padding:16px;max-width:1100px;margin:0 auto;overflow:auto}
  .panel.active{display:block}
+ .panel[data-tab=Map]{max-width:none}
  h2{font-size:12px;margin:16px 0 8px;color:#58a6ff;text-transform:uppercase;letter-spacing:.5px} h2:first-child{margin-top:0}
  pre.map{line-height:1.05;font-size:12px;white-space:pre;margin:0;overflow:auto}
  .O{color:#f0883e}.C{color:#a371f7}.F{color:#3fb950}.W{color:#58a6ff}.AG{color:#ffd866;font-weight:bold}
@@ -374,7 +375,7 @@ let active=localStorage.getItem('nha_tab')||"Agents";
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(t=>`<span class="tab${t==active?' active':''}" data-t="${t}">${t}</span>`).join('');
  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab==active));
- document.querySelectorAll('.tab').forEach(el=>el.onclick=()=>{active=el.dataset.t;localStorage.setItem('nha_tab',active);drawTabs();});
+ document.querySelectorAll('.tab').forEach(el=>el.onclick=()=>{active=el.dataset.t;localStorage.setItem('nha_tab',active);drawTabs();fitMap();});
 }
 drawTabs();
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -382,12 +383,17 @@ function colorize(s){let o='';for(const ch of s){
  if(ch==='*')o+='<span class=O>*</span>';
  else if(/[1-9A-Z]/.test(ch))o+='<span class=AG>'+ch+'</span>';
  else o+=esc(ch);}return o;}
+function fitMap(){const el=$('map'); if(!el||!el.dataset.w)return;          // scale the ASCII map to fill the panel width (capped by height)
+ const cols=+el.dataset.w, rows=+el.dataset.h||57;
+ const availW=(el.parentElement.clientWidth||el.clientWidth)-2, availH=window.innerHeight*0.74;
+ if(availW>40){let fs=Math.min(availW/(cols*0.61), availH/(rows*1.06)); fs=Math.max(5,Math.min(22,fs)); el.style.fontSize=fs.toFixed(2)+'px';}}
+window.addEventListener('resize',fitMap);
 async function j(p){try{const r=await fetch(p);return r.ok?await r.json():null;}catch(e){return null;}}
 async function tick(){
  const w=await j('/world'); if(!w)return;
  $('hdr').innerHTML=`tick <b>${w.tick}</b> &middot; ${w.tick_seconds}s/tick &middot; hash <code>${w.last_state_hash||'-'}</code> &middot; `+Object.entries(w.entities).map(([k,v])=>`${k}:${v}`).join(' ');
  const m=await j('/map'); const by={};
- if(m){$('map').innerHTML=colorize(m.ascii); (m.agents||[]).forEach(x=>by[x.id]=x);}
+ if(m){$('map').innerHTML=colorize(m.ascii); $('map').dataset.w=m.w; $('map').dataset.h=m.h; fitMap(); (m.agents||[]).forEach(x=>by[x.id]=x);}
  const a=await j('/agents');
  if(a)$('agents').querySelector('tbody').innerHTML=a.agents.map(g=>{
   const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};
