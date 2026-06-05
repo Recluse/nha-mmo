@@ -1,25 +1,42 @@
 #!/usr/bin/env python3
-"""NHA-MMO live agents — each agent is a Groq LLM (a different model) that plays the world.
+"""NHA-MMO live agents — each agent is an LLM (a different model) that plays the world.
 
-For each agent, round-robin: observe → ask its model for ONE action (a JSON intent) → submit it.
+Multi-provider: every model is written "provider:model_id"; the provider supplies the
+OpenAI-compatible endpoint + API key (Groq via Cloudflare AI Gateway, GitHub Models, Google Gemini).
 The agent's display name IS its model id, so the spectator shows which model is doing what. Pure
-stdlib (urllib) — Groq is OpenAI-compatible, so it's just an HTTP POST with a Bearer key.
+stdlib (urllib) — every provider here is OpenAI-compatible, so it's just an HTTP POST with a Bearer key.
 
-Env: GROQ_API_KEY (required), SERVER_URL, GROQ_URL, AGENT_MODELS (comma list), AGENT_INTERVAL.
+Designed to run on the Google monitoring host: it reaches the world over the PUBLIC url and calls each
+model's API straight from Google (so Gemini isn't geo-blocked the way it is from gw-admin).
+
+Env: SERVER_URL, AGENT_MODELS ("prov:model,prov:model,..."), AGENT_INTERVAL,
+     GROQ_URL/GROQ_API_KEY, GITHUB_URL/GITHUB_TOKEN, GEMINI_URL/GEMINI_API_KEY.
 """
-import os
-import json
-import time
-import random
-import urllib.request
-import urllib.error
+import os, json, time, random, urllib.request, urllib.error
 
-SERVER   = os.environ.get("SERVER_URL", "http://nha-mmo.nha-mmo.svc.cluster.local:8000")
-GROQ_KEY = os.environ["GROQ_API_KEY"]
-GROQ_URL = os.environ.get("GROQ_URL", "https://api.groq.com/openai/v1/chat/completions")
-INTERVAL = float(os.environ.get("AGENT_INTERVAL", "9"))
-MODELS   = [m.strip() for m in os.environ.get(
-    "AGENT_MODELS", "llama-3.3-70b-versatile,llama-3.1-8b-instant,gemma2-9b-it").split(",") if m.strip()]
+SERVER   = os.environ.get("SERVER_URL", "https://nha.recluse.ru")
+INTERVAL = float(os.environ.get("AGENT_INTERVAL", "20"))
+
+# provider -> OpenAI-compatible endpoint + key (only providers with a key end up used)
+PROVIDERS = {
+    "groq":   {"url": os.environ.get("GROQ_URL", "https://api.groq.com/openai/v1/chat/completions"),
+               "key": os.environ.get("GROQ_API_KEY", "")},
+    "github": {"url": os.environ.get("GITHUB_URL", "https://models.github.ai/inference/chat/completions"),
+               "key": os.environ.get("GITHUB_TOKEN", "")},
+    "gemini": {"url": os.environ.get("GEMINI_URL", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
+               "key": os.environ.get("GEMINI_API_KEY", "")},
+}
+
+
+def parse_model(entry):
+    """"github:openai/gpt-4o-mini" -> ("github","openai/gpt-4o-mini"); bare id -> groq."""
+    if ":" in entry and entry.split(":", 1)[0] in PROVIDERS:
+        return tuple(entry.split(":", 1))
+    return ("groq", entry)
+
+
+MODELS = [parse_model(m.strip()) for m in os.environ.get("AGENT_MODELS", "").split(",") if m.strip()]
+MODELS = [(p, m) for (p, m) in MODELS if PROVIDERS.get(p, {}).get("key")]   # drop providers we have no key for
 
 SYSTEM = """You are an autonomous agent in "No Human Allowed" — an MMO that ONLY AI agents play, while
 humans watch. Your identity is your model name: {name}. Goal: thrive AND be fun to watch — gather
@@ -51,11 +68,11 @@ sell what you don't, under/over-cut the market, propose trades, accept good ones
 decisive and varied — don't repeat the same failing action. Reply with ONLY the JSON."""
 
 
-# Cloudflare (in front of the AI Gateway) returns error 1010 for the default Python-urllib UA → pose as a browser.
+# Cloudflare (in front of the Groq AI Gateway) returns error 1010 for the default Python-urllib UA → pose as a browser.
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
-def http(method, path, data=None, headers=None, timeout=25):
-    url = path if path.startswith("http") else SERVER + path
+
+def http(method, url, data=None, headers=None, timeout=30):
     h = {"user-agent": UA}
     if data is not None:
         h["content-type"] = "application/json"
@@ -68,17 +85,22 @@ def http(method, path, data=None, headers=None, timeout=25):
         return json.load(r)
 
 
-def groq(model, system, user):
+def api(path, method="GET", data=None):
+    return http(method, SERVER + path, data)
+
+
+def llm(prov, model, system, user):
+    p = PROVIDERS[prov]
     base = {"model": model, "temperature": 0.85, "max_tokens": 500,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}]}
-    hdr = {"authorization": "Bearer " + GROQ_KEY}
+    hdr = {"authorization": "Bearer " + p["key"]}
     try:                                                   # force JSON (reasoning models need this)
-        out = http("POST", GROQ_URL, {**base, "response_format": {"type": "json_object"}}, headers=hdr)
+        out = http("POST", p["url"], {**base, "response_format": {"type": "json_object"}}, headers=hdr)
     except urllib.error.HTTPError as e:
-        if e.code != 400:
+        if e.code not in (400, 422):                       # some models reject response_format → plain retry
             raise
-        out = http("POST", GROQ_URL, base, headers=hdr)    # model may not support JSON mode → plain
+        out = http("POST", p["url"], base, headers=hdr)
     return out["choices"][0]["message"]["content"] or ""
 
 
@@ -95,16 +117,14 @@ def parse_action(raw):
 def register(model):
     mats = {"metal": random.randint(10, 40), "crystal": random.randint(0, 6),
             "credits": random.randint(120, 260)}
-    return http("POST", "/agents", {"name": model, "materials": mats, "reuse": True})["agent_id"]
+    return api("/agents", "POST", {"name": model, "materials": mats, "reuse": True})["agent_id"]
 
 
-def turn(model, aid, last):
-    obs = http("GET", f"/observe/{aid}")
-    world = http("GET", "/world")
-    market = http("GET", "/market")
-    depot = http("GET", "/depot")
+def turn(prov, model, aid, last):
+    obs = api(f"/observe/{aid}")
+    world = api("/world"); market = api("/market"); depot = api("/depot")
     others = [{"id": o["id"], "name": o["name"], "credits": (o["buffers"] or {}).get("credits", 0)}
-              for o in http("GET", "/agents")["agents"] if o["id"] != aid]
+              for o in api("/agents")["agents"] if o["id"] != aid]
     user = (f"You are agent #{aid} (model {model}).\n"
             f"Your state: {json.dumps(obs, ensure_ascii=False)}\n"
             f"Your last action result: {last or 'none yet'}\n"
@@ -112,43 +132,42 @@ def turn(model, aid, last):
             f"Market last prices: {json.dumps(market['last_prices'])}; open orders: {json.dumps(market['orders'][:8])}\n"
             f"Other agents: {json.dumps(others, ensure_ascii=False)}\n"
             f"World tick {world['tick']}. Choose ONE action as JSON.")
-    raw = groq(model, SYSTEM.format(name=model), user)
+    raw = llm(prov, model, SYSTEM.format(name=model), user)
     verb, args = parse_action(raw)
-    r = http("POST", "/intent", {"agent": aid, "verb": verb, "args": args})
+    api("/intent", "POST", {"agent": aid, "verb": verb, "args": args})
     res = f"{verb} {json.dumps(args, ensure_ascii=False)} -> queued"
     print(f"[{model} #{aid}] {res}", flush=True)
     return res
 
 
 def main():
-    for _ in range(40):                                # wait for the server
+    print(f"server={SERVER} models={[m for _, m in MODELS]}", flush=True)
+    for _ in range(40):                                # wait for the world to be reachable
         try:
-            http("GET", "/healthz"); break
+            api("/healthz"); break
         except Exception:
             time.sleep(3)
     agents = []
-    for m in MODELS:
+    for prov, m in MODELS:
         try:
-            aid = register(m); agents.append([m, aid, None])
-            print(f"registered {m} as #{aid}", flush=True)
+            aid = register(m); agents.append([prov, m, aid, None])
+            print(f"registered {prov}:{m} as #{aid}", flush=True)
         except Exception as e:
-            print(f"register {m} failed: {e}", flush=True)
+            print(f"register {prov}:{m} failed: {e}", flush=True)
     if not agents:
         print("no agents registered; exiting"); return
     i = 0
     while True:
         a = agents[i % len(agents)]
         try:
-            a[2] = turn(a[0], a[1], a[2])
+            a[3] = turn(a[0], a[1], a[2], a[3])
         except urllib.error.HTTPError as e:
             body = e.read().decode()[:140]
-            print(f"[{a[0]}] HTTP {e.code}: {body}", flush=True)
-            if e.code == 429:
-                pass                                   # rate-limited → skip this turn; round-robin re-spaces it
+            print(f"[{a[1]}] HTTP {e.code}: {body}", flush=True)
         except Exception as e:
-            print(f"[{a[0]}] error: {e}", flush=True)
+            print(f"[{a[1]}] error: {e}", flush=True)
         i += 1
-        time.sleep(max(1.0, INTERVAL / len(agents)))   # each agent acts roughly every INTERVAL seconds
+        time.sleep(max(0.8, INTERVAL / len(agents)))   # each agent acts roughly every INTERVAL seconds
 
 
 if __name__ == "__main__":
