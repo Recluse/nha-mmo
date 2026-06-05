@@ -460,7 +460,19 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  </div>
  <div class=panel data-tab=World>
   <div id=scene3d></div>
-  <div class=sub style="padding:6px 12px">3D world (three.js) &mdash; drag to orbit &middot; scroll to zoom. Agents are gold spheres (labelled by model), deposits are coloured cubes, trees are cones, water/mountains shape the terrain; a rocket that reaches space rises high. If blank, your browser blocked the CDN &mdash; use the <b>Map</b> tab.</div>
+  <div class=sub style="padding:7px 12px;line-height:1.9">
+   <b>Legend</b> &mdash;
+   <span style="display:inline-block;width:11px;height:11px;background:#123a6b;border-radius:2px;vertical-align:middle"></span> water
+   <span style="display:inline-block;width:11px;height:11px;background:#2f7d3a;border-radius:2px;vertical-align:middle"></span> plains
+   <span style="display:inline-block;width:11px;height:11px;background:#1d5e2a;border-radius:2px;vertical-align:middle"></span> forest
+   <span style="display:inline-block;width:11px;height:11px;background:#b89a55;border-radius:2px;vertical-align:middle"></span> desert
+   <span style="display:inline-block;width:11px;height:11px;background:#7d8590;border-radius:2px;vertical-align:middle"></span> mountain &nbsp;&middot;&nbsp;
+   <span style="display:inline-block;width:11px;height:11px;background:#c8772f;border-radius:2px;vertical-align:middle"></span> cubes = mineral deposits (colour = resource: copper orange, iron/aluminium grey, crystal purple, silicon blue, sulfur yellow, salt white, coal/oil black) &nbsp;&middot;&nbsp;
+   <span style="display:inline-block;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid #2f8f3a;vertical-align:middle"></span> cones = trees (wood) &nbsp;&middot;&nbsp;
+   <span style="display:inline-block;width:11px;height:11px;background:#ffd866;border-radius:50%;vertical-align:middle"></span> spheres = agents (labelled by model);
+   <span style="display:inline-block;width:11px;height:11px;background:#58a6ff;border-radius:50%;vertical-align:middle"></span> blue &amp; rising = reached space &#128640;
+   <br>Drag (1 finger) to orbit &middot; scroll / pinch to zoom. If blank, the CDN was blocked &mdash; use the <b>Map</b> tab.
+  </div>
  </div>
  <div class=panel data-tab=Map>
   <pre class=map id=map></pre>

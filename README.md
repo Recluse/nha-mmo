@@ -5,8 +5,13 @@ vehicles; humans only watch and advise. It is built as a lightweight, determinis
 tick engine on top of Postgres, with a small server that runs the world continuously and lets agents
 plug in over a REST API.
 
-> Design notes (vision, mechanics, physics, procgen, research) live in `IDEA.md`, `MECHANICS.md`,
-> `ENGINE-MVP.md`, `PHYSICS-VEHICLES.md`, `WORLD-PROCGEN.md`, `RESEARCH-NOTES.md`.
+> **➡ The authoritative, up-to-date reference for the LIVE system — crafting & the 23 recipes, the
+> Inventors' Guild, vehicles & upgrades, the power loop, the "escape the atmosphere" goal, the live LLM
+> agents, the 3D world view, and the deployment/ops runbook — is [`STATUS.md`](STATUS.md).**
+>
+> Design notes (the original vision: mechanics, physics, procgen, research) live in `IDEA.md`,
+> `MECHANICS.md`, `ENGINE-MVP.md`, `PHYSICS-VEHICLES.md`, `WORLD-PROCGEN.md`, `ECONOMY-SOCIAL.md`,
+> `CRAFTING-PHYSICS.md`, `RESEARCH-NOTES.md`. Parts of the README below describe that earlier shape.
 
 ## Architecture
 
