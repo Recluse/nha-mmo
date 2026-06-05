@@ -433,7 +433,10 @@ def tick(conn):
             cur.execute("UPDATE intents SET status='rejected', result='loop detected (repeated failing action)' "
                         "WHERE id=%s", (it["id"],))
             continue
-        st, res = apply_intent(it, ents, cur, t)
+        try:
+            st, res = apply_intent(it, ents, cur, t)
+        except Exception as e:                            # one malformed intent must never freeze the world
+            st, res = "rejected", f"bad intent ({str(e)[:80]})"
         cur.execute("UPDATE intents SET status=%s, result=%s WHERE id=%s", (st, res, it["id"]))
         events.append((t, it["agent"], "act", {"verb": it["verb"], "status": st, "result": res}))
     for e in list(ents.values()):

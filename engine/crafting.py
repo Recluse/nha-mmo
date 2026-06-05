@@ -11,7 +11,7 @@ See ../CRAFTING-PHYSICS.md.
 PROPS = {
     "copper":   {"metal": 1, "conductivity": 9, "ductility": 7, "reactivity": 3},
     "iron":     {"metal": 1, "hardness": 7, "magnetic": 8, "conductivity": 5, "reactivity": 4},
-    "aluminum": {"metal": 1, "conductivity": 7, "light": 8, "reactivity": 6},
+    "aluminum": {"metal": 1, "conductivity": 7, "light": 8, "reactivity": 6, "ductility": 6},
     "carbon":   {"flammable": 9, "energy": 8, "hardness": 5, "carbon": 9},
     "silicon":  {"semiconductor": 8, "hardness": 6},
     "crystal":  {"refraction": 9, "hardness": 8, "insulator": 7},
@@ -41,6 +41,8 @@ ITEM_PROPS = {
     "steam":         {"energy": 5, "pressure": 6, "hot": 1},
     "metal":         {"metal": 1, "hardness": 6},                          # smelted from ore — the vehicle build material
     "steel":         {"metal": 1, "hardness": 10, "magnetic": 3},          # iron + carbon, much harder
+    "acid":          {"acid_former": 9, "reactive": 7, "solvent": 4},      # sulfur + water — corrosive reagent
+    "bearing":       {"lubricant": 8, "metal": 1, "low_friction": 1},      # a metal + oil — low-friction part
 }
 
 # human-readable note per rule (for the Codex / agent hints)
@@ -56,7 +58,9 @@ RULE_NOTE = {
     "glass": "silicon or crystal + heat",
     "lens": "a highly refractive material",
     "engine": "fuel (energy) + a hard metal frame",
-    "wire": "a good conductor metal, drawn out",
+    "wire": "a ductile conductor metal (copper/aluminum), drawn out",
+    "acid": "sulfur + water — a corrosive reagent",
+    "bearing": "a metal + oil — a low-friction part",
     "steam": "water heated by a fuel (coal / wood / oil / carbon)",
     "metal": "raw ore smelted with a fuel (ore + coal / wood / oil)",
     "steel": "iron (a metal) + carbon, smelted hard",
@@ -93,13 +97,15 @@ RULES = [
     ("steel",         lambda a: a["n_metals"] >= 1 and a["has"]("carbon") and a["heat"] and not a["electrolyte"]),
     ("alloy",         lambda a: a["n_metals"] >= 2 and a["heat"] and not a["electrolyte"]),
     ("metal",         lambda a: a["has"]("ore") and a["heat"]),
+    ("acid",          lambda a: a["has"]("solvent") and a["has"]("acid_former") and a["n_metals"] == 0),
     ("electrolyte",   lambda a: a["has"]("solvent") and (a["has"]("ionic") or a["has"]("acid_former")) and a["n_metals"] == 0),
     ("steam",         lambda a: a["has"]("coolant") and a["heat"] and a["n_metals"] == 0 and not a["electrolyte"]),
     ("magnet",        lambda a: a["mx"]("magnetic") >= 6 and a["n_metals"] >= 1 and len(a["ings"]) <= 2),
     ("glass",         lambda a: (a["has"]("semiconductor") or a["has"]("refraction")) and a["heat"]),
     ("lens",          lambda a: a["mx"]("refraction") >= 8 and not a["heat"]),
     ("engine",        lambda a: a["has"]("energy") and a["mx"]("hardness") >= 6 and a["n_metals"] >= 1),
-    ("wire",          lambda a: a["mx"]("conductivity") >= 6 and a["has"]("metal")),
+    ("bearing",       lambda a: a["has"]("metal") and a["has"]("lubricant")),
+    ("wire",          lambda a: a["mx"]("conductivity") >= 6 and a["has"]("ductility") and a["has"]("metal")),
 ]
 
 

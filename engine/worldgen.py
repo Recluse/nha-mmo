@@ -47,12 +47,13 @@ def biome(elev, moist):
 
 GLYPH = {"water": "~", "plains": ".", "forest": "#", "desert": ":", "mountain": "^"}
 # что спавнится, где, с какой вероятностью на клетку и конечным запасом
+# metals listed FIRST in each biome so they aren't crowded out by ore/wood (one deposit per cell, first match)
 DEPOSITS = {
-    "mountain": [("ore", 0.12, 25), ("crystal", 0.05, 8), ("copper", 0.06, 18),
-                 ("iron", 0.07, 20), ("aluminum", 0.05, 16), ("sulfur", 0.03, 12), ("coal", 0.06, 22)],
-    "plains":   [("wood", 0.05, 16), ("carbon", 0.05, 18), ("salt", 0.04, 14)],
-    "forest":   [("wood", 0.12, 22), ("coal", 0.04, 16), ("carbon", 0.05, 16), ("oil", 0.03, 14)],
-    "desert":   [("silicon", 0.10, 22), ("salt", 0.06, 16), ("oil", 0.05, 18), ("sulfur", 0.04, 12)],
+    "mountain": [("copper", 0.07, 20), ("iron", 0.08, 22), ("aluminum", 0.06, 18), ("ore", 0.07, 25),
+                 ("crystal", 0.05, 8), ("coal", 0.07, 22), ("sulfur", 0.04, 12)],
+    "plains":   [("iron", 0.03, 14), ("copper", 0.03, 12), ("wood", 0.05, 16), ("carbon", 0.05, 18), ("salt", 0.04, 14)],
+    "forest":   [("copper", 0.03, 12), ("wood", 0.11, 22), ("coal", 0.04, 16), ("carbon", 0.05, 16), ("oil", 0.03, 14)],
+    "desert":   [("aluminum", 0.03, 14), ("silicon", 0.10, 22), ("salt", 0.06, 16), ("oil", 0.05, 18), ("sulfur", 0.04, 12)],
     "water":    [("water", 0.04, 999)],
 }
 
