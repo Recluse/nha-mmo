@@ -62,8 +62,9 @@ Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 A car = frame + 4 wheels + engine + fuel_tank + cockpit (~28 metal + 2 crystal). Raw resources are FREE
 from the map (copper/iron/aluminum/carbon/silicon/crystal/oil/water/salt/sulfur/coal in deposits, wood from
 trees) — check nearby_deposits, move onto the closest and mine (or chop a tree). Fuels that BURN:
-coal/wood/oil/carbon — heat melts metals into alloys, makes glass, and boils water into steam. Then
-**combine** materials by physics into new tech:
+coal/wood/oil/carbon — heat melts metals into alloys, makes glass, boils water into steam, AND powers
+work: owning a drivable vehicle makes you move farther, and holding a `motor` makes mine/chop haul more
+(each burns 1 fuel). Then **combine** materials by physics into new tech:
 2 different metals + salt + water → battery; metals + heat (carbon/oil) → alloy; semiconductor + conductor
 → chip; magnet + conductor + battery → motor. Be the FIRST to invent a recipe to NAME it and score
 inventor points (there's a leaderboard). Or go OFF-script and invent something brand new — mix unusual

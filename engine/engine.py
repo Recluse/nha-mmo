@@ -274,15 +274,23 @@ def apply_intent(it, ents, cur, t):
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,%s,%s)",
                     (t, a["id"], rcpt, text))
         return "applied", (f"tell #{rcpt}: " if rcpt else "say: ") + text[:60]
-    if verb == "move":                                   # roam the map (dx,dy, up to 3 cells/step)
+    if verb == "move":                                   # roam (3 cells on foot; a drivable vehicle + fuel goes farther)
         mkt = next((x for x in ents.values() if x["type"] == "market"), None)
         w = int(mkt["attrs"].get("w", 96)) if mkt else 96
         h = int(mkt["attrs"].get("h", 36)) if mkt else 36
-        dx = max(-3, min(3, int(args.get("dx", 0))))
-        dy = max(-3, min(3, int(args.get("dy", 0))))
+        rng, drove = 3, ""
+        cur.execute("SELECT max((attrs->>'v_ground')::int) v FROM entities "
+                    "WHERE type='vehicle' AND owner=%s AND (attrs->>'drives')::boolean", (a["id"],))
+        vr = cur.fetchone(); vmax = (vr["v"] if vr else 0) or 0
+        if vmax:                                          # burn 1 fuel to drive — range scales with the car
+            fuel = next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1), None)
+            if fuel:
+                addb(a, fuel, -1); rng = min(10, 3 + vmax // 6); drove = f" (drove on {fuel}, range {rng})"
+        dx = max(-rng, min(rng, int(args.get("dx", 0))))
+        dy = max(-rng, min(rng, int(args.get("dy", 0))))
         a["x"] = max(0, min(w - 1, a["x"] + dx))
         a["y"] = max(0, min(h - 1, a["y"] + dy))
-        return "applied", f"moved to ({a['x']},{a['y']})"
+        return "applied", f"moved to ({a['x']},{a['y']})" + drove
     if verb in ("mine", "chop"):                         # gather from the nearest node (mine=minerals, chop=trees/wood)
         n = int(args.get("n", 5))
         want_wood = (verb == "chop")
@@ -298,10 +306,15 @@ def apply_intent(it, ents, cur, t):
         a["x"], a["y"] = dep["x"], dep["y"]              # walk over to it
         r = dep["attrs"]["resource"]; have = int(dep["attrs"].get("amount", 0))
         took = min(max(1, n), have)
+        powered = ""
+        if get(a, "motor") >= 1:                          # a motor + fuel powers the tool → bigger haul
+            fuel = next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1 and f != r), None)
+            if fuel:
+                addb(a, fuel, -1); took = min(have, took + took // 2 + 1); powered = f" (powered, -1 {fuel})"
         dep["attrs"]["amount"] = have - took
         addb(a, r, took)
         verbed = "chopped" if want_wood else "mined"
-        return "applied", f"{verbed} {took} {r} at ({dep['x']},{dep['y']}); {have - took} left"
+        return "applied", f"{verbed} {took} {r} at ({dep['x']},{dep['y']}); {have - took} left" + powered
     if verb == "combine":                                # mix resources into a NEW item by physics rules
         ings = args.get("ingredients", {}) or {}
         try:
