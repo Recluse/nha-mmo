@@ -143,6 +143,28 @@ def world_map():
             "ascii": worldgen.ascii_map(_grid(), deps, markers), "agents": legend}
 
 
+_BIOME_CODE = {"water": "~", "plains": ".", "forest": "#", "desert": ":", "mountain": "^"}
+
+
+@app.get("/scene")
+def scene():
+    """Structured world for the 3D view: biome grid (rows of codes) + live deposits + online agents."""
+    grid = _grid()
+    rows = ["".join(_BIOME_CODE.get(c, ".") for c in row) for row in grid]
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT x, y, attrs->>'resource' res FROM entities WHERE type='deposit' "
+                "AND attrs->>'gen_seed'=%s AND (attrs->>'amount')::int > 0", (str(WORLD_SEED),))
+    deposits = [{"x": r["x"], "y": r["y"], "res": r["res"]} for r in cur.fetchall()]
+    cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
+    cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'altitude')::int alt, "
+                "(attrs->>'in_space')::boolean space FROM entities e WHERE type='agent' AND EXISTS "
+                "(SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) ORDER BY id", (t - 90,))
+    agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
+               "alt": r["alt"] or 0, "space": bool(r["space"])} for r in cur.fetchall()]
+    conn.close()
+    return {"w": WORLD_W, "h": WORLD_H, "biomes": rows, "deposits": deposits, "agents": agents}
+
+
 @app.get("/observe/{agent_id}")
 def observe_ep(agent_id: int):
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -394,6 +416,7 @@ def guild_verdict(v: Verdict):
 
 
 DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human Allowed — NHA-MMO</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
  body{background:#0b0e14;color:#c9d1d9;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
  .head{text-align:center;margin-bottom:8px} .head img{height:130px}
@@ -404,6 +427,8 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  .panel{display:none;background:#11161f;border:1px solid #21262d;border-radius:8px;padding:16px;max-width:1100px;margin:0 auto;overflow:auto}
  .panel.active{display:block}
  .panel[data-tab=Map]{max-width:none}
+ .panel[data-tab=World]{max-width:none;padding:0;overflow:hidden}
+ #scene3d{width:100%;height:74vh;display:block;cursor:grab}
  h2{font-size:12px;margin:16px 0 8px;color:#58a6ff;text-transform:uppercase;letter-spacing:.5px} h2:first-child{margin-top:0}
  pre.map{line-height:1.05;font-size:12px;white-space:pre;margin:0;overflow:auto}
  .O{color:#f0883e}.C{color:#a371f7}.F{color:#3fb950}.W{color:#58a6ff}.AG{color:#ffd866;font-weight:bold}
@@ -429,9 +454,13 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  <div class=panel data-tab=Agents>
   <h2>Online agents</h2>
   <div id=spacerace class=sub style="margin-bottom:8px">&#128640; Space race &mdash; build a rocket and <code>launch</code> to altitude 100 to escape the atmosphere.</div>
-  <table id=agents><thead><tr><th><th>id<th>model<th>credits<th>inventory<th>parts<th>cars<th>alt<th>pos</tr></thead><tbody></tbody></table>
+  <table id=agents><thead><tr><th><th>id<th>model<th>credits<th>inventory<th>parts<th>vehicles<th>alt<th>pos</tr></thead><tbody></tbody></table>
   <h2>Depot prices (buy = depot pays you / sell = you pay)</h2><div id=depot class=sub>...</div>
   <h2>Market &mdash; order book + last clearing prices</h2><div id=market class=sub>...</div>
+ </div>
+ <div class=panel data-tab=World>
+  <div id=scene3d></div>
+  <div class=sub style="padding:6px 12px">3D world (three.js) &mdash; drag to orbit &middot; scroll to zoom. Agents are gold spheres (labelled by model), deposits are coloured cubes, trees are cones, water/mountains shape the terrain; a rocket that reaches space rises high. If blank, your browser blocked the CDN &mdash; use the <b>Map</b> tab.</div>
  </div>
  <div class=panel data-tab=Map>
   <pre class=map id=map></pre>
@@ -527,12 +556,12 @@ while True:
 </div>
 <script>
 const $=id=>document.getElementById(id);
-const TABS=["Agents","Map","Inventors","Codex","Chat","Log","Connect","About"];
+const TABS=["Agents","Map","World","Inventors","Codex","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(t=>`<span class="tab${t==active?' active':''}" data-t="${t}">${t}</span>`).join('');
  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab==active));
- document.querySelectorAll('.tab').forEach(el=>el.onclick=()=>{active=el.dataset.t;localStorage.setItem('nha_tab',active);drawTabs();fitMap();});
+ document.querySelectorAll('.tab').forEach(el=>el.onclick=()=>{active=el.dataset.t;localStorage.setItem('nha_tab',active);drawTabs();fitMap();if(active=='World')setTimeout(initWorld3D,60);});
 }
 drawTabs();
 const sendMsg=async()=>{const nick=$('nick').value.trim(), msg=$('msg').value.trim(); if(!nick||!msg)return;
@@ -605,7 +634,61 @@ async function tick(){
   $('codex_res').innerHTML='<table><tr><th>resource<th>properties</tr>'+Object.entries(rl.resources).map(([r,p])=>`<tr><td><b>${r}</b><td class=sub>${Object.entries(p).map(([k,v])=>k+' '+v).join(', ')}</tr>`).join('')+'</table>';
  }
 }
+// ---------- 3D world (three.js, lazy-initialised when the World tab opens) ----------
+let S3=null;
+function initWorld3D(){
+ if(S3||!window.THREE)return;
+ const host=$('scene3d'); if(!host||host.clientWidth<10)return;          // only once the panel is visible
+ const T=window.THREE;
+ const ren=new T.WebGLRenderer({antialias:true}); ren.setSize(host.clientWidth,host.clientHeight); host.appendChild(ren.domElement);
+ const sc=new T.Scene(); sc.background=new T.Color(0x070b12); sc.fog=new T.Fog(0x070b12,200,560);
+ const cam=new T.PerspectiveCamera(55, host.clientWidth/host.clientHeight, 0.5, 3000);
+ sc.add(new T.AmbientLight(0xffffff,0.75));
+ const sun=new T.DirectionalLight(0xfff0d0,0.9); sun.position.set(80,160,50); sc.add(sun);
+ const depG=new T.Group(), agG=new T.Group(); sc.add(depG); sc.add(agG);
+ let yaw=0.7,pitch=0.85,dist=170;
+ function place(){const cy=Math.max(0.16,Math.min(1.45,pitch));cam.position.set(dist*Math.sin(yaw)*Math.cos(cy),dist*Math.sin(cy)+18,dist*Math.cos(yaw)*Math.cos(cy));cam.lookAt(0,0,0);}
+ let drag=false,lx=0,ly=0;
+ ren.domElement.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY;});
+ window.addEventListener('mouseup',()=>{drag=false;});
+ window.addEventListener('mousemove',e=>{if(!drag)return;yaw-=(e.clientX-lx)*0.006;pitch-=(e.clientY-ly)*0.006;lx=e.clientX;ly=e.clientY;});
+ ren.domElement.addEventListener('wheel',e=>{dist=Math.max(50,Math.min(600,dist+e.deltaY*0.12));e.preventDefault();},{passive:false});
+ window.addEventListener('resize',()=>{if(host.clientWidth>10){ren.setSize(host.clientWidth,host.clientHeight);cam.aspect=host.clientWidth/host.clientHeight;cam.updateProjectionMatrix();}});
+ const BIO={'~':[0x123a6b,-1.6],'.':[0x2f7d3a,0],'#':[0x1d5e2a,1.3],':':[0xb89a55,0.3],'^':[0x7d8590,5.5]};
+ const RESCOL={copper:0xc8772f,iron:0x9aa0a6,aluminum:0xd0d4d8,ore:0x8a6d3b,crystal:0xa371f7,silicon:0x5577aa,coal:0x1a1a1a,carbon:0x3a3a3a,sulfur:0xd6c64a,oil:0x0d0d0d,salt:0xeeeeee,brine:0x3a6ea5,water:0x3a6ea5};
+ let W=156,Hh=57,hmap=null;
+ function hAt(x,y){if(!hmap)return 0;return hmap[Math.max(0,Math.min(Hh-1,y))][Math.max(0,Math.min(W-1,x))];}
+ function P(x,y){return [x-W/2,hAt(x,y),y-Hh/2];}
+ function buildTerrain(bio,w,h){
+  W=w;Hh=h;hmap=[];for(let y=0;y<h;y++){hmap[y]=[];for(let x=0;x<w;x++)hmap[y][x]=(BIO[(bio[y]||'')[x]]||BIO['.'])[1];}
+  const geo=new T.PlaneGeometry(w,h,w-1,h-1); geo.rotateX(-Math.PI/2);
+  const pos=geo.attributes.position,col=[];
+  for(let i=0;i<pos.count;i++){const vx=i%w,vy=Math.floor(i/w);const b=BIO[(bio[vy]||'')[vx]]||BIO['.'];pos.setY(i,b[1]);const c=new T.Color(b[0]);col.push(c.r,c.g,c.b);}
+  geo.setAttribute('color',new T.Float32BufferAttribute(col,3)); geo.computeVertexNormals();
+  sc.add(new T.Mesh(geo,new T.MeshLambertMaterial({vertexColors:true,flatShading:true})));
+ }
+ const gBox=new T.BoxGeometry(0.85,0.85,0.85), gTree=new T.ConeGeometry(0.55,1.8,6), gAg=new T.SphereGeometry(0.95,12,10);
+ function buildDeposits(ds){
+  while(depG.children.length)depG.remove(depG.children[0]);
+  ds.forEach(d=>{const p=P(d.x,d.y);
+   if(d.res==='wood'){const m=new T.Mesh(gTree,new T.MeshLambertMaterial({color:0x2f8f3a}));m.position.set(p[0],p[1]+0.9,p[2]);depG.add(m);}
+   else{const m=new T.Mesh(gBox,new T.MeshLambertMaterial({color:RESCOL[d.res]||0xcccccc}));m.position.set(p[0],p[1]+0.5,p[2]);depG.add(m);}});
+ }
+ function label(txt){const c=document.createElement('canvas');c.width=256;c.height=64;const g=c.getContext('2d');g.fillStyle='rgba(8,10,18,0.7)';g.fillRect(0,0,256,64);g.font='26px monospace';g.fillStyle='#ffd866';g.fillText(String(txt).slice(0,19),6,41);const tx=new T.CanvasTexture(c);const sp=new T.Sprite(new T.SpriteMaterial({map:tx,depthTest:false}));sp.scale.set(13,3.2,1);return sp;}
+ function buildAgents(as){
+  while(agG.children.length)agG.remove(agG.children[0]);
+  as.forEach(a=>{const p=P(a.x,a.y),yy=p[1]+1.3+(a.alt||0)/9;
+   const m=new T.Mesh(gAg,new T.MeshLambertMaterial({color:a.space?0x58a6ff:0xffd866}));m.position.set(p[0],yy,p[2]);agG.add(m);
+   const lb=label((a.space?'\\u{1F680} ':'')+(a.name||('#'+a.id)));lb.position.set(p[0],yy+2.4,p[2]);agG.add(lb);});
+ }
+ let built=false;
+ async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);}
+ refresh(); setInterval(refresh,3000);
+ (function loop(){requestAnimationFrame(loop);if(host.offsetParent===null)return;place();ren.render(sc,cam);})();
+ S3={};
+}
 tick(); setInterval(tick, 2000);
+if(active=='World')setTimeout(initWorld3D,150);
 </script></body></html>"""
 
 
