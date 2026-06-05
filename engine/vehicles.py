@@ -44,8 +44,9 @@ PART_UPGRADES = {
     "tail":      {"alloy": {"maneuver": 4, "mass": -8}},
     "propeller": {"bearing": {"thrust_pp": 1}, "alloy": {"mass": -12}},
     "jet":       {"steel": {"thrust": 150, "mass": 20}},
-    "cockpit":   {"chip": {"maneuver": 5, "control": 1}, "glass": {"maneuver": 2}, "lens": {"control": 1}},
-    "fuel_tank": {"steel": {"fuel_cap": 120}},
+    "cockpit":   {"chip": {"maneuver": 5, "control": 1}, "glass": {"maneuver": 2}, "lens": {"control": 1}, "casing": {"mass": -10}},
+    "fuel_tank": {"steel": {"fuel_cap": 120}, "casing": {"fuel_cap": 100, "mass": -8}},
+    "panel":     {"plastic": {"mass": -12}, "casing": {"strength": 30, "mass": -15}},
 }
 
 

@@ -43,6 +43,9 @@ ITEM_PROPS = {
     "steel":         {"metal": 1, "hardness": 10, "magnetic": 3},          # iron + carbon, much harder
     "acid":          {"acid_former": 9, "reactive": 7, "solvent": 4},      # sulfur + water — corrosive reagent
     "bearing":       {"lubricant": 8, "metal": 1, "low_friction": 1},      # a metal + oil — low-friction part
+    "plastic":       {"insulator": 7, "moldable": 8, "light": 6},          # oil + carbon — polymer (insulation/casings)
+    "insulated_wire":{"conductivity": 9, "insulator": 8, "shaped": 1},     # wire + plastic — safe conductor
+    "casing":        {"hollow": 1, "light": 6, "insulator": 5, "container": 1},  # molded plastic + metal frame — shell/tank
 }
 
 # human-readable note per rule (for the Codex / agent hints)
@@ -64,6 +67,9 @@ RULE_NOTE = {
     "steam": "water heated by a fuel (coal / wood / oil / carbon)",
     "metal": "raw ore smelted with a fuel (ore + coal / wood / oil)",
     "steel": "iron (a metal) + carbon, smelted hard",
+    "plastic": "oil + carbon — a polymer (insulation, light casings)",
+    "insulated_wire": "wire + plastic — a safe insulated conductor",
+    "casing": "plastic + a metal frame — a shell / container / tank",
 }
 
 
@@ -100,6 +106,9 @@ RULES = [
     ("acid",          lambda a: a["has"]("solvent") and a["has"]("acid_former") and a["n_metals"] == 0),
     ("electrolyte",   lambda a: a["has"]("solvent") and (a["has"]("ionic") or a["has"]("acid_former")) and a["n_metals"] == 0),
     ("steam",         lambda a: a["has"]("coolant") and a["heat"] and a["n_metals"] == 0 and not a["electrolyte"]),
+    ("plastic",       lambda a: a["has"]("lubricant") and a["has"]("carbon") and a["n_metals"] == 0),
+    ("insulated_wire",lambda a: a["has"]("shaped") and a["has"]("moldable")),
+    ("casing",        lambda a: a["has"]("moldable") and a["n_metals"] >= 1),
     ("magnet",        lambda a: a["mx"]("magnetic") >= 6 and a["n_metals"] >= 1 and len(a["ings"]) <= 2),
     ("glass",         lambda a: (a["has"]("semiconductor") or a["has"]("refraction")) and a["heat"]),
     ("lens",          lambda a: a["mx"]("refraction") >= 8 and not a["heat"]),
