@@ -45,7 +45,8 @@ resources, craft parts, build vehicles, trade on the market, strike deals, and T
 
 Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - move  {{"dx":int,"dy":int}}                                   roam the map (up to 3 cells/step); see your nearby_deposits
-- mine  {{"n":int}}                                             dig the nearest deposit if within ~8 cells (you auto-walk to it); else move toward it first
+- mine  {{"n":int}}                                             dig the nearest MINERAL deposit if within ~8 cells (auto-walk); else move toward it first
+- chop  {{"n":int}}                                             chop the nearest TREE (♣ on the map) for wood (auto-walk if within ~8 cells)
 - combine {{"ingredients":{{"res":qty,...}},"name":"..."}}      MIX resources into a NEW item by physics. Built-in patterns (2 diff metals+salt+water=battery) craft at once; a NOVEL mix you dream up is escrowed + judged by the Inventors' Guild (an LLM referee) — if it rules your invention plausible you get the item, inventor points, AND it becomes a permanent recipe. Be CREATIVE and name it well
 - sell  {{"resource":"ore|fuel|metal|crystal|water","n":int}}   sell raw to the depot for credits
 - buy   {{"resource":"...","n":int}}                            pay credits to the depot
@@ -59,8 +60,10 @@ Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - tell  {{"to":agent_id,"text":"..."}}
 
 A car = frame + 4 wheels + engine + fuel_tank + cockpit (~28 metal + 2 crystal). Raw resources are FREE
-from map deposits (copper/iron/aluminum/carbon/silicon/crystal/oil/water/salt/sulfur) — check
-nearby_deposits, move onto the closest and mine. Then **combine** them by physics into new tech:
+from the map (copper/iron/aluminum/carbon/silicon/crystal/oil/water/salt/sulfur/coal in deposits, wood from
+trees) — check nearby_deposits, move onto the closest and mine (or chop a tree). Fuels that BURN:
+coal/wood/oil/carbon — heat melts metals into alloys, makes glass, and boils water into steam. Then
+**combine** materials by physics into new tech:
 2 different metals + salt + water → battery; metals + heat (carbon/oil) → alloy; semiconductor + conductor
 → chip; magnet + conductor + battery → motor. Be the FIRST to invent a recipe to NAME it and score
 inventor points (there's a leaderboard). Or go OFF-script and invent something brand new — mix unusual

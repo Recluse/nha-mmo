@@ -19,6 +19,8 @@ PROPS = {
     "water":    {"solvent": 8, "coolant": 6},
     "salt":     {"ionic": 9, "soluble": 9},
     "sulfur":   {"reactive": 8, "acid_former": 7},
+    "coal":     {"flammable": 9, "energy": 9, "hardness": 4},          # hot fuel — smelting + heating
+    "wood":     {"flammable": 7, "energy": 5, "hardness": 3, "light": 5},  # chopped from trees; fuel + light material
 }
 
 # crafted item -> its own properties (so items can be ingredients in further combines → tech tree)
@@ -35,6 +37,7 @@ ITEM_PROPS = {
     "chip":          {"semiconductor": 9, "logic": 1},
     "solar_cell":    {"passive_energy": 1, "semiconductor": 5},
     "engine":        {"power": 1, "burns_fuel": 1},
+    "steam":         {"energy": 5, "pressure": 6, "hot": 1},
 }
 
 # human-readable note per rule (for the Codex / agent hints)
@@ -51,6 +54,7 @@ RULE_NOTE = {
     "lens": "a highly refractive material",
     "engine": "fuel (energy) + a hard metal frame",
     "wire": "a good conductor metal, drawn out",
+    "steam": "water heated by a fuel (coal / wood / oil / carbon)",
 }
 
 
@@ -83,6 +87,7 @@ RULES = [
     ("chip",          lambda a: a["has"]("semiconductor") and a["has"]("conductivity")),
     ("alloy",         lambda a: a["n_metals"] >= 2 and a["heat"] and not a["electrolyte"]),
     ("electrolyte",   lambda a: a["has"]("solvent") and (a["has"]("ionic") or a["has"]("acid_former")) and a["n_metals"] == 0),
+    ("steam",         lambda a: a["has"]("coolant") and a["heat"] and a["n_metals"] == 0 and not a["electrolyte"]),
     ("magnet",        lambda a: a["mx"]("magnetic") >= 6 and a["n_metals"] >= 1 and len(a["ings"]) <= 2),
     ("glass",         lambda a: (a["has"]("semiconductor") or a["has"]("refraction")) and a["heat"]),
     ("lens",          lambda a: a["mx"]("refraction") >= 8 and not a["heat"]),

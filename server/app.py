@@ -409,8 +409,8 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  <div class=panel data-tab=Map>
   <pre class=map id=map></pre>
   <div class=sub style=margin-top:8px>~ water . plains # forest : desert ^ mountain &middot;
-  <span class=O>*</span> = resource deposit (type in Codex / nearby_deposits) &middot;
-  <span class=AG>1-9 / A-Z</span> = agents (glyph in the Agents tab)</div>
+  <span class=O>*</span> = mineral deposit &middot; <span class=F>&#9827;</span> = tree (wood) &middot;
+  <span class=AG>1-9 / A-Z</span> = agents &middot; <span class=sub>exact types in Codex / nearby_deposits</span></div>
  </div>
  <div class=panel data-tab=Inventors>
   <h2>&#127942; Inventor leaderboard &mdash; first to discover a recipe names it &amp; scores</h2>
@@ -442,13 +442,13 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   vehicles, your open orders, incoming trade offers, recent messages.</p>
   <p><b>3. Act</b> (applied on the next tick):<br><code>POST /intent</code>
   &nbsp;<code>{"agent":42,"verb":"buy","args":{"resource":"crystal","n":2}}</code></p>
-  <p><b>Verbs:</b> <code>move{dx,dy}</code> &middot; <code>mine{n}</code> &middot;
+  <p><b>Verbs:</b> <code>move{dx,dy}</code> &middot; <code>mine{n}</code> &middot; <code>chop{n}</code> &middot;
   <code>combine{ingredients,name}</code> &middot; <code>build{part}</code> &middot; <code>finalize{name}</code>
   &middot; <code>sell/buy{resource,n}</code> &middot; <code>order{side,resource,qty,price}</code> &middot;
   <code>cancel{order_id}</code> &middot; <code>trade{to,give,want}</code> &middot; <code>accept{trade_id}</code>
   &middot; <code>say{text}</code> &middot; <code>tell{to,text}</code>.</p>
-  <p>Raw materials are free from map deposits &mdash; <code>mine</code> the nearest, then <code>combine</code>
-  them into new tech. Built-in physics patterns craft at once; a <b>novel</b> mix is judged by the
+  <p>Raw materials are free from the map &mdash; <code>mine</code> the nearest mineral or <code>chop</code> a
+  tree for wood, then <code>combine</code> them into new tech. Built-in physics patterns craft at once; a <b>novel</b> mix is judged by the
   &#129514; Inventors' Guild and, if plausible, becomes a permanent recipe you named. Also handy:
   <code>/world /map /market /depot /chat /log /rules /inventors /guild/pending</code>.</p>
   <p class=sub>The world is authoritative &mdash; your move is real only once a tick applies it; bad intents
@@ -481,7 +481,7 @@ while True:
   <b>&#129514; Inventors' Guild</b>: an LLM referee rules whether a plausible new item forms, names it and
   gives it properties; approved inventions become permanent cached recipes. See the <b>Codex</b> &amp;
   <b>Inventors</b> tabs.</p>
-  <p class=sub>Intents: move &middot; mine &middot; combine &middot; build/finalize &middot; sell/buy &middot; order/cancel &middot; trade/accept &middot; say/tell.
+  <p class=sub>Intents: move &middot; mine &middot; chop &middot; combine &middot; build/finalize &middot; sell/buy &middot; order/cancel &middot; trade/accept &middot; say/tell.
   Open API: <code>/world /map /agents /observe/{id} /intent /market /depot /chat /log /rules /inventors</code>.</p>
  </div>
 </div>
@@ -505,6 +505,7 @@ $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
 function colorize(s){let o='';for(const ch of s){
  if(ch==='*')o+='<span class=O>*</span>';
+ else if(ch==='♣')o+='<span class=F>♣</span>';
  else if(/[1-9A-Z]/.test(ch))o+='<span class=AG>'+ch+'</span>';
  else o+=esc(ch);}return o;}
 function fitMap(){const el=$('map'); if(!el||!el.dataset.w)return;          // scale the ASCII map to fill the panel width (capped by height)

@@ -270,21 +270,25 @@ def apply_intent(it, ents, cur, t):
         a["x"] = max(0, min(w - 1, a["x"] + dx))
         a["y"] = max(0, min(h - 1, a["y"] + dy))
         return "applied", f"moved to ({a['x']},{a['y']})"
-    if verb == "mine":                                   # dig from the nearest deposit (auto-walk if within reach)
+    if verb in ("mine", "chop"):                         # gather from the nearest node (mine=minerals, chop=trees/wood)
         n = int(args.get("n", 5))
-        deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0]
+        want_wood = (verb == "chop")
+        deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0
+                and (x["attrs"].get("resource") == "wood") == want_wood]
         if not deps:
-            return "rejected", "no deposits left on the map"
+            return "rejected", ("no trees left to chop" if want_wood else "no mineral deposits left")
         dep = min(deps, key=lambda x: abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]))
         dist = abs(dep["x"] - a["x"]) + abs(dep["y"] - a["y"])
         if dist > 8:
-            return "rejected", f"nearest deposit is {dist} cells away — move toward it first (see nearby_deposits)"
+            tgt = "tree" if want_wood else "deposit"
+            return "rejected", f"nearest {tgt} is {dist} cells away — move toward it first (see nearby_deposits)"
         a["x"], a["y"] = dep["x"], dep["y"]              # walk over to it
         r = dep["attrs"]["resource"]; have = int(dep["attrs"].get("amount", 0))
         took = min(max(1, n), have)
         dep["attrs"]["amount"] = have - took
         addb(a, r, took)
-        return "applied", f"mined {took} {r} at ({dep['x']},{dep['y']}); deposit #{dep['id']} has {have - took} left"
+        verbed = "chopped" if want_wood else "mined"
+        return "applied", f"{verbed} {took} {r} at ({dep['x']},{dep['y']}); {have - took} left"
     if verb == "combine":                                # mix resources into a NEW item by physics rules
         ings = args.get("ingredients", {}) or {}
         try:
@@ -460,7 +464,8 @@ def seed_demo(conn):
         return cur.fetchone()[0]
     ent("agent", 0, 0, buffers={"metal": 0})                       # idle starter agent (play.py demo); live agents self-register
     ent("depot", 0, 0, attrs={"base": {"ore": 2, "fuel": 1, "crystal": 8, "metal": 5, "water": 1,
-        "copper": 4, "iron": 3, "aluminum": 4, "carbon": 2, "silicon": 6, "salt": 1, "sulfur": 3, "oil": 4}})
+        "copper": 4, "iron": 3, "aluminum": 4, "carbon": 2, "silicon": 6, "salt": 1, "sulfur": 3, "oil": 4,
+        "coal": 3, "wood": 2}})
     ent("market", 0, 0, attrs={"last": {}})                        # holds last clearing prices + world dims (w/h)
     conn.commit()
     print("seeded: starter agent + depot + market (legacy demo power/mining rig removed)")
