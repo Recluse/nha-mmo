@@ -12,15 +12,16 @@ PROPS = {
     "copper":   {"metal": 1, "conductivity": 9, "ductility": 7, "reactivity": 3},
     "iron":     {"metal": 1, "hardness": 7, "magnetic": 8, "conductivity": 5, "reactivity": 4},
     "aluminum": {"metal": 1, "conductivity": 7, "light": 8, "reactivity": 6},
-    "carbon":   {"flammable": 9, "energy": 8, "hardness": 5},
+    "carbon":   {"flammable": 9, "energy": 8, "hardness": 5, "carbon": 9},
     "silicon":  {"semiconductor": 8, "hardness": 6},
     "crystal":  {"refraction": 9, "hardness": 8, "insulator": 7},
     "oil":      {"flammable": 8, "energy": 9, "lubricant": 8},
     "water":    {"solvent": 8, "coolant": 6},
     "salt":     {"ionic": 9, "soluble": 9},
     "sulfur":   {"reactive": 8, "acid_former": 7},
-    "coal":     {"flammable": 9, "energy": 9, "hardness": 4},          # hot fuel — smelting + heating
+    "coal":     {"flammable": 9, "energy": 9, "hardness": 4, "carbon": 6},  # hot carbonaceous fuel — smelt/steel/heat
     "wood":     {"flammable": 7, "energy": 5, "hardness": 3, "light": 5},  # chopped from trees; fuel + light material
+    "ore":      {"ore": 8, "hardness": 3},                            # raw ore — smelt with fuel to get metal
 }
 
 # crafted item -> its own properties (so items can be ingredients in further combines → tech tree)
@@ -38,6 +39,8 @@ ITEM_PROPS = {
     "solar_cell":    {"passive_energy": 1, "semiconductor": 5},
     "engine":        {"power": 1, "burns_fuel": 1},
     "steam":         {"energy": 5, "pressure": 6, "hot": 1},
+    "metal":         {"metal": 1, "hardness": 6},                          # smelted from ore — the vehicle build material
+    "steel":         {"metal": 1, "hardness": 10, "magnetic": 3},          # iron + carbon, much harder
 }
 
 # human-readable note per rule (for the Codex / agent hints)
@@ -55,6 +58,8 @@ RULE_NOTE = {
     "engine": "fuel (energy) + a hard metal frame",
     "wire": "a good conductor metal, drawn out",
     "steam": "water heated by a fuel (coal / wood / oil / carbon)",
+    "metal": "raw ore smelted with a fuel (ore + coal / wood / oil)",
+    "steel": "iron (a metal) + carbon, smelted hard",
 }
 
 
@@ -85,7 +90,9 @@ RULES = [
     ("electromagnet", lambda a: a["mx"]("magnetic") >= 6 and a["has"]("conductivity") and a["has"]("stores_power")),
     ("solar_cell",    lambda a: a["has"]("semiconductor") and a["has"]("insulator") and a["has"]("conductivity")),
     ("chip",          lambda a: a["has"]("semiconductor") and a["has"]("conductivity")),
+    ("steel",         lambda a: a["n_metals"] >= 1 and a["has"]("carbon") and a["heat"] and not a["electrolyte"]),
     ("alloy",         lambda a: a["n_metals"] >= 2 and a["heat"] and not a["electrolyte"]),
+    ("metal",         lambda a: a["has"]("ore") and a["heat"]),
     ("electrolyte",   lambda a: a["has"]("solvent") and (a["has"]("ionic") or a["has"]("acid_former")) and a["n_metals"] == 0),
     ("steam",         lambda a: a["has"]("coolant") and a["heat"] and a["n_metals"] == 0 and not a["electrolyte"]),
     ("magnet",        lambda a: a["mx"]("magnetic") >= 6 and a["n_metals"] >= 1 and len(a["ings"]) <= 2),
