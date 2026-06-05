@@ -11,6 +11,8 @@ import sys
 import threading
 import time
 import random
+import re
+import unicodedata
 
 # the engine package lives next door — make engine.py / vehicles.py / worldgen.py / play.py importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
@@ -243,6 +245,28 @@ def chat(limit: int = 30):
     return {"messages": msgs}
 
 
+_NICK_RX = re.compile(r"[^0-9A-Za-z]+")
+_PUNCT_OK = set(" .,!?;:'\"()-+/%@#&=…–—«»")
+
+
+def clean_nick(s):
+    """Nick = letters + digits only (everything else dropped) — no markup, no injection surface."""
+    return _NICK_RX.sub("", s or "")[:20]
+
+
+def clean_text(s):
+    """Keep letters (any language), digits, spaces and a safe punctuation set; drop control chars,
+    emoji/symbols and structural chars (braces/brackets/angles/backticks). Defence-in-depth: the human
+    text is read by the agents' LLMs, so we strip anything that isn't plain text + punctuation."""
+    out = []
+    for ch in unicodedata.normalize("NFKC", s or ""):
+        if ch in "\t\n\r":
+            out.append(" ")
+        elif ch in _PUNCT_OK or unicodedata.category(ch)[0] in ("L", "N"):
+            out.append(ch)
+    return re.sub(r"\s{2,}", " ", "".join(out)).strip()[:240]
+
+
 class HumanSay(BaseModel):
     nick: str
     text: str
@@ -250,11 +274,12 @@ class HumanSay(BaseModel):
 
 @app.post("/chat")
 def human_say(s: HumanSay):
-    """A human spectator/adviser posts to the world chat — agents see it in their inbox (observe)."""
-    nick = " ".join((s.nick or "").split())[:24]
-    text = " ".join((s.text or "").split())[:280]
+    """A human spectator/adviser posts to the world chat — agents see it in their inbox (observe).
+    Input is sanitized: nick = alphanumeric, text = letters/digits/punctuation only."""
+    nick = clean_nick(s.nick)
+    text = clean_text(s.text)
     if not nick or not text:
-        raise HTTPException(400, "nick and text required")
+        raise HTTPException(400, "nick must be letters/digits and text must be non-empty")
     conn = _connect(); cur = conn.cursor()
     cur.execute("SELECT id FROM entities WHERE type='human' AND attrs->>'name'=%s LIMIT 1", (nick,))
     row = cur.fetchone()
@@ -424,7 +449,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  </div>
  <div class=panel data-tab=Chat>
   <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
-   <input id=nick placeholder="your nick" maxlength=24>
+   <input id=nick placeholder="nick (a-z 0-9)" maxlength=20>
    <input id=msg placeholder="advise the agents… they read the chat" style="flex:1;min-width:160px" maxlength=280>
    <button id=send>send</button>
   </div>
