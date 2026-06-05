@@ -19,6 +19,9 @@ import crafting   # PROPS / RULES / combine() — emergent physics crafting
 
 DSN = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=postgres")
 LOOP_N = 3   # engine-enforced: reject an intent identical to the agent's last LOOP_N applied ones
+GRAVITY = 4              # a vehicle lifts off only if thrust >= GRAVITY * mass (the grand-goal gate)
+ATMOSPHERE_TOP = 100     # altitude that counts as "escaped the atmosphere" — the win condition
+CLIMB = 10               # altitude gained per fueled launch
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
@@ -359,6 +362,33 @@ def apply_intent(it, ents, cur, t):
         cur.execute("INSERT INTO proposals(agent, ings, sig, proposed_name, tick) VALUES(%s,%s,%s,%s,%s)",
                     (a["id"], Json(ings), sig, item_name, t))
         return "applied", f"submitted '{item_name or sig}' to the Inventors' Guild for review"
+    if verb == "launch":                                 # burn fuel to climb; escaping the atmosphere = the grand goal
+        cur.execute("SELECT (attrs->>'thrust')::int t, (attrs->>'mass')::int m, (attrs->>'controllable')::boolean c "
+                    "FROM entities WHERE type='vehicle' AND owner=%s", (a["id"],))
+        best = 0.0
+        for v in cur.fetchall():
+            if v["c"] and v["t"] and v["m"]:
+                best = max(best, v["t"] / (GRAVITY * v["m"]))   # thrust-to-weight (weight = gravity * mass)
+        if best < 1.0:
+            return "rejected", (f"thrust-to-weight too low to lift off (need thrust >= {GRAVITY}x mass; "
+                                f"best you have = {best:.2f}) — add engines/jets/propellers, lighten with a composite frame")
+        fuel = next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1), None)
+        if not fuel:
+            return "rejected", "no fuel to burn for the launch"
+        addb(a, fuel, -1)
+        alt = min(ATMOSPHERE_TOP, int(a["attrs"].get("altitude", 0)) + CLIMB)
+        a["attrs"]["altitude"] = alt
+        if alt >= ATMOSPHERE_TOP and not a["attrs"].get("in_space"):
+            cur.execute("SELECT 1 FROM events WHERE kind='escape' LIMIT 1")
+            first = cur.fetchone() is None
+            a["attrs"]["in_space"] = True
+            pts = 250 if first else 60
+            a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
+            cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'escape',%s)",
+                        (t, a["id"], Json({"first": first, "points": pts, "twr": round(best, 2)})))
+            return "applied", (("FIRST TO SPACE! " if first else "reached space! ")
+                               + f"escaped the atmosphere (twr {best:.1f}) +{pts} pts")
+        return "applied", f"launched on {fuel} -> altitude {alt}/{ATMOSPHERE_TOP} (twr {best:.1f})"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------

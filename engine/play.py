@@ -18,8 +18,10 @@ CAR = ["frame", "wheel", "wheel", "wheel", "wheel", "engine", "fuel_tank", "cock
 
 def observe(cur, agent_id):
     """The agent's curated view of the world."""
-    cur.execute("SELECT buffers, x, y, (attrs->>'inventor_points')::int pts FROM entities WHERE id=%s", (agent_id,))
+    cur.execute("SELECT buffers, x, y, (attrs->>'inventor_points')::int pts, "
+                "(attrs->>'altitude')::int alt, (attrs->>'in_space')::boolean space FROM entities WHERE id=%s", (agent_id,))
     me = cur.fetchone(); inv = me["buffers"]; ax, ay = me["x"], me["y"]; ipts = me["pts"] or 0
+    altitude = me["alt"] or 0; in_space = bool(me["space"])
     cur.execute("SELECT attrs->>'part' part FROM entities "
                 "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL", (agent_id,))
     loose = [r["part"] for r in cur.fetchall()]
@@ -43,7 +45,7 @@ def observe(cur, agent_id):
     nearby = [dict(r) for r in cur.fetchall()]
     return {"position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
             "vehicles": vehicles, "orders": orders, "trade_offers": offers, "messages": inbox,
-            "nearby_deposits": nearby}
+            "nearby_deposits": nearby, "altitude": altitude, "atmosphere_top": 100, "in_space": in_space}
 
 
 def can_afford(inv, part):

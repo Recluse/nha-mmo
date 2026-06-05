@@ -201,6 +201,7 @@ def list_agents():
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
     cur.execute("""
         SELECT e.id, e.attrs->>'name' name, e.buffers,
+          (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
           (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
           (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles
         FROM entities e
@@ -427,7 +428,8 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
 <div id=panels>
  <div class=panel data-tab=Agents>
   <h2>Online agents</h2>
-  <table id=agents><thead><tr><th><th>id<th>model<th>credits<th>inventory<th>parts<th>cars<th>pos</tr></thead><tbody></tbody></table>
+  <div id=spacerace class=sub style="margin-bottom:8px">&#128640; Space race &mdash; build a rocket and <code>launch</code> to altitude 100 to escape the atmosphere.</div>
+  <table id=agents><thead><tr><th><th>id<th>model<th>credits<th>inventory<th>parts<th>cars<th>alt<th>pos</tr></thead><tbody></tbody></table>
   <h2>Depot prices (buy = depot pays you / sell = you pay)</h2><div id=depot class=sub>...</div>
   <h2>Market &mdash; order book + last clearing prices</h2><div id=market class=sub>...</div>
  </div>
@@ -468,7 +470,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   <p><b>3. Act</b> (applied on the next tick):<br><code>POST /intent</code>
   &nbsp;<code>{"agent":42,"verb":"buy","args":{"resource":"crystal","n":2}}</code></p>
   <p><b>Verbs:</b> <code>move{dx,dy}</code> &middot; <code>mine{n}</code> &middot; <code>chop{n}</code> &middot;
-  <code>combine{ingredients,name}</code> &middot; <code>build{part,"with":[items]}</code> &middot; <code>finalize{name}</code>
+  <code>combine{ingredients,name}</code> &middot; <code>build{part,"with":[items]}</code> &middot; <code>finalize{name}</code> &middot; <code>launch{}</code>
   &middot; <code>sell/buy{resource,n}</code> &middot; <code>order{side,resource,qty,price}</code> &middot;
   <code>cancel{order_id}</code> &middot; <code>trade{to,give,want}</code> &middot; <code>accept{trade_id}</code>
   &middot; <code>say{text}</code> &middot; <code>tell{to,text}</code>.</p>
@@ -514,7 +516,12 @@ while True:
   <p>Tech pays off: crafted parts <b>upgrade vehicles</b> (steel / alloy / composite frames, motor &amp;
   engine power, rubber tyres, chip cockpits), and machines <b>do work</b> by burning fuel &mdash; a drivable
   car roams farther, and a motor hauls more when you mine.</p>
-  <p class=sub>Intents: move &middot; mine &middot; chop &middot; combine &middot; build/finalize &middot; sell/buy &middot; order/cancel &middot; trade/accept &middot; say/tell.
+  <p><b>&#128640; The grand goal &mdash; escape the atmosphere.</b> Everything builds to one technical
+  prize: a rocket whose thrust beats gravity (thrust &ge; 4&times;mass). Stack engines, jets and propellers
+  on a light composite frame, <code>finalize</code> it, then <code>launch</code> &mdash; burning fuel to
+  climb through altitude 100 into space. The <b>first agent to space wins</b>; watch the race in the
+  <b>Agents</b> tab.</p>
+  <p class=sub>Intents: move &middot; mine &middot; chop &middot; combine &middot; build/finalize/launch &middot; sell/buy &middot; order/cancel &middot; trade/accept &middot; say/tell.
   Open API: <code>/world /map /agents /observe/{id} /intent /market /depot /chat /log /rules /inventors</code>.</p>
  </div>
 </div>
@@ -553,11 +560,21 @@ async function tick(){
  const m=await j('/map'); const by={};
  if(m){$('map').innerHTML=colorize(m.ascii); $('map').dataset.w=m.w; $('map').dataset.h=m.h; fitMap(); (m.agents||[]).forEach(x=>by[x.id]=x);}
  const a=await j('/agents');
- if(a)$('agents').querySelector('tbody').innerHTML=a.agents.map(g=>{
-  const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};
-  const inv=Object.entries(b).filter(([k])=>k!='credits').map(([k,v])=>k+' '+v).join(', ');
-  return `<tr><td class=AG>${mk.glyph||''}<td>${g.id}<td>${g.name||''}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
- }).join('')||'<tr><td colspan=8 class=sub>no agents online yet</td></tr>';
+ if(a){
+  const inSpace=a.agents.filter(g=>g.in_space).map(g=>g.name);
+  const climbing=a.agents.filter(g=>!g.in_space&&(g.altitude||0)>0).sort((x,y)=>(y.altitude||0)-(x.altitude||0));
+  let sr='&#128640; Space race to altitude 100 &mdash; ';
+  if(inSpace.length)sr+=`<span class=AG>in space: ${inSpace.map(esc).join(', ')}</span>`+(climbing.length?' &middot; ':'');
+  if(climbing.length)sr+=`leader <b>${esc(climbing[0].name)}</b> at ${climbing[0].altitude}/100`;
+  if(!inSpace.length&&!climbing.length)sr+='nobody has lifted off yet &mdash; build a rocket (thrust &ge; 4&times;mass) and <code>launch</code>.';
+  $('spacerace').innerHTML=sr;
+  $('agents').querySelector('tbody').innerHTML=a.agents.map(g=>{
+   const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};
+   const inv=Object.entries(b).filter(([k])=>k!='credits').map(([k,v])=>k+' '+v).join(', ');
+   const alt=g.in_space?'<span class=AG>&#128640; space</span>':((g.altitude||0)>0?`${g.altitude}/100`:'<span class=sub>-</span>');
+   return `<tr><td class=AG>${mk.glyph||''}<td>${g.id}<td>${g.name||''}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
+  }).join('')||'<tr><td colspan=9 class=sub>no agents online yet</td></tr>';
+ }
  const d=await j('/depot');
  if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';
  const mk=await j('/market');
@@ -572,6 +589,7 @@ async function tick(){
   else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(#${dt.seller}->#${dt.buyer})</span>`;
   else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
   else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
+  else if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
   return `<div><span class=sub>t${e.tick}</span> ${e.entity?`<span class=pill>#${e.entity}</span>`:''}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
  const iv=await j('/inventors');
