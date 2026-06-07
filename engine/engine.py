@@ -151,6 +151,8 @@ def apply_intent(it, ents, cur, t):
         return "rejected", "no agent"
     if verb in ("grab", "deposit", "transfer"):
         r, n = args["resource"], int(args.get("n", 1))
+        if n < 1:
+            return "rejected", "quantity must be positive"   # guard: negative n would reverse the flow (dupe/steal)
         src = a if verb == "deposit" else ents.get(args.get("from"))
         dst = a if verb == "grab" else ents.get(args.get("to"))
         if verb == "transfer":
@@ -198,6 +200,8 @@ def apply_intent(it, ents, cur, t):
         return "applied", f"vehicle #{vid} drives={st['drives']} v={st['v_ground']} flies={st['flies']}"
     if verb in ("sell", "buy"):                          # trade raw/refined with the depot for credits
         r, n = args["resource"], int(args.get("n", 1))
+        if n < 1:
+            return "rejected", "quantity must be positive"   # guard: negative n would invert the depot trade
         depot = next((x for x in ents.values() if x["type"] == "depot"), None)
         if not depot:
             return "rejected", "no depot"
@@ -247,6 +251,8 @@ def apply_intent(it, ents, cur, t):
         target, give, want = args.get("to"), args.get("give", {}), args.get("want", {})
         if target not in ents:
             return "rejected", "no such target"
+        if not (isinstance(give, dict) and isinstance(want, dict)) or any(int(q) < 1 for q in list(give.values()) + list(want.values())):
+            return "rejected", "trade quantities must be positive"   # guard: negative qty would dupe/steal on escrow
         if any(get(a, res) < int(q) for res, q in give.items()):
             return "rejected", "insufficient to give"
         for res, q in give.items():

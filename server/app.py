@@ -529,10 +529,12 @@ def guild_verdict(v: Verdict):
         item_key = (v.item_key or v.name).strip().lower().replace(" ", "_")[:32]
         if not item_key:
             conn.close(); raise HTTPException(400, "approved verdict needs item_key or name")
-        pts = v.points if v.points > 0 else 8 + 2 * len(row[1] or {})
+        pts = min(v.points if v.points > 0 else 8 + 2 * len(row[1] or {}), 30)   # cap invention points
+        props = {str(k)[:24]: max(0, min(10, int(val))) for k, val in (v.props or {}).items()
+                 if isinstance(val, (int, float))}                                # clamp props 0..10 (anti prompt-injection)
         cur.execute("UPDATE proposals SET status='approved', item_key=%s, item_name=%s, props=%s, points=%s, "
                     "reason=%s WHERE id=%s",
-                    (item_key, (v.name or item_key)[:32], Json(v.props or {}), pts, v.reason[:200], v.proposal_id))
+                    (item_key, (v.name or item_key)[:32], Json(props), pts, v.reason[:200], v.proposal_id))
     else:
         cur.execute("UPDATE proposals SET status='rejected', reason=%s WHERE id=%s",
                     (v.reason[:200], v.proposal_id))
