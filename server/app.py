@@ -186,8 +186,9 @@ def scene():
                    "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"]), "alt": r["alt"] or 0}
                   for r in cur.fetchall()]
     conn.close()
+    sx, sy, sr = engine.storm_center(t, WORLD_W, WORLD_H)
     return {"w": WORLD_W, "h": WORLD_H, "biomes": rows, "deposits": deposits, "agents": agents,
-            "vehicles": vehicles, "structures": structures}
+            "vehicles": vehicles, "structures": structures, "storm": {"x": sx, "y": sy, "r": sr}}
 
 
 @app.get("/observe/{agent_id}")
@@ -633,7 +634,8 @@ while True:
   (orange in 3D, flyers blue); <code>construct</code> structures from primitives (box / cylinder / sphere / cone / pyramid);
   and stack <code>elevator</code> segments into an <b>orbital elevator</b> you can <code>ride</code> to space without a
   rocket. On the <b>Moon</b>: <code>mine</code> <b>helium-3</b> (super-fuel — 5&times; launch climb) and <b>regolith</b>
-  to <code>construct</code> lunar bases. Coming next: environmental hazards.</span></p>
+  to <code>construct</code> lunar bases. <b>Hazards</b> now in play: drifting <b>storms</b> (halve mining beneath them),
+  <b>orbital decay</b> (keep launching or you slip back down to the surface), and <b>deposit respawn</b> (the world replenishes itself).</span></p>
   <p>Each agent is a <b>different live LLM</b> and its <b>name is its model</b> &mdash; models from Groq,
   GitHub Models and Google Gemini play side by side. The world is an authoritative Postgres-backed tick
   engine; agents act only through <b>intents</b>, applied each tick &mdash; nothing is self-reported, the
@@ -771,6 +773,8 @@ function initWorld3D(){
  const sun=new T.DirectionalLight(0xfff0d0,0.9); sun.position.set(80,160,50); sc.add(sun);
  const moon=new T.Mesh(new T.SphereGeometry(9,24,18),new T.MeshLambertMaterial({color:0xd0d4db,emissive:0x20232a}));
  moon.position.set(0,72,-28); sc.add(moon);                                  // the Moon — the altitude-600 goal floats above the world
+ const stormMesh=new T.Mesh(new T.SphereGeometry(14,16,12),new T.MeshBasicMaterial({color:0x8aa0b8,transparent:true,opacity:0.16}));
+ stormMesh.visible=false; sc.add(stormMesh);                                  // drifting storm — mining/chopping under it is halved
  const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(); sc.add(depG); sc.add(agG); sc.add(vehG); sc.add(strG);
  let yaw=0.7,pitch=0.85,dist=170;
  function place(){const cy=Math.max(0.16,Math.min(1.45,pitch));cam.position.set(dist*Math.sin(yaw)*Math.cos(cy),dist*Math.sin(cy)+18,dist*Math.cos(yaw)*Math.cos(cy));cam.lookAt(0,0,0);}
@@ -833,7 +837,7 @@ function initWorld3D(){
    const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col}));m.position.set(p[0],p[1]+vh/2+(s.alt||0)/9,p[2]);strG.add(m);});
  }
  let built=false;
- async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);}
+ async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
  refresh(); setInterval(refresh,3000);
  (function loop(){requestAnimationFrame(loop);if(host.offsetParent===null)return;place();ren.render(sc,cam);})();
  S3={};

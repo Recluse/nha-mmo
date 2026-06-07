@@ -321,10 +321,17 @@ def apply_intent(it, ents, cur, t):
             fuel = next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1 and f != r), None)
             if fuel:
                 addb(a, fuel, -1); took = min(have, took + took // 2 + 1); powered = f" (powered, -1 {fuel})"
+        mkt = next((x for x in ents.values() if x["type"] == "market"), None)         # weather: a storm over this cell halves the haul
+        sw = int(mkt["attrs"].get("w", 156)) if mkt else 156
+        sh = int(mkt["attrs"].get("h", 156)) if mkt else 156
+        sx, sy, sr = storm_center(t, sw, sh)
+        storm = abs(dep["x"] - sx) + abs(dep["y"] - sy) <= sr
+        if storm:
+            took = max(1, took // 2)
         dep["attrs"]["amount"] = have - took
         addb(a, r, took)
         verbed = "chopped" if want_wood else "mined"
-        return "applied", f"{verbed} {took} {r} at ({dep['x']},{dep['y']}); {have - took} left" + powered
+        return "applied", f"{verbed} {took} {r} at ({dep['x']},{dep['y']}); {have - took} left" + powered + (" (storm: half yield)" if storm else "")
     if verb == "combine":                                # mix resources into a NEW item by physics rules
         ings = args.get("ingredients", {}) or {}
         try:
@@ -597,6 +604,31 @@ def grow_trees(ents, t):
             if amt < 22 and (t + e["id"]) % 8 == 0:
                 e["attrs"]["amount"] = amt + 1
 
+# ---------- hazards (all deterministic → replay-safe; fair, non-destructive) ----------
+def storm_center(t, w, h):
+    """A storm whose centre drifts and wraps across the map. mine/chop inside its radius = half yield (slowed, never blocked)."""
+    return (t // 3) % w, (t // 5) % h, 14
+
+def orbital_decay(ents, t, events):
+    """Space is unforgiving: agents in space slowly lose altitude unless they keep launching. Reach 0 → fall back to the surface
+    (the first-to-space RECORD persists — only the live in_space status decays)."""
+    for a in ents.values():
+        if a["type"] == "agent" and a["attrs"].get("in_space"):
+            alt = int(a["attrs"].get("altitude", 0)) - 2
+            if alt <= 0:
+                a["attrs"]["altitude"] = 0; a["attrs"]["in_space"] = False; a["attrs"]["space_level"] = 0
+                events.append((t, a["id"], "act", {"verb": "decay", "status": "applied", "result": "orbital decay — fell back to the surface"}))
+            else:
+                a["attrs"]["altitude"] = alt
+
+def respawn_deposits(ents, t):
+    """Mineral deposits slowly replenish (deterministic, staggered by id) → the world never runs permanently dry."""
+    for e in ents.values():
+        if e["type"] == "deposit" and e["attrs"].get("resource") != "wood":
+            amt = int(e["attrs"].get("amount", 0))
+            if amt < 18 and (t + e["id"]) % 12 == 0:
+                e["attrs"]["amount"] = amt + 1
+
 # ---------- tick ----------
 def tick(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -632,6 +664,8 @@ def tick(conn):
     resolve_proposals(ents, cur, t, events)
     roam_autonomous(ents, t)
     grow_trees(ents, t)
+    orbital_decay(ents, t, events)
+    respawn_deposits(ents, t)
     for e in ents.values():
         cur.execute("UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s",
                     (e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), e["id"]))
