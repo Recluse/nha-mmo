@@ -20,8 +20,11 @@ import crafting   # PROPS / RULES / combine() — emergent physics crafting
 DSN = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=postgres")
 LOOP_N = 3   # engine-enforced: reject an intent identical to the agent's last LOOP_N applied ones
 GRAVITY = 4              # a vehicle lifts off only if thrust >= GRAVITY * mass (the grand-goal gate)
-ATMOSPHERE_TOP = 100     # altitude that counts as "escaped the atmosphere" — the win condition
+ATMOSPHERE_TOP = 100     # altitude that counts as "escaped the atmosphere" — first space milestone
 CLIMB = 10               # altitude gained per fueled launch
+SPACE_TIERS = [(100, "space"), (300, "orbit"), (600, "the Moon")]   # altitude → milestone (escalating goals beyond escape)
+SKY_TOP = 600            # max altitude — reaching the Moon
+DESCEND = 40             # altitude shed per `land` (controlled descent back home)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
@@ -362,7 +365,7 @@ def apply_intent(it, ents, cur, t):
         cur.execute("INSERT INTO proposals(agent, ings, sig, proposed_name, tick) VALUES(%s,%s,%s,%s,%s)",
                     (a["id"], Json(ings), sig, item_name, t))
         return "applied", f"submitted '{item_name or sig}' to the Inventors' Guild for review"
-    if verb == "launch":                                 # burn fuel to climb; escaping the atmosphere = the grand goal
+    if verb == "launch":                                 # burn fuel to climb; reaching space tiers = the grand goals
         cur.execute("SELECT (attrs->>'thrust')::int t, (attrs->>'mass')::int m, (attrs->>'controllable')::boolean c "
                     "FROM entities WHERE type='vehicle' AND owner=%s", (a["id"],))
         best = 0.0
@@ -376,19 +379,48 @@ def apply_intent(it, ents, cur, t):
         if not fuel:
             return "rejected", "no fuel to burn for the launch"
         addb(a, fuel, -1)
-        alt = min(ATMOSPHERE_TOP, int(a["attrs"].get("altitude", 0)) + CLIMB)
+        alt = min(SKY_TOP, int(a["attrs"].get("altitude", 0)) + CLIMB)
         a["attrs"]["altitude"] = alt
-        if alt >= ATMOSPHERE_TOP and not a["attrs"].get("in_space"):
-            cur.execute("SELECT 1 FROM events WHERE kind='escape' LIMIT 1")
+        level = max(int(a["attrs"].get("space_level", 0)), 1 if a["attrs"].get("in_space") else 0)
+        msg = f"launched on {fuel} -> altitude {alt}/{SKY_TOP} (twr {best:.1f})"
+        for idx, (tier_alt, label) in enumerate(SPACE_TIERS, start=1):   # award each new milestone crossed
+            if alt >= tier_alt and level < idx:
+                level = idx; a["attrs"]["space_level"] = idx
+                if tier_alt >= ATMOSPHERE_TOP:
+                    a["attrs"]["in_space"] = True
+                cur.execute("SELECT 1 FROM events WHERE kind='escape' AND COALESCE(data->>'milestone','space')=%s LIMIT 1", (label,))
+                first = cur.fetchone() is None
+                pts = (250 if first else 60) if idx == 1 else (idx * 150 if first else idx * 40)
+                a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
+                cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'escape',%s)",
+                            (t, a["id"], Json({"first": first, "points": pts, "twr": round(best, 2), "milestone": label})))
+                msg = ((f"FIRST TO {label.upper()}! " if first else f"reached {label}! ")
+                       + f"altitude {alt} (twr {best:.1f}) +{pts} pts")
+        return "applied", msg
+    if verb == "land":                                   # controlled descent back to the surface (round-trip)
+        alt = int(a["attrs"].get("altitude", 0))
+        if alt <= 0:
+            return "rejected", "already on the ground"
+        cur.execute("SELECT 1 FROM entities WHERE type='vehicle' AND owner=%s AND (attrs->>'controllable')::boolean LIMIT 1", (a["id"],))
+        if not cur.fetchone():
+            return "rejected", "no controllable vehicle to land with"
+        new = max(0, alt - DESCEND)
+        a["attrs"]["altitude"] = new
+        if new > 0:
+            return "applied", f"descending -> altitude {new}"
+        was_space = bool(a["attrs"].get("in_space"))
+        a["attrs"]["in_space"] = False; a["attrs"]["space_level"] = 0
+        if was_space and not a["attrs"].get("round_trip"):
+            a["attrs"]["round_trip"] = True
+            cur.execute("SELECT 1 FROM events WHERE kind='land' AND (data->>'round_trip')='true' LIMIT 1")
             first = cur.fetchone() is None
-            a["attrs"]["in_space"] = True
-            pts = 250 if first else 60
+            pts = 150 if first else 50
             a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
-            cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'escape',%s)",
-                        (t, a["id"], Json({"first": first, "points": pts, "twr": round(best, 2)})))
-            return "applied", (("FIRST TO SPACE! " if first else "reached space! ")
-                               + f"escaped the atmosphere (twr {best:.1f}) +{pts} pts")
-        return "applied", f"launched on {fuel} -> altitude {alt}/{ATMOSPHERE_TOP} (twr {best:.1f})"
+            cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'land',%s)",
+                        (t, a["id"], Json({"round_trip": True, "first": first, "points": pts})))
+            return "applied", ((("touched down — FIRST round trip to space and back! ") if first
+                                else "touched down — round trip complete! ") + f"+{pts} pts")
+        return "applied", "landed safely back on the surface"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------

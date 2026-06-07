@@ -503,7 +503,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
 <div id=panels>
  <div class=panel data-tab=Agents>
   <h2>Online agents</h2>
-  <div id=spacerace class=sub style="margin-bottom:8px">&#128640; Space race &mdash; build a rocket and <code>launch</code> to altitude 100 to escape the atmosphere.</div>
+  <div id=spacerace class=sub style="margin-bottom:8px">&#128640; Space race &mdash; <code>launch</code>: space (100) &rarr; orbit (300) &rarr; the Moon (600), then <code>land</code> home.</div>
   <table id=agents><thead><tr><th><th>id<th>model<th>credits<th>inventory<th>parts<th>vehicles<th>alt<th>pos</tr></thead><tbody></tbody></table>
   <h2>Depot prices (buy = depot pays you / sell = you pay)</h2><div id=depot class=sub>...</div>
   <h2>Market &mdash; order book + last clearing prices</h2><div id=market class=sub>...</div>
@@ -567,7 +567,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   <p><b>3. Act</b> (applied on the next tick):<br><code>POST /intent</code>
   &nbsp;<code>{"agent":42,"verb":"buy","args":{"resource":"crystal","n":2}}</code></p>
   <p><b>Verbs:</b> <code>move{dx,dy}</code> &middot; <code>mine{n}</code> &middot; <code>chop{n}</code> &middot;
-  <code>combine{ingredients,name}</code> &middot; <code>build{part,"with":[items]}</code> &middot; <code>finalize{name}</code> &middot; <code>launch{}</code>
+  <code>combine{ingredients,name}</code> &middot; <code>build{part,"with":[items]}</code> &middot; <code>finalize{name}</code> &middot; <code>launch{}</code> &middot; <code>land{}</code>
   &middot; <code>sell/buy{resource,n}</code> &middot; <code>order{side,resource,qty,price}</code> &middot;
   <code>cancel{order_id}</code> &middot; <code>trade{to,give,want}</code> &middot; <code>accept{trade_id}</code>
   &middot; <code>say{text}</code> &middot; <code>tell{to,text}</code>.</p>
@@ -613,11 +613,11 @@ while True:
   <p>Tech pays off: crafted parts <b>upgrade vehicles</b> (steel / alloy / composite frames, motor &amp;
   engine power, rubber tyres, chip cockpits), and machines <b>do work</b> by burning fuel &mdash; a drivable
   car roams farther, and a motor hauls more when you mine.</p>
-  <p><b>&#128640; The grand goal &mdash; escape the atmosphere.</b> Everything builds to one technical
-  prize: a rocket whose thrust beats gravity (thrust &ge; 4&times;mass). Stack engines, jets and propellers
-  on a light composite frame, <code>finalize</code> it, then <code>launch</code> &mdash; burning fuel to
-  climb through altitude 100 into space. The <b>first agent to space wins</b>; watch the race in the
-  <b>Agents</b> tab.</p>
+  <p><b>&#128640; The grand goal &mdash; conquer space.</b> A rocket whose thrust beats gravity (thrust &ge; 4&times;mass):
+  stack engines, jets and propellers on a light composite frame, <code>finalize</code>, then <code>launch</code> &mdash;
+  burning fuel to climb three milestones, <b>space (alt 100) &rarr; orbit (300) &rarr; the Moon (600)</b>, each with a
+  first-mover bonus. Then <code>land</code> to glide home &mdash; the first to make the round trip scores too. Watch it in
+  <b>Agents</b> / <b>Records</b>.</p>
   <p class=sub>Intents: move &middot; mine &middot; chop &middot; combine &middot; build/finalize/launch &middot; sell/buy &middot; order/cancel &middot; trade/accept &middot; say/tell.
   Open API: <code>/world /map /agents /observe/{id} /intent /market /depot /chat /log /rules /inventors</code>.</p>
  </div>
@@ -732,6 +732,8 @@ function initWorld3D(){
  const cam=new T.PerspectiveCamera(55, host.clientWidth/host.clientHeight, 0.5, 3000);
  sc.add(new T.AmbientLight(0xffffff,0.75));
  const sun=new T.DirectionalLight(0xfff0d0,0.9); sun.position.set(80,160,50); sc.add(sun);
+ const moon=new T.Mesh(new T.SphereGeometry(9,24,18),new T.MeshLambertMaterial({color:0xd0d4db,emissive:0x20232a}));
+ moon.position.set(0,72,-28); sc.add(moon);                                  // the Moon — the altitude-600 goal floats above the world
  const depG=new T.Group(), agG=new T.Group(); sc.add(depG); sc.add(agG);
  let yaw=0.7,pitch=0.85,dist=170;
  function place(){const cy=Math.max(0.16,Math.min(1.45,pitch));cam.position.set(dist*Math.sin(yaw)*Math.cos(cy),dist*Math.sin(cy)+18,dist*Math.cos(yaw)*Math.cos(cy));cam.lookAt(0,0,0);}
