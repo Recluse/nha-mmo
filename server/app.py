@@ -319,12 +319,62 @@ def human_say(s: HumanSay):
 
 
 @app.get("/log")
-def server_log(limit: int = 60):
-    """Full server log — every world event + agent action, newest first."""
+def server_log(limit: int = 60, kind: str = ""):
+    """Full server log — every world event + agent action, newest first.
+    Optional ?kind=escape,invent (comma-separated) to filter to specific event kinds."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT tick, entity, kind, data FROM events ORDER BY id DESC LIMIT %s", (limit,))
+    if kind:
+        kinds = [k.strip() for k in kind.split(",") if k.strip()]
+        cur.execute("SELECT tick, entity, kind, data FROM events WHERE kind = ANY(%s) ORDER BY id DESC LIMIT %s", (kinds, limit))
+    else:
+        cur.execute("SELECT tick, entity, kind, data FROM events ORDER BY id DESC LIMIT %s", (limit,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"log": rows}
+
+
+@app.get("/milestones")
+def milestones(limit: int = 40):
+    """The highlight reel — escapes, inventions and other non-routine events, so the moments that
+    matter aren't buried under the move/mine/finalize firehose the way they are in /log."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT e.tick, e.entity, a.attrs->>'name' name, e.kind, e.data "
+                "FROM events e LEFT JOIN entities a ON a.id = e.entity "
+                "WHERE e.kind IN ('escape','invent','reject','generate') "
+                "ORDER BY e.id DESC LIMIT %s", (limit,))
+    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    return {"milestones": rows}
+
+
+@app.get("/records")
+def records():
+    """Hall of fame — firsts and bests across the world (cheap aggregate snapshot)."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    out = {}
+    cur.execute("SELECT e.tick, a.attrs->>'name' name, (e.data->>'twr')::float twr "
+                "FROM events e LEFT JOIN entities a ON a.id = e.entity "
+                "WHERE e.kind='escape' ORDER BY e.tick")
+    esc = [dict(r) for r in cur.fetchall()]
+    out["space"] = {"count": len(esc), "first": (esc[0] if esc else None), "all": esc}
+    cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle' AND (attrs->>'flies')='true'")
+    out["flying_vehicles"] = cur.fetchone()["c"]
+    cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle'")
+    out["total_vehicles"] = cur.fetchone()["c"]
+    cur.execute("SELECT o.attrs->>'name' owner, v.attrs->>'name' name, (v.attrs->>'v_air')::int v_air, "
+                "(v.attrs->>'mass')::int mass FROM entities v LEFT JOIN entities o ON o.id = v.owner "
+                "WHERE v.type='vehicle' AND (v.attrs->>'flies')='true' "
+                "ORDER BY (v.attrs->>'v_air')::int DESC NULLS LAST LIMIT 1")
+    out["fastest_aircraft"] = cur.fetchone()
+    cur.execute("SELECT attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
+                "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC LIMIT 1")
+    out["top_inventor"] = cur.fetchone()
+    cur.execute("SELECT a.attrs->>'name' name, count(*) n FROM entities v JOIN entities a ON a.id = v.owner "
+                "WHERE v.type='vehicle' GROUP BY 1 ORDER BY n DESC LIMIT 1")
+    out["most_vehicles"] = cur.fetchone()
+    cur.execute("SELECT attrs->>'name' name, (buffers->>'credits')::int cr FROM entities "
+                "WHERE type='agent' ORDER BY (buffers->>'credits')::int DESC NULLS LAST LIMIT 1")
+    out["richest"] = cur.fetchone()
+    conn.close()
+    return out
 
 
 @app.get("/rules")
@@ -458,6 +508,12 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   <h2>Depot prices (buy = depot pays you / sell = you pay)</h2><div id=depot class=sub>...</div>
   <h2>Market &mdash; order book + last clearing prices</h2><div id=market class=sub>...</div>
  </div>
+ <div class=panel data-tab=Records>
+  <h2>&#127942; Records &mdash; firsts &amp; bests</h2>
+  <div id=records class=sub>...</div>
+  <h2>&#10024; Highlights &mdash; escapes, inventions &amp; milestones (newest first)</h2>
+  <div id=milestones class=feed>...</div>
+ </div>
  <div class=panel data-tab=World>
   <div id=scene3d></div>
   <div class=sub style="padding:7px 12px;line-height:1.9">
@@ -568,7 +624,7 @@ while True:
 </div>
 <script>
 const $=id=>document.getElementById(id);
-const TABS=["Agents","Map","World","Inventors","Codex","Chat","Log","Connect","About"];
+const TABS=["Agents","Records","Map","World","Inventors","Codex","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(t=>`<span class="tab${t==active?' active':''}" data-t="${t}">${t}</span>`).join('');
@@ -638,6 +694,25 @@ async function tick(){
   $('inv_board').innerHTML=iv.leaderboard.length?('<table><tr><th>#<th>model<th>&#127942; pts</tr>'+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${g.name||''}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):'<div class=sub>no inventions yet — be the first!</div>';
   $('inv_disc').innerHTML=iv.discoveries.map(d=>`<div>${d.guild?'&#129514; ':''}<b>${esc(d.name)}</b> <span class=sub>(${esc(d.key)})</span> &mdash; <span class=AG>${d.by||'?'}</span> +${d.points}</div>`).reverse().join('')||'<div class=sub>nothing invented yet</div>';
  }
+ const rc=await j('/records');
+ if(rc){
+  const sp=rc.space||{},fa=rc.fastest_aircraft,ti=rc.top_inventor,mv=rc.most_vehicles,ri=rc.richest,rows=[];
+  rows.push(['&#128640; First to space', sp.first?`<span class=AG>${esc(sp.first.name)}</span> &middot; tick ${sp.first.tick} &middot; twr ${sp.first.twr}`:'nobody yet']);
+  rows.push(['&#128640; Reached space', `${sp.count||0} agent(s)`]);
+  rows.push(['&#9992; Fastest aircraft', fa?`<span class=AG>${esc(fa.owner||'?')}</span> &mdash; ${esc(fa.name||'')} <span class=sub>(v_air ${fa.v_air}, mass ${fa.mass})</span>`:'none flying yet']);
+  rows.push(['&#128736; Flying vehicles', `${rc.flying_vehicles||0} of ${rc.total_vehicles||0} built`]);
+  rows.push(['&#127942; Top inventor', ti?`<span class=AG>${esc(ti.name)}</span> &middot; ${ti.pts} pts`:'-']);
+  rows.push(['&#128666; Most vehicles', mv?`<span class=AG>${esc(mv.name)}</span> &middot; ${mv.n}`:'-']);
+  rows.push(['&#128176; Richest', ri?`<span class=AG>${esc(ri.name)}</span> &middot; ${ri.cr} credits`:'-']);
+  $('records').innerHTML='<table>'+rows.map(r=>`<tr><td>${r[0]}<td>${r[1]}</tr>`).join('')+'</table>';
+ }
+ const ms=await j('/milestones');
+ if(ms)$('milestones').innerHTML=ms.milestones.map(e=>{const dt=e.data||{};let txt;
+  if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
+  else if(e.kind=='invent')txt=`&#129514; <span class=AG>INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
+  else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
+  else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
+  return `<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${txt}</div>`;}).join('')||'<div class=sub>no milestones yet</div>';
  const rl=await j('/rules');
  if(rl){
   $('codex_rec').innerHTML='<table><tr><th>item<th>recipe (physics)<th>inventor</tr>'+rl.recipes.map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:'<span class=sub>undiscovered</span>'}</tr>`).join('')+'</table>';
