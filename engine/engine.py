@@ -196,6 +196,22 @@ def behave(e):
         e["attrs"]["prices"] = {r: depot_price(e, r) for r in e["attrs"]["base"]}   # publish for spectator
 
 # ---------- intents (the only agent->world channel) ----------
+def _ai(args, key, default=0):
+    """Coerce an agent-supplied arg to int; junk (dict/list/non-numeric/None) -> default. Agents occasionally
+    send a dict/garbage where a number is expected — never let that raise (it surfaces as a generic 'bad intent')."""
+    try:
+        return int(args.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+def _aid(args, key):
+    """Resolve an arg that names an entity id to an int (or None) — tolerates string ids ('5' -> 5) and rejects
+    unhashable junk (dict/list) so ents.get() never raises."""
+    try:
+        return int(args.get(key))
+    except (TypeError, ValueError):
+        return None
+
 def apply_intent(it, ents, cur, t, events):
     a, args, verb = ents.get(it["agent"]), it["args"], it["verb"]
     if not a:
@@ -208,13 +224,13 @@ def apply_intent(it, ents, cur, t, events):
     if int(a["attrs"].get("downed_until", 0)) > t and verb not in ("say", "tell"):
         return "rejected", "you are downed — you can only say/tell until you respawn"
     if verb in ("grab", "deposit", "transfer"):
-        r, n = args["resource"], int(args.get("n", 1))
+        r, n = args["resource"], _ai(args, "n", 1)
         if n < 1:
             return "rejected", "quantity must be positive"   # guard: negative n would reverse the flow (dupe/steal)
-        src = a if verb == "deposit" else ents.get(args.get("from"))
-        dst = a if verb == "grab" else ents.get(args.get("to"))
+        src = a if verb == "deposit" else ents.get(_aid(args, "from"))
+        dst = a if verb == "grab" else ents.get(_aid(args, "to"))
         if verb == "transfer":
-            src, dst = ents.get(args.get("from")), ents.get(args.get("to"))
+            src, dst = ents.get(_aid(args, "from")), ents.get(_aid(args, "to"))
         if src and dst and get(src, r) >= n:
             addb(src, r, -n); addb(dst, r, n); return "applied", f"{verb} {n} {r}"
         return "rejected", "insufficient"
@@ -258,7 +274,7 @@ def apply_intent(it, ents, cur, t, events):
                     ([r["id"] for r in rows],))
         return "applied", f"vehicle #{vid} drives={st['drives']} v={st['v_ground']} flies={st['flies']}"
     if verb in ("sell", "buy"):                          # trade raw/refined with the depot for credits
-        r, n = args["resource"], int(args.get("n", 1))
+        r, n = args["resource"], _ai(args, "n", 1)
         if n < 1:
             return "rejected", "quantity must be positive"   # guard: negative n would invert the depot trade
         depot = next((x for x in ents.values() if x["type"] == "depot"), None)
@@ -280,7 +296,7 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", f"bought {n} {r} for {cost} credits"
     if verb == "order":                                  # post a market order (escrow up front)
         side, r = args.get("side"), args.get("resource")
-        qty, price = int(args.get("qty", 0)), int(args.get("price", 0))
+        qty, price = _ai(args, "qty", 0), _ai(args, "price", 0)
         if side not in ("buy", "sell") or qty < 1 or price < 1:
             return "rejected", "bad order"
         if side == "sell":
@@ -296,7 +312,7 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", f"order #{cur.fetchone()['id']}: {side} {qty} {r} @ {price}"
     if verb == "cancel":
         cur.execute("SELECT agent,side,resource,qty,price,status FROM market_orders WHERE id=%s",
-                    (int(args.get("order_id", 0)),))
+                    (_ai(args, "order_id", 0),))
         o = cur.fetchone()
         if not o or o["status"] != "open" or o["agent"] != a["id"]:
             return "rejected", "no such open order of yours"
@@ -304,24 +320,25 @@ def apply_intent(it, ents, cur, t, events):
             addb(a, o["resource"], o["qty"])
         else:
             addb(a, "credits", o["qty"] * o["price"])
-        cur.execute("UPDATE market_orders SET status='cancelled' WHERE id=%s", (int(args["order_id"]),))
+        cur.execute("UPDATE market_orders SET status='cancelled' WHERE id=%s", (_ai(args, "order_id", 0),))
         return "applied", f"cancelled order #{args['order_id']}"
     if verb == "trade":                                  # propose a P2P swap (escrow the 'give')
-        target, give, want = args.get("to"), args.get("give", {}), args.get("want", {})
+        target, give, want = _aid(args, "to"), args.get("give", {}), args.get("want", {})
         if target not in ents:
             return "rejected", "no such target"
-        if not (isinstance(give, dict) and isinstance(want, dict)) or any(int(q) < 1 for q in list(give.values()) + list(want.values())):
-            return "rejected", "trade quantities must be positive"   # guard: negative qty would dupe/steal on escrow
+        if not (isinstance(give, dict) and isinstance(want, dict)) or \
+                any(not isinstance(q, (int, float)) or q < 1 for q in list(give.values()) + list(want.values())):
+            return "rejected", "trade quantities must be positive numbers"   # guard: junk/negative qty would dupe/steal or crash on escrow
         if any(get(a, res) < int(q) for res, q in give.items()):
             return "rejected", "insufficient to give"
         for res, q in give.items():
             addb(a, res, -int(q))
         cur.execute("INSERT INTO trades(proposer,target,give,want,created) VALUES(%s,%s,%s,%s,%s) RETURNING id",
-                    (a["id"], int(target), Json(give), Json(want), t))
+                    (a["id"], target, Json(give), Json(want), t))
         return "applied", f"trade #{cur.fetchone()['id']} -> #{target}: give {give} want {want}"
     if verb == "accept":
         cur.execute("SELECT proposer,target,give,want,status FROM trades WHERE id=%s",
-                    (int(args.get("trade_id", 0)),))
+                    (_ai(args, "trade_id", 0),))
         tr = cur.fetchone()
         if not tr or tr["status"] != "open" or tr["target"] != a["id"]:
             return "rejected", "no such open trade for you"
@@ -334,14 +351,14 @@ def apply_intent(it, ents, cur, t, events):
                 addb(prop, res, int(q))
         for res, q in tr["give"].items():
             addb(a, res, int(q))                         # 'give' was escrowed from the proposer
-        cur.execute("UPDATE trades SET status='accepted' WHERE id=%s", (int(args["trade_id"]),))
+        cur.execute("UPDATE trades SET status='accepted' WHERE id=%s", (_ai(args, "trade_id", 0),))
         return "applied", f"accepted trade #{args['trade_id']}"
     if verb in ("say", "tell"):                          # agent↔agent communication (observable)
         cur.execute("SELECT 1 FROM messages WHERE sender=%s AND tick=%s LIMIT 1", (a["id"], t))
         if cur.fetchone():
             return "rejected", "one message per tick"
         text = str(args.get("text", ""))[:280]
-        rcpt = int(args["to"]) if verb == "tell" else None
+        rcpt = _aid(args, "to") if verb == "tell" else None
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,%s,%s)",
                     (t, a["id"], rcpt, text))
         return "applied", (f"tell #{rcpt}: " if rcpt else "say: ") + text[:60]
@@ -355,13 +372,13 @@ def apply_intent(it, ents, cur, t, events):
             fuel = next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1), None)
             if fuel:
                 addb(a, fuel, -1); rng = min(10, 3 + vmax // 6); drove = f" (drove on {fuel}, range {rng})"
-        dx = max(-rng, min(rng, int(args.get("dx", 0))))
-        dy = max(-rng, min(rng, int(args.get("dy", 0))))
+        dx = max(-rng, min(rng, _ai(args, "dx", 0)))
+        dy = max(-rng, min(rng, _ai(args, "dy", 0)))
         a["x"] = max(0, min(w - 1, a["x"] + dx))
         a["y"] = max(0, min(h - 1, a["y"] + dy))
         return "applied", f"moved to ({a['x']},{a['y']})" + drove
     if verb in ("mine", "chop"):                         # gather from the nearest node (mine=minerals, chop=trees/wood)
-        n = int(args.get("n", 5))
+        n = _ai(args, "n", 5)
         yb = 1 if a["attrs"].get("yield_buff") else 0     # resonant-monolith attunement: +50% at EVERY harvest site
         if verb == "mine" and a["attrs"].get("docked_to") is not None:    # docked to an asteroid → mine it (vacuum: no motor bonus)
             ast = ents.get(a["attrs"].get("docked_to"))
@@ -417,7 +434,7 @@ def apply_intent(it, ents, cur, t, events):
         verbed = "chopped" if want_wood else "mined"
         return "applied", f"{verbed} {took} {r} at ({dep['x']},{dep['y']}); {have - took} left" + powered + (" (storm: half yield)" if storm else "")
     if verb == "gather":                                 # forage the nearest plant deposit (herb/lichen/fungus/algae) — the medicine branch
-        n = int(args.get("n", 5))
+        n = _ai(args, "n", 5)
         if n < 1:
             return "rejected", "quantity must be positive"   # guard: n<1 would reverse the harvest (dupe)
         deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0
@@ -449,7 +466,7 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", "you have no medicine to use (craft a salve/stimpack/medkit)"
         props = crafting.ITEM_PROPS.get(med, {})
         heal_amt = int(props.get("heal", 0))
-        tgt = ents.get(args.get("target")) if args.get("target") is not None else a
+        tgt = ents.get(_aid(args, "target")) if args.get("target") is not None else a
         if not tgt or tgt["type"] != "agent":
             return "rejected", "no such agent to heal"
         if tgt["id"] != a["id"] and abs(tgt["x"] - a["x"]) + abs(tgt["y"] - a["y"]) > HEAL_RANGE:
@@ -618,8 +635,8 @@ def apply_intent(it, ents, cur, t, events):
                                                         "name": str(args.get("name", "orbital elevator"))[:32]})))
             return "applied", f"laid an orbital-elevator base #{cur.fetchone()['id']} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
         on_moon = int(a["attrs"].get("altitude", 0)) >= 600   # build with local regolith when up on the Moon
-        size = max(1, min(20, int(args.get("size", 3))))
-        height = max(1, min(60, int(args.get("height", size))))
+        size = max(1, min(20, _ai(args, "size", 3)))
+        height = max(1, min(60, _ai(args, "height", size)))
         cost = {"regolith": size + max(1, height // 12)} if on_moon else {"metal": size, "composite": max(1, height // 12)}
         if any(get(a, r) < q for r, q in cost.items()):
             return "rejected", f"{shape} (size {size}, height {height}) needs {cost}" + (" — mine regolith on the Moon" if on_moon else "")
@@ -660,7 +677,7 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", "attack needs a ranged weapon (kinetic_gun or energy_weapon)"
         if get(a, weapon) < 1:
             return "rejected", f"you don't hold a {weapon}"
-        tgt = ents.get(args.get("target"))
+        tgt = ents.get(_aid(args, "target"))
         if not tgt or tgt["type"] not in ("agent", "vehicle", "structure"):
             return "rejected", "no such target (agent/vehicle/structure)"
         if tgt["id"] == a["id"]:
@@ -702,7 +719,7 @@ def apply_intent(it, ents, cur, t, events):
         a["attrs"]["wpn_cd_until"] = t + int(bw["cd"])
         return "applied", f"armed bomb #{bid} at ({a['x']},{a['y']}) — fuse 3 ticks"
     if verb == "detonate":                               # trigger your own bomb immediately
-        b = ents.get(args.get("bomb"))
+        b = ents.get(_aid(args, "bomb"))
         if not b or b["type"] != "bomb":
             return "rejected", "no such bomb"
         if b["attrs"].get("owner") != a["id"]:
@@ -729,7 +746,7 @@ def apply_intent(it, ents, cur, t, events):
         events.append((t, a["id"], "dock", {"asteroid": ast["id"]}))
         return "applied", f"docked to asteroid #{ast['id']} ({ast['attrs'].get('resource')}) — mine it"
     if verb == "steal":                                  # lift a resource (or a loose part) off an adjacent agent
-        victim = ents.get(args.get("from"))
+        victim = ents.get(_aid(args, "from"))
         if not victim or victim["type"] != "agent" or victim["id"] == a["id"]:
             return "rejected", "no such victim agent"
         ok, why = _can_harm(a, victim, ents, t)
@@ -766,7 +783,7 @@ def apply_intent(it, ents, cur, t, events):
         held = get(victim, r)
         if held < STEAL_FLOOR:
             return "rejected", f"victim holds too little {r} to steal"
-        n = int(args.get("n", 3))
+        n = _ai(args, "n", 3)
         roll = _h(t, a["id"], victim["id"], a["x"] * 1000 + a["y"], sum(ord(c) for c in r)) % 100
         chance = max(STEAL_MIN_PCT, min(STEAL_MAX_PCT, STEAL_BASE_PCT - int(victim["attrs"].get("vigilance", 0))))
         success = roll < chance
@@ -803,7 +820,7 @@ def apply_intent(it, ents, cur, t, events):
         events.append((t, a["id"], "attune", {"artifact": art["id"], "kind": kind, "first": first, "points": pts}))
         return "applied", (f"{'FIRST to attune! ' if first else ''}attuned to the {kind} +{pts} pts")
     if verb in ("ally", "accept_ally", "unally", "declare_war", "make_peace"):
-        other = ents.get(args.get("to"))
+        other = ents.get(_aid(args, "to"))
         if not other or other["type"] != "agent" or other["id"] == a["id"]:
             return "rejected", "no such other agent"
         rel = _relation(ents, a["id"], other["id"])
@@ -858,7 +875,7 @@ def apply_intent(it, ents, cur, t, events):
             events.append((t, a["id"], "peace", {"with": other["id"]}))
             return "applied", f"made peace with #{other['id']}"
     if verb == "assist":                                 # gift resources to an ally (capped, credits excluded)
-        other = ents.get(args.get("to"))
+        other = ents.get(_aid(args, "to"))
         if not other or other["type"] != "agent" or other["id"] == a["id"]:
             return "rejected", "no such ally"
         rel = _relation(ents, a["id"], other["id"])
@@ -885,7 +902,7 @@ def apply_intent(it, ents, cur, t, events):
         log.append(t); a["attrs"]["assist_log"] = log
         return "applied", f"assisted ally #{other['id']} with {give}"
     if verb == "collect":                                # pick up an adjacent loot pile
-        loot = ents.get(args.get("loot"))
+        loot = ents.get(_aid(args, "loot"))
         if not loot or loot["type"] != "loot":
             return "rejected", "no such loot"
         if abs(loot["x"] - a["x"]) + abs(loot["y"] - a["y"]) > 1:
