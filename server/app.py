@@ -197,7 +197,11 @@ def observe_ep(agent_id: int):
     cur.execute("SELECT 1 FROM entities WHERE id=%s AND type='agent'", (agent_id,))
     if not cur.fetchone():
         conn.close(); raise HTTPException(404, "no such agent")
-    obs = observe(cur, agent_id); conn.close()
+    obs = observe(cur, agent_id)
+    cur.execute("SELECT attrs->'notices' n FROM entities WHERE type='market' LIMIT 1")   # official server announcements
+    nrow = cur.fetchone()
+    obs["system_notices"] = (nrow["n"] if nrow and nrow["n"] else [])
+    conn.close()
     return obs
 
 
