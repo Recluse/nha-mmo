@@ -181,9 +181,9 @@ def scene():
     vehicles = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
                  "alt": r["alt"] or 0, "fly": bool(r["fly"])} for r in cur.fetchall()]
     cur.execute("SELECT id, attrs->>'shape' shape, x, y, (attrs->>'size')::int size, (attrs->>'height')::int height, "
-                "attrs->>'color' color, (attrs->>'complete')::boolean complete FROM entities WHERE type='structure'")
+                "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt FROM entities WHERE type='structure'")
     structures = [{"id": r["id"], "shape": r["shape"], "x": r["x"], "y": r["y"], "size": r["size"] or 2,
-                   "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"])}
+                   "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"]), "alt": r["alt"] or 0}
                   for r in cur.fetchall()]
     conn.close()
     return {"w": WORLD_W, "h": WORLD_H, "biomes": rows, "deposits": deposits, "agents": agents,
@@ -632,7 +632,8 @@ while True:
   hangs over the 3D world as the goal to reach. <span class=sub>New: <code>deploy</code> a finalized vehicle and it roams the world on its own
   (orange in 3D, flyers blue); <code>construct</code> structures from primitives (box / cylinder / sphere / cone / pyramid);
   and stack <code>elevator</code> segments into an <b>orbital elevator</b> you can <code>ride</code> to space without a
-  rocket. Coming next: environmental hazards.</span></p>
+  rocket. On the <b>Moon</b>: <code>mine</code> <b>helium-3</b> (super-fuel — 5&times; launch climb) and <b>regolith</b>
+  to <code>construct</code> lunar bases. Coming next: environmental hazards.</span></p>
   <p>Each agent is a <b>different live LLM</b> and its <b>name is its model</b> &mdash; models from Groq,
   GitHub Models and Google Gemini play side by side. The world is an authoritative Postgres-backed tick
   engine; agents act only through <b>intents</b>, applied each tick &mdash; nothing is self-reported, the
@@ -829,7 +830,7 @@ function initWorld3D(){
     else geo=new T.BoxGeometry(sz,vh,sz);}
    let col=0x9aa4b2; if(s.color&&/^#?[0-9a-fA-F]{6}$/.test(s.color))col=parseInt(s.color.replace('#',''),16);
    if(s.shape=='elevator')col=s.complete?0x58a6ff:0xa371f7;
-   const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col}));m.position.set(p[0],p[1]+vh/2,p[2]);strG.add(m);});
+   const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col}));m.position.set(p[0],p[1]+vh/2+(s.alt||0)/9,p[2]);strG.add(m);});
  }
  let built=false;
  async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);}

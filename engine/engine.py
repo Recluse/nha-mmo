@@ -299,6 +299,10 @@ def apply_intent(it, ents, cur, t):
         return "applied", f"moved to ({a['x']},{a['y']})" + drove
     if verb in ("mine", "chop"):                         # gather from the nearest node (mine=minerals, chop=trees/wood)
         n = int(args.get("n", 5))
+        if verb == "mine" and int(a["attrs"].get("altitude", 0)) >= 600:   # standing on the Moon → mine helium-3 + regolith
+            took = max(1, min(int(n), 6))
+            addb(a, "helium3", took); addb(a, "regolith", took * 2)
+            return "applied", f"mined the Moon: +{took} helium-3 (super-fuel), +{took * 2} regolith (lunar building material)"
         want_wood = (verb == "chop")
         deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0
                 and (x["attrs"].get("resource") == "wood") == want_wood]
@@ -375,11 +379,12 @@ def apply_intent(it, ents, cur, t):
         if best < 1.0:
             return "rejected", (f"thrust-to-weight too low to lift off (need thrust >= {GRAVITY}x mass; "
                                 f"best you have = {best:.2f}) — add engines/jets/propellers, lighten with a composite frame")
-        fuel = next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1), None)
+        he3 = get(a, "helium3") >= 1                     # lunar super-fuel → 5x climb
+        fuel = "helium3" if he3 else next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1), None)
         if not fuel:
-            return "rejected", "no fuel to burn for the launch"
+            return "rejected", "no fuel to burn (carry oil/coal/wood/carbon — or mine helium-3 on the Moon for a 5x boost)"
         addb(a, fuel, -1)
-        alt = min(SKY_TOP, int(a["attrs"].get("altitude", 0)) + CLIMB)
+        alt = min(SKY_TOP, int(a["attrs"].get("altitude", 0)) + (CLIMB * 5 if he3 else CLIMB))
         a["attrs"]["altitude"] = alt
         level = max(int(a["attrs"].get("space_level", 0)), 1 if a["attrs"].get("in_space") else 0)
         msg = f"launched on {fuel} -> altitude {alt}/{SKY_TOP} (twr {best:.1f})"
@@ -457,17 +462,19 @@ def apply_intent(it, ents, cur, t):
                         (a["x"], a["y"], a["id"], Json({"shape": "elevator", "height": seg, "size": 2,
                                                         "name": str(args.get("name", "orbital elevator"))[:32]})))
             return "applied", f"laid an orbital-elevator base #{cur.fetchone()['id']} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
+        on_moon = int(a["attrs"].get("altitude", 0)) >= 600   # build with local regolith when up on the Moon
         size = max(1, min(20, int(args.get("size", 3))))
         height = max(1, min(60, int(args.get("height", size))))
-        cost = {"metal": size, "composite": max(1, height // 12)}
+        cost = {"regolith": size + max(1, height // 12)} if on_moon else {"metal": size, "composite": max(1, height // 12)}
         if any(get(a, r) < q for r, q in cost.items()):
-            return "rejected", f"{shape} (size {size}, height {height}) needs {cost}"
+            return "rejected", f"{shape} (size {size}, height {height}) needs {cost}" + (" — mine regolith on the Moon" if on_moon else "")
         for r, q in cost.items():
             addb(a, r, -q)
         cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
                     (a["x"], a["y"], a["id"], Json({"shape": shape, "size": size, "height": height,
-                                                    "color": str(args.get("color", ""))[:16], "name": str(args.get("name", shape))[:32]})))
-        return "applied", f"built {shape} (size {size}, h {height}) at ({a['x']},{a['y']}) for {cost}"
+                                                    "color": str(args.get("color", ""))[:16], "name": str(args.get("name", shape))[:32],
+                                                    "alt": 600 if on_moon else 0})))
+        return "applied", f"built {shape} (size {size}, h {height}) {'on the Moon ' if on_moon else ''}at ({a['x']},{a['y']}) for {cost}"
     if verb == "ride":                                   # ride a completed orbital elevator to space — no rocket, no fuel
         cur.execute("SELECT (attrs->>'height')::int h FROM entities WHERE type='structure' "
                     "AND attrs->>'shape'='elevator' AND (attrs->>'complete')::boolean AND x=%s AND y=%s LIMIT 1",

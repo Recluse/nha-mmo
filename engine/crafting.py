@@ -23,6 +23,8 @@ PROPS = {
     "wood":     {"flammable": 7, "energy": 5, "hardness": 3, "light": 5},  # chopped from trees; fuel + light material
     "ore":      {"ore": 8, "hardness": 3},                            # raw ore — smelt with fuel to get metal
     "brine":    {"solvent": 6, "soluble": 8},                         # sea water — boil off with heat to get salt
+    "helium3":  {"flammable": 10, "energy": 10, "fusion": 1, "light": 9},  # lunar super-fuel — mined on the Moon, supercharges launch
+    "regolith": {"hardness": 5, "moldable": 4, "dusty": 1},               # lunar soil — building material for Moon bases
 }
 
 # crafted item -> its own properties (so items can be ingredients in further combines → tech tree)
