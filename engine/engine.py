@@ -97,6 +97,15 @@ STASIS_CHARGES = 3
 # --- combat scoring (SEPARATE field, never pollutes inventor_points) ---
 COMBAT_PTS_KILL = 10
 COMBAT_PTS_PAIR_WINDOW = 200   # no re-award vs the same victim within this window
+# --- botany / medicine (HP healing, increment 2) ---
+PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant deposits (renewable, like wood)
+GATHER_RANGE = 8                  # auto-walk reach to the nearest plant deposit (mirrors chop)
+PLANT_REGROW_CAP = 18            # plant deposits regrow up to this (like respawn_deposits' mineral cap)
+PLANT_REGROW_EVERY = 8           # ...one unit every this-many ticks (staggered by id), like grow_trees
+MEDICINES = ("salve", "stimpack", "medkit", "antidote")   # consumable HP medicines (heal value lives in crafting.ITEM_PROPS)
+HEAL_RANGE = 6                    # Manhattan reach to heal/revive another agent
+STIMPACK_BUFF_TICKS = 20         # a stimpack's short deterministic regen/speed buff window
+REVIVE_HP = 20                   # hp a medkit-revived downed ally comes back with
 # --- deposit-richness variance (mining yield jitter) ---
 KARMA_WINDOW = 400
 KARMA_MAX = 6
@@ -379,6 +388,7 @@ def apply_intent(it, ents, cur, t, events):
             return "applied", f"mined the Moon: +{took} helium-3 (super-fuel), +{took * 2} regolith (lunar building material)"
         want_wood = (verb == "chop")
         deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0
+                and x["attrs"].get("resource") not in PLANT_RESOURCES   # plants are for `gather` only (keeps them off mine's karma/motor path)
                 and (x["attrs"].get("resource") == "wood") == want_wood]
         if not deps:
             return "rejected", ("no trees left to chop" if want_wood else "no mineral deposits left")
@@ -406,6 +416,67 @@ def apply_intent(it, ents, cur, t, events):
         addb(a, r, took)
         verbed = "chopped" if want_wood else "mined"
         return "applied", f"{verbed} {took} {r} at ({dep['x']},{dep['y']}); {have - took} left" + powered + (" (storm: half yield)" if storm else "")
+    if verb == "gather":                                 # forage the nearest plant deposit (herb/lichen/fungus/algae) — the medicine branch
+        n = int(args.get("n", 5))
+        if n < 1:
+            return "rejected", "quantity must be positive"   # guard: n<1 would reverse the harvest (dupe)
+        deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0
+                and x["attrs"].get("resource") in PLANT_RESOURCES]
+        if not deps:
+            return "rejected", "no plants left to gather"
+        dep = min(deps, key=lambda x: abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]))
+        dist = abs(dep["x"] - a["x"]) + abs(dep["y"] - a["y"])
+        if dist > GATHER_RANGE:
+            return "rejected", f"nearest plant is {dist} cells away — move toward it first (see nearby_deposits)"
+        a["x"], a["y"] = dep["x"], dep["y"]              # walk over to it
+        r = dep["attrs"]["resource"]; have = int(dep["attrs"].get("amount", 0))
+        took = min(max(1, n), have)
+        sx, sy, sr = storm_center(t, W, H)               # weather: a storm over this cell halves the haul
+        storm = abs(dep["x"] - sx) + abs(dep["y"] - sy) <= sr
+        if storm:
+            took = max(1, took // 2)
+        dep["attrs"]["amount"] = have - took
+        addb(a, r, took)
+        return "applied", f"gathered {took} {r} at ({dep['x']},{dep['y']}); {have - took} left" + (" (storm: half yield)" if storm else "")
+    if verb == "heal":                                   # apply a medicine: restore HP (cap HP_MAX) to yourself or an ally; medkit revives the downed
+        if int(a["attrs"].get("downed_until", 0)) > t:   # (defensive — the DOWNED gate already blocks non-say/tell verbs)
+            return "rejected", "you are downed — you cannot apply medicine to yourself"
+        item = str(args.get("item", "")).strip()
+        if item and item not in MEDICINES:
+            return "rejected", f"{item} is not a usable medicine ({'/'.join(MEDICINES)})"
+        med = item or next((m for m in MEDICINES if get(a, m) >= 1), None)   # default: first held medicine (fixed order → deterministic)
+        if not med or get(a, med) < 1:
+            return "rejected", "you have no medicine to use (craft a salve/stimpack/medkit)"
+        props = crafting.ITEM_PROPS.get(med, {})
+        heal_amt = int(props.get("heal", 0))
+        tgt = ents.get(args.get("target")) if args.get("target") is not None else a
+        if not tgt or tgt["type"] != "agent":
+            return "rejected", "no such agent to heal"
+        if tgt["id"] != a["id"] and abs(tgt["x"] - a["x"]) + abs(tgt["y"] - a["y"]) > HEAL_RANGE:
+            return "rejected", f"target out of healing range ({HEAL_RANGE})"
+        tgt_downed = int(tgt["attrs"].get("downed_until", 0)) > t
+        if tgt_downed:                                    # only a medkit (revive:1) can bring a downed ally back
+            if not props.get("revive"):
+                return "rejected", "that ally is downed — only a medkit can revive them"
+            addb(a, med, -1)                              # consume the medkit
+            mx = int(tgt["attrs"].get("hp_max", HP_MAX))
+            tgt["attrs"]["hp"] = min(mx, REVIVE_HP)       # revived at a small HP value, capped HP_MAX
+            tgt["attrs"]["downed_until"] = 0
+            tgt["attrs"]["respawned_at"] = t              # brief grace after a revive (no instant re-down)
+            events.append((t, a["id"], "revive", {"target": tgt["id"], "item": med, "hp": tgt["attrs"]["hp"]}))
+            return "applied", f"revived #{tgt['id']} with a {med} (hp {tgt['attrs']['hp']})"
+        if heal_amt < 1:
+            return "rejected", f"{med} does not restore HP"
+        addb(a, med, -1)                                  # consume one medicine
+        mx = int(tgt["attrs"].get("hp_max", HP_MAX))
+        before = hp_of(tgt)
+        tgt["attrs"]["hp"] = min(mx, before + heal_amt)   # integer heal, capped at HP_MAX
+        gained = tgt["attrs"]["hp"] - before
+        if props.get("buff"):                             # stimpack: a short deterministic buff window
+            a["attrs"]["buff_until"] = t + STIMPACK_BUFF_TICKS
+        events.append((t, a["id"], "heal", {"target": tgt["id"], "item": med, "amount": gained, "hp": tgt["attrs"]["hp"]}))
+        who = "yourself" if tgt["id"] == a["id"] else f"#{tgt['id']}"
+        return "applied", f"used a {med} on {who}: +{gained} hp (now {tgt['attrs']['hp']}/{mx})" + (" (buffed)" if props.get("buff") else "")
     if verb == "combine":                                # mix resources into a NEW item by physics rules
         ings = args.get("ingredients", {}) or {}
         try:
@@ -1109,6 +1180,15 @@ def grow_trees(ents, t):
             if amt < 22 and (t + e["id"]) % 8 == 0:
                 e["attrs"]["amount"] = amt + 1
 
+def grow_plants(ents, t):
+    """Plant deposits (herb/lichen/fungus/algae) regrow toward a cap → renewable foraging for the medicine branch.
+    Deterministic (staggered by id), regrows even from a fully-gathered patch (amount 0) — like grow_trees."""
+    for e in ents.values():
+        if e["type"] == "deposit" and e["attrs"].get("resource") in PLANT_RESOURCES:
+            amt = int(e["attrs"].get("amount", 0))
+            if amt < PLANT_REGROW_CAP and (t + e["id"]) % PLANT_REGROW_EVERY == 0:
+                e["attrs"]["amount"] = amt + 1
+
 # ---------- hazards (all deterministic → replay-safe; fair, non-destructive) ----------
 def storm_center(t, w, h):
     """A storm whose centre drifts and wraps across the map. mine/chop inside its radius = half yield (slowed, never blocked)."""
@@ -1146,7 +1226,8 @@ def orbital_decay(ents, t, events, cur=None):
 def respawn_deposits(ents, t):
     """Mineral deposits + asteroids slowly replenish (deterministic, staggered by id) → the world never runs permanently dry."""
     for e in ents.values():
-        if e["type"] == "deposit" and e["attrs"].get("resource") != "wood":
+        if e["type"] == "deposit" and e["attrs"].get("resource") != "wood" \
+                and e["attrs"].get("resource") not in PLANT_RESOURCES:   # wood→grow_trees, plants→grow_plants; here = minerals only
             amt = int(e["attrs"].get("amount", 0))
             if amt < 18 and (t + e["id"]) % 12 == 0:
                 e["attrs"]["amount"] = amt + 1
@@ -1225,7 +1306,8 @@ def regen_hp(ents, t):
         mx = int(a["attrs"].get("hp_max", HP_MAX))
         cur_hp = hp_of(a)
         if cur_hp < mx:
-            a["attrs"]["hp"] = min(mx, cur_hp + HP_REGEN)
+            regen = HP_REGEN * 3 if int(a["attrs"].get("buff_until", 0)) > t else HP_REGEN   # stimpack buff: faster regen while active
+            a["attrs"]["hp"] = min(mx, cur_hp + regen)
 
 def expire_diplomacy(ents, cur, t):
     """Drop alliance offers nobody accepted within OFFER_TTL, and lapsed peace markers past PEACE_TTL."""
@@ -1311,6 +1393,7 @@ def tick(conn):
     resolve_proposals(ents, cur, t, events)
     roam_autonomous(ents, t)
     grow_trees(ents, t)
+    grow_plants(ents, t)                                   # renewable plant deposits (medicine branch)
     orbital_decay(ents, t, events, cur)
     respawn_deposits(ents, t)
     respawn_agents(ents, cur, t, events)                  # season 3 per-tick systems (after respawn_deposits, before write-back)

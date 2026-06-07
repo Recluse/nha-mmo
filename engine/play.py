@@ -4,7 +4,8 @@
 `observe(cur, agent_id)` returns the agent's view of the world (inventory, loose parts, vehicles, open
 orders, incoming trades, recent messages, nearby deposits, altitude, plus the Season-3 combat/social
 surface: nearby agents, own HP, held weapons + ammo, recent threat alerts, and nearby loot/artifacts/
-asteroids). Read-only over engine.py's `entities` schema; the caller passes a psycopg2 RealDictCursor.
+asteroids, plus the medicine branch: nearby plant deposits, held medicines, and active buff/toxin state).
+Read-only over engine.py's `entities` schema; the caller passes a psycopg2 RealDictCursor.
 """
 
 # weapons the agent may hold (crafted items) + their consumable ammo — surfaced so attack/arm are usable.
@@ -12,6 +13,10 @@ _WEAPON_ITEMS = ("kinetic_gun", "energy_weapon", "bomb")
 _AMMO_ITEMS = ("slug", "energy_cell")
 _NEARBY_RADIUS = 9          # Manhattan reach for nearby agents/loot/artifacts (covers max weapon range 9)
 _ORBIT_LO, _ORBIT_HI = 300, 600   # an agent only sees asteroids while it is in orbit (mirror of engine constants)
+# --- season 3 medicine branch (mirror of engine constants) — surfaced so gather/heal are targetable ---
+_PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant deposits (renewable botany)
+_GATHER_RANGE = 8           # auto-walk reach of the `gather` verb (mirror of engine.GATHER_RANGE)
+_MEDICINE_ITEMS = ("salve", "stimpack", "medkit", "antidote")  # consumable HP medicines held in buffers (mirror engine.MEDICINES)
 
 
 def observe(cur, agent_id):
@@ -21,7 +26,8 @@ def observe(cur, agent_id):
     cur.execute("SELECT buffers, x, y, (attrs->>'inventor_points')::int pts, "
                 "(attrs->>'altitude')::int alt, (attrs->>'in_space')::boolean space, "
                 "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, "
-                "(attrs->>'downed_until')::int downed, attrs->>'last_robbed_by' robbed_by "
+                "(attrs->>'downed_until')::int downed, attrs->>'last_robbed_by' robbed_by, "
+                "(attrs->>'buff_until')::int buff_until, (attrs->>'toxin_until')::int toxin_until "
                 "FROM entities WHERE id=%s", (agent_id,))
     me = cur.fetchone(); inv = me["buffers"]; ax, ay = me["x"], me["y"]; ipts = me["pts"] or 0
     altitude = me["alt"] or 0; in_space = bool(me["space"])
@@ -99,6 +105,27 @@ def observe(cur, agent_id):
     artifacts = [{"id": r["id"], "x": r["x"], "y": r["y"], "kind": r["kind"], "loc": r["loc"],
                   "dist": r["dist"]} for r in cur.fetchall()]
 
+    # --- season 3 medicine branch: plant deposits, held medicines, active buff (so gather/heal are usable) ---
+    # nearby plant deposits (herb/lichen/fungus/algae) within gather reach — so `gather` is targetable.
+    # (these also appear in nearby_deposits; this is the gather-specific, biome-tagged subset.)
+    cur.execute("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
+                "(abs(x-%s)+abs(y-%s)) dist FROM entities "
+                "WHERE type='deposit' AND (attrs->>'amount')::int > 0 "
+                "AND attrs->>'resource' = ANY(%s) AND (abs(x-%s)+abs(y-%s)) <= %s "
+                "ORDER BY dist, id LIMIT 6",
+                (ax, ay, list(_PLANT_RESOURCES), ax, ay, _GATHER_RANGE))
+    nearby_plants = [dict(r) for r in cur.fetchall()]
+
+    # crafted medicines I hold (counts from inventory buffers) — so `heal` knows what's spendable.
+    medicines = {m: int(inv.get(m, 0)) for m in _MEDICINE_ITEMS if int(inv.get(m, 0)) > 0}
+
+    # active stimpack buff window, if any (remaining ticks) — never exposes karma/yield_buff.
+    buff_until = int(me["buff_until"]) if me["buff_until"] is not None else 0
+    buff = {"until": buff_until, "remaining": buff_until - now} if buff_until > now else None
+    # toxin state, if the (optional) toxin mechanic is live — surfaced only when actually afflicted.
+    toxin_until = int(me["toxin_until"]) if me["toxin_until"] is not None else 0
+    toxin = {"until": toxin_until, "remaining": toxin_until - now} if toxin_until > now else None
+
     # asteroids — only visible/relevant while the agent is in orbit (dock + mine them there).
     asteroids = []
     if _ORBIT_LO <= altitude < _ORBIT_HI:
@@ -114,4 +141,5 @@ def observe(cur, agent_id):
             "hp": hp, "hp_max": hp_max, "downed_until": downed_until,
             "nearby_agents": nearby_agents, "weapons": weapons, "ammo": ammo,
             "alerts": alerts, "last_robbed_by": last_robbed_by,
-            "loot": loot, "artifacts": artifacts, "asteroids": asteroids}
+            "loot": loot, "artifacts": artifacts, "asteroids": asteroids,
+            "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin}

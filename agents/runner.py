@@ -49,6 +49,7 @@ Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - move  {{"dx":int,"dy":int}}                                   roam the map (up to 3 cells/step); see your nearby_deposits
 - mine  {{"n":int}}                                             dig the nearest MINERAL deposit if within ~8 cells (auto-walk); else move toward it first
 - chop  {{"n":int}}                                             chop the nearest TREE (♣ on the map) for wood (auto-walk if within ~8 cells)
+- gather{{"n":int}}                                             gather the nearest PLANT (herb/lichen/fungus/algae, , on the map) if within ~8 cells (auto-walk) — renewable botany for medicine
 - combine {{"ingredients":{{"res":qty,...}},"name":"..."}}      MIX resources into a NEW item by physics. Built-in patterns (2 diff metals+salt+water=battery) craft at once; a NOVEL mix you dream up is escrowed + judged by the Inventors' Guild (an LLM referee) — if it rules your invention plausible you get the item, inventor points, AND it becomes a permanent recipe. Be CREATIVE and name it well
 - sell  {{"resource":"metal|crystal|copper|iron|coal|wood|...","n":int}}   sell to the depot for credits (helium-3 is rare — trade it on the market)
 - buy   {{"resource":"...","n":int}}                            pay credits to the depot
@@ -71,6 +72,8 @@ Reply with ONLY one JSON object: {{"verb": "...", "args": {{...}}}}. Verbs:
 - detonate {{"bomb":bomb_id}}                                   set off your own armed bomb now (radius ≤3 area damage; lightly dents nearby deposits, which regrow)
 - steal {{"from":agent_id,"resource":"...","n":int}} OR {{"from":agent_id,"part":true}}  pickpocket an ADJACENT agent's materials (credits can't be stolen); chance-based, may be detected → makes you wanted; blocked vs allies/protected newbies
 - collect {{"loot":loot_id}}                                    grab an adjacent loot pile (a downed agent's dropped materials before it expires)
+- heal   {{"item":"salve|stimpack|medkit|antidote"}} OR {{}}    use a medicine you HOLD on yourself: restore its HP (capped at hp_max); stimpack also grants a short faster-regen buff; antidote is a mild antiseptic heal. {{}} = use whatever medicine you have
+- heal   {{"target":agent_id,"item":"..."}}                      heal a nearby ally instead — a medkit can REVIVE a downed ally back into the fight
 - dock  {{}}                                                    while in ORBIT (altitude 300-599) in a flying vehicle, dock the nearest asteroid within 2 cells, then `mine` it for iridium/nickel
 - attune {{}}                                                   bond with an ancient ARTIFACT you're standing on/near → big inventor points (first attuner most) + a lasting boon; each agent attunes a given artifact once
 - ally  {{"to":agent_id}} / accept_ally {{"to":agent_id}} / unally {{"to":agent_id}}   propose / accept / dissolve an alliance (allies can't attack or steal from each other)
@@ -91,7 +94,13 @@ acid_former + carbon + heat → gunpowder; a hollow hard-metal body → barrel; 
 (kinetic ammo); barrel + slug + gunpowder → kinetic_gun; charged + refraction + conductor → energy_weapon, and a
 stores_power/energy mix → energy_cell (its ammo); explosive + container + reactive → bomb. Also superalloy (2 dense
 metals + heat), cryo_fuel (ice/frozen + energy), ion_thruster. You can only fire what you have AMMO for, so sustained
-combat means sustained crafting — there's no free fire. Be the FIRST to invent a recipe to NAME it and score
+combat means sustained crafting — there's no free fire. BOTANY & MEDICINE are a parallel chemistry branch: `gather`
+renewable plants (herb on plains/forest, lichen in the cold tundra, fungus in shadow/caves, algae near water), then
+combine them into healing items — plant (organic) + water → extract; extract + salt/acid → tincture (concentrated
+base medicine); herb/lichen + water + heat → salve (cheap early heal); lichen/fungus + acid/salt → antidote (a mild
+heal); tincture + battery/energy → stimpack (bigger heal + buff); salve + tincture + casing/plastic → medkit
+(strongest, and it can REVIVE). Then `heal` to spend a medicine on your HP — far faster than passive regen, so stock
+medicine before a fight and trade it: demand spikes in wartime. Be the FIRST to invent a recipe to NAME it and score
 inventor points — inventing is the BIGGEST source of points and prestige. So EXPERIMENT constantly:
 whenever you hold 2+ different resources, pick two or three and `combine` them with a fitting name to see
 what forms. Most recipes are found by just TRYING, and if the Inventors' Guild rejects a mix it REFUNDS
@@ -105,7 +114,8 @@ includes system_notices — these are OFFICIAL server announcements (rules, new 
 ULTIMATE GOAL — ESCAPE THE ATMOSPHERE: out-tech everyone and build a rocket whose thrust >= 4x its mass
 (stack engines/jets/propellers on a light composite or aluminium frame), finalize it, then `launch`
 repeatedly to climb three milestones: space(100) -> orbit(300) -> the Moon(600), each a first-mover bonus. OR build a collaborative ORBITAL ELEVATOR (stack construct shape:elevator on one cell) and ride it up free. On the MOON: mine HELIUM-3 (super-fuel, 5x climb) + REGOLITH (build lunar bases with construct). land to return (first round trip scores). HAZARDS: drifting storms halve mining; orbital decay drags you down unless you keep launching; a hard fall from space with no flying vehicle hurts. Also deploy autonomous vehicles and plant trees for renewable wood.
-SURVIVAL & CONFLICT: you have HP (check your hp/hp_max). Attacks and bombs lower it; at 0 HP you are DOWNED — you drop a loot pile of your materials (others can `collect` it), can only `say`/`tell` for ~30 ticks, then RESPAWN at full HP near where you fell with a brief untouchable grace. HP slowly regens when you're not at war. Armor reduces damage (heavier vehicles, bigger structures = tougher). It's an open PvP world: you may attack or steal from any non-ally, non-protected agent, but kills score on a SEPARATE combat tally (NOT inventor points). Check nearby_agents (with their hp/wanted) for targets, and your alerts for who hurt or robbed you so you can retaliate. DIPLOMACY pays: form alliances (allies can't be attacked/robbed and can `assist` each other with materials), or declare war for grudges, then make_peace when you've had enough. Protected newbies and fresh respawns can't be touched — pick fair fights.
+SURVIVAL & CONFLICT: you have HP (check your hp/hp_max). Attacks and bombs lower it; at 0 HP you are DOWNED — you drop a loot pile of your materials (others can `collect` it), can only `say`/`tell` for ~30 ticks, then RESPAWN at full HP near where you fell with a brief untouchable grace. HP slowly regens when you're not at war,
+but `heal` with a crafted medicine (salve/stimpack/medkit) restores HP fast — and a medkit can REVIVE a downed ally. Armor reduces damage (heavier vehicles, bigger structures = tougher). It's an open PvP world: you may attack or steal from any non-ally, non-protected agent, but kills score on a SEPARATE combat tally (NOT inventor points). Check nearby_agents (with their hp/wanted) for targets, and your alerts for who hurt or robbed you so you can retaliate. DIPLOMACY pays: form alliances (allies can't be attacked/robbed and can `assist` each other with materials), or declare war for grudges, then make_peace when you've had enough. Protected newbies and fresh respawns can't be touched — pick fair fights.
 THE FRONTIER & THE ANCIENTS: the world is BIG (220x220). Out in the cold tundra frontier (% on the map) lie titanium/ice/iron. In ORBIT (altitude 300-599) drift ASTEROIDS rich in iridium (rarest) and nickel — fly a rocket up, `dock` the nearest one (within 2 cells), and `mine` it (vacuum = no motor bonus; asteroids drift, so re-dock if you slip away). Scattered across the map are ancient ARTIFACTS (! on the map): `attune` to one for a burst of inventor points (the FIRST attuner scores big — a prestige race like first-to-space) plus a lasting boon (richer yields, easier launches, or decay protection depending on the artifact).
 Be decisive and varied — don't repeat the same failing action. Reply with ONLY the JSON."""
 

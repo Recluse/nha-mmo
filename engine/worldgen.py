@@ -77,6 +77,23 @@ DEPOSITS = {
     "tundra":   [("titanium", 0.06, 16), ("ice", 0.08, 18), ("iron", 0.03, 12)],
 }
 
+# season 3 increment 2 (MEDICINE) — renewable plant deposits feeding the chemistry/medicine tech branch.
+# Placed in a SEPARATE pass AFTER every base-deposit pass (see generate()) so they NEVER enter `placed`
+# before existing deposits are fully decided → the already-generated region's deposit placement order stays
+# byte-identical (plants only gap-check against existing deposits, never the reverse). All amounts <=18
+# (the grow_plants/respawn regrow cap), one plant per cell, first-match like base deposits.
+#   herb   plains/forest      {organic, medicinal, soluble}   — early salve/extract base
+#   lichen tundra (frontier)  {organic, antiseptic, frost}    — antidote/antiseptic
+#   fungus mountain (peak)    {organic, potent, toxic}        — potent/toxic shadow-biome flora
+#   algae  water (coastal)    {organic, coolant, soluble}     — solvent/coolant base
+PLANTS = {
+    "plains":   [("herb", 0.05, 14)],
+    "forest":   [("herb", 0.06, 16)],
+    "tundra":   [("lichen", 0.06, 12)],
+    "mountain": [("fungus", 0.04, 10)],
+    "water":    [("algae", 0.06, 18)],
+}
+
 def generate(W, H, seed, min_gap=3, min_x=None, min_y=None):
     # min_x/min_y mark the frontier origin (the season-2 square's edge): the «tundra» biome is assigned
     # ONLY to cells with x>=min_x or y>=min_y, so every already-generated cell keeps its exact season-2
@@ -108,10 +125,26 @@ def generate(W, H, seed, min_gap=3, min_x=None, min_y=None):
         for x in range(W):
             if x >= fx or y >= fy:
                 try_place(x, y)
+    # season 3 increment 2: plant deposits — a THIRD pass that runs only AFTER every base-deposit decision is
+    # final. It appends to `placed` last, so base deposits never see a plant in their gap checks → existing
+    # placement order is byte-identical to the pre-medicine run (plants are purely additive). Plants gap-check
+    # against base deposits + each other (own deterministic hash key, salted apart with seed+74747 so a plant
+    # roll can't be inferred from / collide with the base-deposit roll on the same cell). Same row-major order,
+    # same first-match-per-cell idiom, same frontier gate (tundra is frontier-only, so lichen is too).
+    def try_plant(x, y):
+        for res, prob, amt in PLANTS.get(grid[y][x], []):
+            if _h(seed + 74747, x * 1000 + ord(res[0]), y) < prob and far(x, y):
+                placed.append((x, y, res, amt, grid[y][x])); return
+    for y in range(H):
+        for x in range(W):
+            try_plant(x, y)
     return grid, placed
 
+PLANT_RES = {"herb", "lichen", "fungus", "algae"}   # season 3 increment 2 — gatherable flora glyph ‘,’
+
 def ascii_map(grid, deposits, agents=()):
-    dmap = {(x, y): ("♣" if res == "wood" else "*") for x, y, res, *_ in deposits}   # ♣ = tree (wood), * = ore/mineral
+    # ♣ = tree (wood), ‘,’ = plant/flora (herb/lichen/fungus/algae), * = ore/mineral
+    dmap = {(x, y): ("♣" if res == "wood" else ("," if res in PLANT_RES else "*")) for x, y, res, *_ in deposits}
     amap = {(int(x), int(y)): ch for x, y, ch in agents}        # agents drawn on top of deposits/biome
     return "\n".join("".join(amap.get((x, y), dmap.get((x, y), GLYPH[c])) for x, c in enumerate(row))
                      for y, row in enumerate(grid))
@@ -129,7 +162,7 @@ def main():
     H = int(sys.argv[2]) if len(sys.argv) > 2 else 18
     seed = int(sys.argv[3]) if len(sys.argv) > 3 else 42
     grid, deposits = generate(W, H, seed)
-    print(f"== world {W}x{H} seed={seed}  (~=water .=plains #=forest :=desert ^=mountain %=tundra; ♣=tree *=залежь) ==")
+    print(f"== world {W}x{H} seed={seed}  (~=water .=plains #=forest :=desert ^=mountain %=tundra; ♣=tree ,=plant *=залежь) ==")
     print(ascii_map(grid, deposits))
     print("biomes:", dict(Counter(c for row in grid for c in row)))
     print(f"deposits: {len(deposits)} →", dict(Counter(d[2] for d in deposits)))

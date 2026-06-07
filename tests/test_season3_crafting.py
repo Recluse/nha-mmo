@@ -26,6 +26,14 @@ S3_ITEMS = {
     "energy_weapon", "bomb", "superalloy", "cryo_fuel", "ion_thruster",
 }
 
+# Season-3 medicine increment items (botany/chemistry branch) — same rule: no season-2 mix may
+# resolve into one (they all require a medicine-only tag organic/medicinal/antiseptic/potent/heal).
+MEDICINE_ITEMS = {
+    "extract", "tincture", "salve", "antidote", "stimpack", "medkit",
+}
+# new gathered plant raws (renewable) introduced by the medicine increment.
+PLANT_RAWS = {"herb", "lichen", "fungus", "algae"}
+
 
 # ---------------------------------------------------------------------------
 # 1. COLLISION-PROOF SET — the listed mixes resolve to the intended items
@@ -112,6 +120,62 @@ def test_dense_slug_from_iridium():
 
 
 # ---------------------------------------------------------------------------
+# 2b. MEDICINE INCREMENT (SEASON3-MEDICINE.md §1-2) — the botany/chemistry
+#     recipes resolve from their intended mixes, ordered so the more specific
+#     medicines win over the base extract.
+# ---------------------------------------------------------------------------
+def test_extract_from_plant_and_water():
+    # any plant (organic) + a solvent (water), no heat -> extract (the base medicine).
+    assert combine({"herb": 1, "water": 1}) == "extract"
+    assert combine({"algae": 1, "water": 1}) == "extract"
+    assert combine({"fungus": 1, "water": 1}) == "extract"
+
+
+def test_extract_heat_optional_non_medicinal_plant():
+    # algae has organic but NO medicinal, so even cooked it stays an extract (salve needs medicinal);
+    # also proves it does NOT fall through to steam (algae/water coolant) — extract wins above it.
+    assert combine({"algae": 1, "water": 1, "coal": 1}) == "extract"
+
+
+def test_salve_from_medicinal_plant_water_heat():
+    # medicinal plant (herb/lichen) + water + heat -> salve (cooked topical heal).
+    assert combine({"herb": 1, "water": 1, "coal": 1}) == "salve"
+    assert combine({"lichen": 1, "water": 1, "coal": 1}) == "salve"
+
+
+def test_tincture_from_extract_and_salt():
+    # extract (medicinal 7) fixed with salt (ionic) -> tincture (wins over extract & antidote).
+    assert combine({"extract": 1, "salt": 1}) == "tincture"
+
+
+def test_tincture_from_extract_and_acid():
+    # extract + acid (acid_former, also brings a solvent) -> tincture, NOT acid/electrolyte.
+    assert combine({"extract": 1, "acid": 1}) == "tincture"
+
+
+def test_antidote_from_lichen_and_salt():
+    # lichen (antiseptic, medicinal only 4 < tincture's 7) + salt (ionic) -> antidote.
+    assert combine({"lichen": 1, "salt": 1}) == "antidote"
+
+
+def test_antidote_from_fungus_and_acid():
+    # fungus (toxic) + acid (acid_former) -> antidote (above the generic acid/electrolyte rules).
+    assert combine({"fungus": 1, "acid": 1}) == "antidote"
+
+
+def test_stimpack_from_tincture_and_battery():
+    # tincture (medicinal + potent) + battery (stores_power) -> stimpack.
+    assert combine({"tincture": 1, "battery": 1}) == "stimpack"
+
+
+def test_medkit_from_salve_tincture_casing():
+    # salve (heal) + tincture (medicinal) + casing (container) -> medkit (the strongest, revive-capable).
+    assert combine({"salve": 1, "tincture": 1, "casing": 1}) == "medkit"
+    # plastic (moldable) works as the container material too.
+    assert combine({"salve": 1, "tincture": 1, "plastic": 1}) == "medkit"
+
+
+# ---------------------------------------------------------------------------
 # 3. OLD RECIPES still resolve correctly (every canonical season-2 recipe).
 # ---------------------------------------------------------------------------
 SEASON2_CANON = [
@@ -163,10 +227,10 @@ def _props(k):
     return crafting.PROPS.get(k) or crafting.ITEM_PROPS.get(k) or {}
 
 
-# Season-2 ingredient universe (exclude the new raws/items).
+# Season-2 ingredient universe (exclude the new season-3 raws/items AND the medicine raws/items).
 SEASON2_INGS = [
     k for k in list(crafting.PROPS) + list(crafting.ITEM_PROPS)
-    if k not in (S3_ITEMS | {"titanium", "ice", "iridium", "nickel"})
+    if k not in (S3_ITEMS | MEDICINE_ITEMS | PLANT_RAWS | {"titanium", "ice", "iridium", "nickel"})
 ]
 
 
@@ -210,6 +274,52 @@ def test_no_season2_mix_silently_hijacked_into_a_weapon():
             if got in S3_ITEMS and not _justifies_s3(ings, got):
                 bad.append((combo, got))
     assert not bad, f"unjustified Season-3 results: {bad[:20]}"
+
+
+# ---------------------------------------------------------------------------
+# 4b. EXHAUSTIVE non-collision for the MEDICINE increment: no mix drawn from the
+#     season-2 universe (no plant/medicine ingredient) may resolve into a medicine.
+#     Every medicine recipe requires a medicine-only tag (organic/medicinal/...),
+#     none of which exists on a season-2 ingredient, so the result set must be empty.
+# ---------------------------------------------------------------------------
+def test_no_season2_mix_resolves_into_a_medicine():
+    bad = []
+    for r in (1, 2, 3):
+        for combo in itertools.combinations(SEASON2_INGS, r):
+            got = combine({k: 1 for k in combo})
+            if got in MEDICINE_ITEMS:
+                bad.append((combo, got))
+    assert not bad, f"season-2 mixes wrongly resolved into a medicine: {bad[:20]}"
+
+
+# ---------------------------------------------------------------------------
+# 4c. The medicine increment must not have CHANGED any pre-medicine result. Re-run
+#     every season-2 + season-3-combat canonical recipe and the collision-proof
+#     mixes; all must still resolve to their original (non-medicine) output.
+# ---------------------------------------------------------------------------
+PRE_MEDICINE_CANON = SEASON2_CANON + [
+    ({"iron": 1}, "magnet"),
+    ({"iron": 1, "carbon": 1}, "steel"),
+    ({"steel": 1, "iron": 1}, "slug"),
+    ({"iridium": 1}, "slug"),
+    ({"barrel": 1, "slug": 1, "gunpowder": 1}, "kinetic_gun"),
+    ({"gunpowder": 1, "casing": 1}, "bomb"),
+    ({"sulfur": 1, "carbon": 1, "coal": 1}, "gunpowder"),
+    ({"steel": 1, "casing": 1}, "barrel"),
+    ({"battery": 1, "lens": 1}, "energy_cell"),
+    ({"energy_cell": 1, "crystal": 1, "copper": 1}, "energy_weapon"),
+    ({"iridium": 1, "titanium": 1, "coal": 1}, "superalloy"),
+    ({"steel": 1, "coal": 1}, "steel"),
+    ({"ice": 1, "oil": 1}, "cryo_fuel"),
+    ({"helium3": 1, "motor": 1, "silicon": 1}, "ion_thruster"),
+]
+
+
+def test_medicine_increment_did_not_change_existing_recipes():
+    for ings, want in PRE_MEDICINE_CANON:
+        got = combine(ings)
+        assert got == want, f"medicine increment changed {ings}: {got} (expected {want})"
+        assert got not in MEDICINE_ITEMS
 
 
 if __name__ == "__main__":

@@ -30,6 +30,13 @@ PROPS = {
     "ice":      {"coolant": 9, "solvent": 4, "frozen": 1},                # tundra-frontier frozen volatile — feeds cryo_fuel
     "iridium":  {"metal": 1, "hardness": 10, "dense": 9, "fusion": 1},    # apex orbital metal (asteroid-only) — superalloy + dense slug
     "nickel":   {"metal": 1, "hardness": 6, "magnetic": 5, "dense": 5},   # asteroid metal — magnetic + dense
+    # --- season 3 botany: gathered plants (renewable, the medicine/chemistry branch) ---
+    # 'organic'/'medicinal'/'antiseptic'/'potent'/'toxic' are medicine-only tags — no season-2/3
+    # mix carries them, so the medicine RULES below can never hijack an existing recipe.
+    "herb":     {"organic": 8, "medicinal": 6, "soluble": 6},             # plains/forest — base medicinal plant
+    "lichen":   {"organic": 6, "antiseptic": 7, "medicinal": 4, "frost": 3},  # tundra frontier — antiseptic, cures wounds
+    "fungus":   {"organic": 7, "potent": 8, "toxic": 5, "soluble": 4},    # shadow/cave biome — potent but toxic
+    "algae":    {"organic": 9, "coolant": 4, "soluble": 7},               # near water — soluble organic, mild
 }
 
 # crafted item -> its own properties (so items can be ingredients in further combines → tech tree)
@@ -67,6 +74,15 @@ ITEM_PROPS = {
     "superalloy":    {"metal": 1, "hardness": 12, "light": 6, "heat_proof": 1, "dense": 7},  # 2 dense metals melted — apex frame
     "cryo_fuel":     {"energy": 9, "coolant": 8, "frozen": 1},                        # ice + energy source — cold rocket fuel
     "ion_thruster":  {"power": 2, "thrust_field": 1, "light": 1},                     # fusion + power + semiconductor — orbital drive
+    # --- season 3 medicine + chemistry (HP healing branch; 'heal' = HP restored on use, capped HP_MAX engine-side) ---
+    # unique tags (organic/medicinal/antiseptic/potent/heal/cures_toxin/topical/buff/revive) keep these
+    # recipes off every existing season-2/3 mix (none of which carries an organic/medicinal property).
+    "extract":   {"medicinal": 7, "soluble": 8, "organic": 6},                        # plant steeped in water — concentrated base
+    "tincture":  {"medicinal": 8, "potent": 6, "antiseptic": 5},                      # extract fixed with salt/acid — strong base medicine
+    "salve":     {"heal": 15, "antiseptic": 8, "topical": 1},                         # cooked herb/lichen — mild cheap early-game heal
+    "antidote":  {"heal": 8, "antiseptic": 6},                                        # antiseptic plant + acid/salt — a mild antiseptic heal
+    "stimpack":  {"heal": 35, "buff": 1, "potent": 8},                                # tincture + a charge — fast heal + short buff
+    "medkit":    {"heal": 60, "revive": 1},                                           # salve + tincture in a casing — strong; can revive
 }
 
 # human-readable note per rule (for the Codex / agent hints)
@@ -104,6 +120,12 @@ RULE_NOTE = {
     "superalloy": "two dense metals melted with heat — an apex frame material",
     "cryo_fuel": "ice (frozen) + an energy source, no metal — cold rocket fuel",
     "ion_thruster": "a fusion fuel (helium3/iridium) + a motor (power) + a semiconductor — orbital drive",
+    "extract": "a plant (herb/lichen/fungus/algae) steeped in a solvent (water) — a base medicine",
+    "tincture": "an extract fixed with salt or acid — a concentrated base medicine",
+    "salve": "a medicinal plant + water, cooked with heat — a mild topical heal",
+    "antidote": "an antiseptic plant (lichen/fungus) + acid or salt — a mild antiseptic heal",
+    "stimpack": "a tincture + a power charge (battery) — a fast heal plus a short buff",
+    "medkit": "a salve + a tincture packed in a casing/plastic — a strong heal that can revive",
 }
 
 
@@ -145,6 +167,15 @@ RULES = [
     ("superalloy",    lambda a: a["mx"]("dense") >= 7 and a["n_metals"] >= 2 and a["heat"] and not a["electrolyte"]),  # two dense metals melted
     ("cryo_fuel",     lambda a: a["has"]("frozen") and a["has"]("energy") and a["n_metals"] == 0),  # ice + an energy source
     ("ion_thruster",  lambda a: a["has"]("fusion") and a["has"]("power") and a["has"]("semiconductor")),  # fusion fuel + motor + chip/silicon
+    # --- season 3 medicine (ABOVE the generic acid/electrolyte/steam/salt rules so they win; every
+    #     predicate REQUIRES a medicine-only tag (organic/medicinal/antiseptic/potent/heal) so it can
+    #     never resolve a season-2/3 mix — those carry zero organic/medicinal properties) ---
+    ("medkit",        lambda a: a["has"]("heal") and a["has"]("medicinal") and (a["has"]("container") or a["has"]("moldable"))),  # salve(heal) + tincture(medicinal) + casing/plastic
+    ("stimpack",      lambda a: a["has"]("medicinal") and a["has"]("potent") and a["has"]("stores_power")),  # tincture + a charge (battery)
+    ("tincture",      lambda a: a["mx"]("medicinal") >= 7 and (a["has"]("ionic") or a["has"]("acid_former"))),  # extract (medicinal>=7) fixed with salt/acid
+    ("antidote",      lambda a: (a["has"]("antiseptic") or a["has"]("toxic")) and (a["has"]("ionic") or a["has"]("acid_former"))),  # lichen/fungus + salt/acid
+    ("salve",         lambda a: a["has"]("medicinal") and a["has"]("solvent") and a["heat"]),  # a medicinal plant + water, cooked
+    ("extract",       lambda a: a["has"]("organic") and a["has"]("solvent")),  # any plant + a solvent (water) — the base, heat optional
     ("composite",     lambda a: a["mx"]("light") >= 6 and a["has"]("carbon") and a["n_metals"] >= 1),
     ("steel",         lambda a: a["n_metals"] >= 1 and a["has"]("carbon") and a["heat"] and not a["electrolyte"]),
     ("alloy",         lambda a: a["n_metals"] >= 2 and a["heat"] and not a["electrolyte"]),
