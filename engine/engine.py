@@ -430,6 +430,55 @@ def apply_intent(it, ents, cur, t):
         v["attrs"]["autonomous"] = True
         v["x"], v["y"] = a["x"], a["y"]                  # it sets off from where you stand
         return "applied", f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own"
+    if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
+        shape = str(args.get("shape", "box")).lower()
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator"
+        if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
+            cost = {"metal": 15, "composite": 8}; seg = 20
+            if any(get(a, r) < q for r, q in cost.items()):
+                return "rejected", f"an elevator segment needs {cost} (composite = aluminum + carbon)"
+            elev = next((e for e in ents.values() if e["type"] == "structure"
+                         and e["attrs"].get("shape") == "elevator"
+                         and abs(e["x"] - a["x"]) + abs(e["y"] - a["y"]) <= 1), None)
+            for r, q in cost.items():
+                addb(a, r, -q)
+            if elev:
+                newh = int(elev["attrs"].get("height", 0)) + seg
+                elev["attrs"]["height"] = newh
+                if newh >= ATMOSPHERE_TOP and not elev["attrs"].get("complete"):
+                    elev["attrs"]["complete"] = True
+                    a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + 200
+                    cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                                (t, a["id"], Json({"elevator": True, "complete": True, "height": newh, "points": 200})))
+                    return "applied", f"ORBITAL ELEVATOR #{elev['id']} COMPLETE at height {newh} — agents can `ride` it to space! +200 pts"
+                return "applied", f"extended orbital elevator #{elev['id']} -> {newh}/{ATMOSPHERE_TOP}"
+            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
+                        (a["x"], a["y"], a["id"], Json({"shape": "elevator", "height": seg, "size": 2,
+                                                        "name": str(args.get("name", "orbital elevator"))[:32]})))
+            return "applied", f"laid an orbital-elevator base #{cur.fetchone()['id']} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
+        size = max(1, min(20, int(args.get("size", 3))))
+        height = max(1, min(60, int(args.get("height", size))))
+        cost = {"metal": size, "composite": max(1, height // 12)}
+        if any(get(a, r) < q for r, q in cost.items()):
+            return "rejected", f"{shape} (size {size}, height {height}) needs {cost}"
+        for r, q in cost.items():
+            addb(a, r, -q)
+        cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
+                    (a["x"], a["y"], a["id"], Json({"shape": shape, "size": size, "height": height,
+                                                    "color": str(args.get("color", ""))[:16], "name": str(args.get("name", shape))[:32]})))
+        return "applied", f"built {shape} (size {size}, h {height}) at ({a['x']},{a['y']}) for {cost}"
+    if verb == "ride":                                   # ride a completed orbital elevator to space — no rocket, no fuel
+        cur.execute("SELECT (attrs->>'height')::int h FROM entities WHERE type='structure' "
+                    "AND attrs->>'shape'='elevator' AND (attrs->>'complete')::boolean AND x=%s AND y=%s LIMIT 1",
+                    (a["x"], a["y"]))
+        row = cur.fetchone()
+        if not row:
+            return "rejected", "no completed orbital elevator on this cell (stand at its base)"
+        a["attrs"]["altitude"] = max(int(a["attrs"].get("altitude", 0)), min(SKY_TOP, row["h"]))
+        a["attrs"]["in_space"] = True
+        a["attrs"]["space_level"] = max(int(a["attrs"].get("space_level", 0)), 1)
+        return "applied", f"rode the orbital elevator to space (altitude {a['attrs']['altitude']}) — no rocket needed!"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------
