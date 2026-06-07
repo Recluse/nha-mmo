@@ -127,6 +127,29 @@ def _place_artifacts(cur):
     return 3
 
 
+def _place_plants(cur):
+    """ONE-TIME (count==0 guarded) placement of the botany plant deposits. Worldgen emits them now, but a world
+    generated before the medicine increment has none — so regenerate the deposits for the current map (same seed +
+    frontier origin as _grid, so biomes match the rendered map) and insert ONLY the plant-resource ones, skipping
+    any cell that already holds a deposit. Deterministic, additive; existing mineral/wood deposits are untouched."""
+    cur.execute("SELECT count(*) FROM entities WHERE type='deposit' AND attrs->>'resource' = ANY(%s)",
+                (list(engine.PLANT_RESOURCES),))
+    if cur.fetchone()[0] != 0:
+        return 0
+    _, deposits = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED, min_x=_FRONTIER_X, min_y=_FRONTIER_Y)
+    n = 0
+    for x, y, res, amt, bi in deposits:
+        if res not in engine.PLANT_RESOURCES:
+            continue
+        cur.execute("SELECT 1 FROM entities WHERE type='deposit' AND x=%s AND y=%s LIMIT 1", (x, y))
+        if cur.fetchone():
+            continue                                  # never stack a plant on an existing deposit
+        cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('deposit',%s,%s,%s)",
+                    (x, y, Json({"resource": res, "amount": amt, "biome": bi, "gen_seed": str(WORLD_SEED)})))
+        n += 1
+    return n
+
+
 def _ensure_world():
     global _FRONTIER_X, _FRONTIER_Y
     conn = _connect()
@@ -172,9 +195,9 @@ def _ensure_world():
         cur.execute("UPDATE entities SET attrs = attrs || %s WHERE type=%s AND (attrs->>'hp_max') IS NULL",
                     (Json({"hp": engine.HP_BY_TYPE[tp], "hp_max": engine.HP_BY_TYPE[tp]}), tp))
     conn.commit()
-    na = _place_asteroids(cur); nr = _place_artifacts(cur)
-    if na or nr:
-        conn.commit(); print(f"season3: placed {na} asteroids + {nr} artifacts (seed={WORLD_SEED})")
+    na = _place_asteroids(cur); nr = _place_artifacts(cur); npl = _place_plants(cur)
+    if na or nr or npl:
+        conn.commit(); print(f"season3: placed {na} asteroids + {nr} artifacts + {npl} plant deposits (seed={WORLD_SEED})")
     # season-3 depot base prices for the LIVE depot (seeded under season 2 without them). Merge-only via || so
     # existing prices are preserved; the new raws/goods become tradeable at their depot floors. Includes the
     # medicine increment: the gatherable plants (herb/lichen/fungus/algae — renewable, wood-cheap) plus the
