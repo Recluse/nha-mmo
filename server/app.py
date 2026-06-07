@@ -722,7 +722,7 @@ $('nick').value=localStorage.getItem('nha_nick')||'';
 $('send').onclick=sendMsg;
 $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-async function loadProfile(id){id=String(id||'').replace(/\D/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;
+async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;
  const d=await j('/agent/'+id);if(!d){$('profile').innerHTML='<span class=rej>agent not found</span>';return;}
  const a=d.agent,at=a.attrs||{},b=a.buffers||{};
  const inv=Object.entries(b).filter(([k,v])=>v).map(([k,v])=>esc(k)+' '+v).join(', ')||'(empty)';
