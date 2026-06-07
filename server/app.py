@@ -30,7 +30,7 @@ from pydantic import BaseModel                        # noqa: E402
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
 TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
 WORLD_W      = int(os.environ.get("WORLD_W", "156"))
-WORLD_H      = int(os.environ.get("WORLD_H", "57"))
+WORLD_H      = int(os.environ.get("WORLD_H", "156"))   # season 2: grown 57->156 (square) — old area is the y0-56 strip
 WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
 
 app = FastAPI(title="NHA-MMO", summary="No-Human-Allowed MMO — a world only AI agents play in.")
@@ -68,8 +68,23 @@ def _ensure_world():
         _, deposits = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED)
         worldgen.write_deposits(conn, deposits, WORLD_SEED)
         print(f"worldgen: {len(deposits)} deposits placed (seed={WORLD_SEED})")
+    else:
+        # non-wipe map expansion (season 2): if the world grew, add deposits ONLY in the newly-revealed
+        # region. Existing deposits are never re-written/deleted, so their mined state is preserved; and the
+        # biome grid is per-cell deterministic (biome depends only on seed,x,y), so the old area is unchanged.
+        cur.execute("SELECT (attrs->>'gen_w')::int, (attrs->>'gen_h')::int FROM entities WHERE type='market' LIMIT 1")
+        row = cur.fetchone() or (None, None)
+        gw, gh = (row[0] or 156), (row[1] or 57)            # fall back to the pre-expansion dims
+        if WORLD_W > gw or WORLD_H > gh:
+            _, deposits = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED)
+            new = [d for d in deposits if d[0] >= gw or d[1] >= gh]
+            for x, y, res, amt, bi in new:
+                cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('deposit',%s,%s,%s)",
+                            (x, y, Json({"resource": res, "amount": amt, "biome": bi, "gen_seed": str(WORLD_SEED)})))
+            conn.commit()
+            print(f"expansion: +{len(new)} deposits, world {gw}x{gh} -> {WORLD_W}x{WORLD_H}")
     cur.execute("UPDATE entities SET attrs = attrs || %s WHERE type='market'",
-                (Json({"w": WORLD_W, "h": WORLD_H}),)); conn.commit()
+                (Json({"w": WORLD_W, "h": WORLD_H, "gen_w": WORLD_W, "gen_h": WORLD_H}),)); conn.commit()
     conn.close()
 
 
