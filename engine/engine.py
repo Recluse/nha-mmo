@@ -26,6 +26,85 @@ SPACE_TIERS = [(100, "space"), (300, "orbit"), (600, "the Moon")]   # altitude �
 SKY_TOP = 600            # max altitude — reaching the Moon
 DESCEND = 40             # altitude shed per `land` (controlled descent back home)
 
+# ===================== SEASON 3 CONSTANTS (all integers) =====================
+# --- combat / HP (unified across weapons + death + alliances) ---
+HP_MAX = 100
+HP_BY_TYPE = {"agent": 100, "vehicle": 120, "structure": 200}
+HP_REGEN = 2                  # agents only, per tick, up to HP_MAX, only when not at war this tick AND not downed
+ATTACK_RANGE = 6              # Manhattan (default weapon reach)
+WEAPON_RANGE_KINETIC = 6
+WEAPON_RANGE_ENERGY = 9
+WEAPON_STATS = {
+    "kinetic_gun":  {"dmg": 18, "rng": 6, "los": True,  "cd": 2, "ammo": "slug",        "ammo_n": 1, "aoe": 0},
+    "energy_weapon": {"dmg": 12, "rng": 9, "los": True,  "cd": 3, "ammo": "energy_cell", "ammo_n": 1, "aoe": 0},
+    "bomb":         {"dmg": 40, "rng": 1, "los": False, "cd": 5, "ammo": None,          "ammo_n": 0, "aoe": 2},
+}
+EXPLOSION_MAX_RADIUS = 3
+CRATER_DEPOSIT_HIT = 4        # a deposit inside a blast loses at most this much (self-heals via respawn_deposits)
+BOMBS_PER_CELL_MAX = 2        # anti stacked-nuke
+ARMOR_VEHICLE_DIV = 40        # vehicle armor = mass // 40
+MIN_EFF_DMG = 1
+RESPAWN_AGENT_TICKS = 30
+RESPAWN_GRACE = 8             # post-respawn ticks an agent cannot be targeted
+# --- death / loot / drop ---
+DEATH_COOLDOWN = RESPAWN_AGENT_TICKS
+LOOT_TTL = 120
+DROP_FRACTION = 4            # drop 1/DROP_FRACTION of each material on death
+DROP_CAP = 50               # ...capped per material
+FALL_FATAL_ALT = 300
+FALL_DMG_DIV = 4
+# --- theft ---
+THEFT_COOLDOWN = 12
+STEAL_BASE_PCT = 45
+STEAL_MIN_PCT = 10
+STEAL_MAX_PCT = 80
+DETECT_MARGIN = 25
+STEAL_FLOOR = 4             # victim must hold at least this much of the resource
+STEAL_MAX_ABS = 8          # absolute cap on a single steal
+NOTORIETY_HIT = 2
+NOTORIETY_CAP = 50
+NOTORIETY_DECAY_EVERY = 30
+VIGIL_GAIN = 3
+VIGIL_CAP = 35
+VIGIL_DECAY_EVERY = 20
+WANTED_TTL = 60
+# --- alliances / war ---
+ALLY_COOLDOWN = 30
+OFFER_TTL = 80
+PEACE_TTL = 40
+ALLY_AID_RADIUS = 2
+ALLY_AID_DIV = 4
+ASSIST_CAP = 50            # max qty per assist gift
+ASSIST_PER_WINDOW = 2      # max assists per giver per ASSIST_WINDOW
+ASSIST_WINDOW = 60
+PROTECT_WEALTH = 30        # a young agent below this credit wealth is protected from attack/steal
+PROTECT_AGE = 200          # ...while age (t - born) is below this
+WAR_REDECLARE_COOLDOWN = 120
+WEARINESS_CAP = 50
+# --- worldgen season 3 ---
+N_ASTEROIDS = 12
+ASTEROID_MINE_CAP = 5
+ASTEROID_RESPAWN_EVERY = 20
+DOCK_RANGE = 2
+ORBIT_LO = 300
+ORBIT_HI = 600
+ART_MAX_MONOLITH = 1
+ART_MAX_OTHER = 3
+ART_FIRST_PTS = 200
+ART_PTS = 60
+LENS_WINDOW = 200
+STASIS_CHARGES = 3
+# --- combat scoring (SEPARATE field, never pollutes inventor_points) ---
+COMBAT_PTS_KILL = 10
+COMBAT_PTS_PAIR_WINDOW = 200   # no re-award vs the same victim within this window
+# --- deposit-richness variance (mining yield jitter) ---
+KARMA_WINDOW = 400
+KARMA_MAX = 6
+KARMA_DIV = 4
+COOP_THRESH = 6
+_NF_W_MARKET = 2
+# ============================================================================
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
 ALTER TABLE world ADD COLUMN IF NOT EXISTS notices jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -64,6 +143,21 @@ CREATE TABLE IF NOT EXISTS dynamic_rules (sig text PRIMARY KEY, item_key text NO
 def get(e, r):  return int(e["buffers"].get(r, 0))
 def addb(e, r, n): e["buffers"][r] = int(e["buffers"].get(r, 0)) + int(n)
 
+# ---------- entity create/delete (keeps the in-memory ents dict in lock-step with the DB) ----------
+def new_entity(ents, cur, tp, x, y, owner, attrs):
+    """INSERT a new entity AND register it in ents BEFORE state_hash(ents) runs, so tick-time
+    creations (bomb/loot/relation/asteroid/artifact) are hashed + persisted by the same write-back loop."""
+    cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES(%s,%s,%s,%s,%s) "
+                "RETURNING id,type,x,y,owner,buffers,attrs", (tp, x, y, owner, Json(attrs)))
+    row = cur.fetchone()
+    ents[row["id"]] = dict(row)
+    return row["id"]
+
+def del_entity(ents, cur, eid):
+    """Delete an entity from both the DB and the in-memory ents dict (collect/decay/expire)."""
+    cur.execute("DELETE FROM entities WHERE id=%s", (eid,))
+    ents.pop(eid, None)
+
 def state_hash(ents):
     """Deterministic 16-hex digest of world state → per-tick audit/replay chain (same inputs ⇒ same hash)."""
     rows = sorted(ents.values(), key=lambda e: e["id"])
@@ -93,10 +187,17 @@ def behave(e):
         e["attrs"]["prices"] = {r: depot_price(e, r) for r in e["attrs"]["base"]}   # publish for spectator
 
 # ---------- intents (the only agent->world channel) ----------
-def apply_intent(it, ents, cur, t):
+def apply_intent(it, ents, cur, t, events):
     a, args, verb = ents.get(it["agent"]), it["args"], it["verb"]
     if not a:
         return "rejected", "no agent"
+    # world dimensions always come from the market entity (never bare w,h) — same idiom as move/mine
+    mkt = next((x for x in ents.values() if x["type"] == "market"), None)
+    W = int(mkt["attrs"].get("w", 156)) if mkt else 156
+    H = int(mkt["attrs"].get("h", 156)) if mkt else 156
+    # DEAD/DOWNED gate: a downed agent may ONLY talk until it respawns (whitelist EXACTLY say/tell)
+    if int(a["attrs"].get("downed_until", 0)) > t and verb not in ("say", "tell"):
+        return "rejected", "you are downed — you can only say/tell until you respawn"
     if verb in ("grab", "deposit", "transfer"):
         r, n = args["resource"], int(args.get("n", 1))
         if n < 1:
@@ -141,7 +242,8 @@ def apply_intent(it, ents, cur, t):
         stats_list = [r["stats"] or vehicles.PART.get(r["part"], {}) for r in rows]
         st = vehicles.finalize_stats(stats_list)
         cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('vehicle',0,0,%s,%s) RETURNING id",
-                    (a["id"], Json({"name": args.get("name", "vehicle"), "parts": parts, **st})))
+                    (a["id"], Json({"name": args.get("name", "vehicle"), "parts": parts, **st,
+                                    "hp": HP_BY_TYPE["vehicle"], "hp_max": HP_BY_TYPE["vehicle"]})))   # stamp HP at creation (no lazy hp → replay-safe)
         vid = cur.fetchone()["id"]
         cur.execute("UPDATE entities SET attrs = attrs || '{\"used\":true}' WHERE id = ANY(%s)",
                     ([r["id"] for r in rows],))
@@ -235,9 +337,7 @@ def apply_intent(it, ents, cur, t):
                     (t, a["id"], rcpt, text))
         return "applied", (f"tell #{rcpt}: " if rcpt else "say: ") + text[:60]
     if verb == "move":                                   # roam (3 cells on foot; a drivable vehicle + fuel goes farther)
-        mkt = next((x for x in ents.values() if x["type"] == "market"), None)
-        w = int(mkt["attrs"].get("w", 96)) if mkt else 96
-        h = int(mkt["attrs"].get("h", 36)) if mkt else 36
+        w, h = W, H
         rng, drove = 3, ""
         cur.execute("SELECT max((attrs->>'v_ground')::int) v FROM entities "
                     "WHERE type='vehicle' AND owner=%s AND (attrs->>'drives')::boolean", (a["id"],))
@@ -253,8 +353,28 @@ def apply_intent(it, ents, cur, t):
         return "applied", f"moved to ({a['x']},{a['y']})" + drove
     if verb in ("mine", "chop"):                         # gather from the nearest node (mine=minerals, chop=trees/wood)
         n = int(args.get("n", 5))
+        yb = 1 if a["attrs"].get("yield_buff") else 0     # resonant-monolith attunement: +50% at EVERY harvest site
+        if verb == "mine" and a["attrs"].get("docked_to") is not None:    # docked to an asteroid → mine it (vacuum: no motor bonus)
+            ast = ents.get(a["attrs"].get("docked_to"))
+            in_orbit = ORBIT_LO <= int(a["attrs"].get("altitude", 0)) < ORBIT_HI
+            if (not ast) or ast["type"] != "asteroid" or (not in_orbit) or \
+               (abs(ast["x"] - a["x"]) + abs(ast["y"] - a["y"]) > DOCK_RANGE):
+                a["attrs"].pop("docked_to", None)         # drifted away / fell out of orbit → undock (no Moon-harvest exploit)
+                events.append((t, a["id"], "undock", {"reason": "lost asteroid"}))
+                return "rejected", "your asteroid has drifted out of dock range — undocked"
+            r = ast["attrs"].get("resource", "iron"); have = int(ast["attrs"].get("amount", 0))
+            if have <= 0:
+                return "rejected", f"asteroid #{ast['id']} is mined out (it slowly replenishes)"
+            took = min(max(1, n), min(have, ASTEROID_MINE_CAP))
+            if yb:
+                took = min(have, took + took // 2)        # +50% yield buff
+            ast["attrs"]["amount"] = have - took
+            addb(a, r, took)
+            return "applied", f"mined {took} {r} from asteroid #{ast['id']}; {have - took} left" + (" (yield buff)" if yb else "")
         if verb == "mine" and int(a["attrs"].get("altitude", 0)) >= 600:   # standing on the Moon → mine helium-3 + regolith
             took = max(1, min(int(n), 6))
+            if yb:
+                took = took + took // 2
             addb(a, "helium3", took); addb(a, "regolith", took * 2)
             return "applied", f"mined the Moon: +{took} helium-3 (super-fuel), +{took * 2} regolith (lunar building material)"
         want_wood = (verb == "chop")
@@ -275,13 +395,13 @@ def apply_intent(it, ents, cur, t):
             fuel = next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1 and f != r), None)
             if fuel:
                 addb(a, fuel, -1); took = min(have, took + took // 2 + 1); powered = f" (powered, -1 {fuel})"
-        mkt = next((x for x in ents.values() if x["type"] == "market"), None)         # weather: a storm over this cell halves the haul
-        sw = int(mkt["attrs"].get("w", 156)) if mkt else 156
-        sh = int(mkt["attrs"].get("h", 156)) if mkt else 156
-        sx, sy, sr = storm_center(t, sw, sh)
+        if yb:
+            took = min(have, took + took // 2)            # resonant-monolith attunement: +50% yield
+        sx, sy, sr = storm_center(t, W, H)               # weather: a storm over this cell halves the haul
         storm = abs(dep["x"] - sx) + abs(dep["y"] - sy) <= sr
         if storm:
             took = max(1, took // 2)
+        took = min(have, took + _node_fortune(a, cur, t, dep, r))   # deposit-richness variance
         dep["attrs"]["amount"] = have - took
         addb(a, r, took)
         verbed = "chopped" if want_wood else "mined"
@@ -337,7 +457,8 @@ def apply_intent(it, ents, cur, t):
         for v in cur.fetchall():
             if v["c"] and v["t"] and v["m"]:
                 best = max(best, v["t"] / (GRAVITY * v["m"]))   # thrust-to-weight (weight = gravity * mass)
-        if best < 1.0:
+        gate = 0.5 if int(a["attrs"].get("lens_until", 0)) > t else 1.0   # gravity_lens artifact halves the lift-off gate while active
+        if best < gate:
             return "rejected", (f"thrust-to-weight too low to lift off (need thrust >= {GRAVITY}x mass; "
                                 f"best you have = {best:.2f}) — add engines/jets/propellers, lighten with a composite frame")
         he3 = get(a, "helium3") >= 1                     # lunar super-fuel → 5x climb
@@ -376,6 +497,7 @@ def apply_intent(it, ents, cur, t):
             return "applied", f"descending -> altitude {new}"
         was_space = bool(a["attrs"].get("in_space"))
         a["attrs"]["in_space"] = False; a["attrs"]["space_level"] = 0
+        a["attrs"].pop("fell", None); a["attrs"].pop("docked_to", None)   # landed: reset the one-shot fall flag + undock
         if was_space and not a["attrs"].get("round_trip"):
             a["attrs"]["round_trip"] = True
             cur.execute("SELECT 1 FROM events WHERE kind='land' AND (data->>'round_trip')='true' LIMIT 1")
@@ -421,6 +543,7 @@ def apply_intent(it, ents, cur, t):
                 return "applied", f"extended orbital elevator #{elev['id']} -> {newh}/{ATMOSPHERE_TOP}"
             cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
                         (a["x"], a["y"], a["id"], Json({"shape": "elevator", "height": seg, "size": 2,
+                                                        "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
                                                         "name": str(args.get("name", "orbital elevator"))[:32]})))
             return "applied", f"laid an orbital-elevator base #{cur.fetchone()['id']} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
         on_moon = int(a["attrs"].get("altitude", 0)) >= 600   # build with local regolith when up on the Moon
@@ -433,6 +556,7 @@ def apply_intent(it, ents, cur, t):
             addb(a, r, -q)
         cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
                     (a["x"], a["y"], a["id"], Json({"shape": shape, "size": size, "height": height,
+                                                    "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
                                                     "color": str(args.get("color", ""))[:16], "name": str(args.get("name", shape))[:32],
                                                     "alt": 600 if on_moon else 0})))
         return "applied", f"built {shape} (size {size}, h {height}) {'on the Moon ' if on_moon else ''}at ({a['x']},{a['y']}) for {cost}"
@@ -457,7 +581,434 @@ def apply_intent(it, ents, cur, t):
                     (a["x"], a["y"], Json({"resource": "wood", "amount": 3, "biome": "plains",
                                            "gen_seed": gs, "planted": True})))
         return "applied", f"planted a tree at ({a['x']},{a['y']}) — chop it later; trees regrow over time"
+    # ===================== SEASON 3 VERBS =====================
+    if verb == "attack":                                 # fire a held ranged weapon at a target (consumes ammo)
+        weapon = str(args.get("weapon", "kinetic_gun"))
+        ws = WEAPON_STATS.get(weapon)
+        if not ws or ws["aoe"] != 0:
+            return "rejected", "attack needs a ranged weapon (kinetic_gun or energy_weapon)"
+        if get(a, weapon) < 1:
+            return "rejected", f"you don't hold a {weapon}"
+        tgt = ents.get(args.get("target"))
+        if not tgt or tgt["type"] not in ("agent", "vehicle", "structure"):
+            return "rejected", "no such target (agent/vehicle/structure)"
+        if tgt["id"] == a["id"]:
+            return "rejected", "you cannot attack yourself"
+        ok, why = _can_harm(a, tgt, ents, t)             # ally-block / protection / respawn-grace gating
+        if not ok:
+            return "rejected", why
+        if int(a["attrs"].get("wpn_cd_until", 0)) > t:
+            return "rejected", "weapon on cooldown"
+        rng = int(ws["rng"])
+        if abs(tgt["x"] - a["x"]) + abs(tgt["y"] - a["y"]) > rng:
+            return "rejected", f"target out of range ({rng})"
+        if abs(int(tgt["attrs"].get("altitude", 0)) - int(a["attrs"].get("altitude", 0))) > rng:
+            return "rejected", "target out of vertical range"
+        if ws["los"] and _los_blocked(a["x"], a["y"], tgt["x"], tgt["y"], ents):
+            return "rejected", "no line of sight (a structure blocks the shot)"
+        ammo, ammo_n = ws["ammo"], int(ws["ammo_n"])
+        if ammo and get(a, ammo) < ammo_n:
+            return "rejected", f"out of ammo (need {ammo_n} {ammo})"
+        if ammo:
+            addb(a, ammo, -ammo_n)
+        a["attrs"]["wpn_cd_until"] = t + int(ws["cd"])
+        eff = max(MIN_EFF_DMG, int(ws["dmg"]) - armor(tgt))
+        dead = apply_damage(tgt, eff, t, a, events, cur, ents)
+        return "applied", (f"{weapon} hit #{tgt['id']} for {eff}" + (" — DESTROYED" if dead else f" (hp {hp_of(tgt)})"))
+    if verb == "arm":                                    # plant a timed bomb on your cell
+        if get(a, "bomb") < 1:
+            return "rejected", "you don't hold a bomb"
+        here = sum(1 for b in ents.values() if b["type"] == "bomb" and b["x"] == a["x"] and b["y"] == a["y"])
+        if here >= BOMBS_PER_CELL_MAX:
+            return "rejected", "too many bombs already on this cell"
+        if int(a["attrs"].get("wpn_cd_until", 0)) > t:
+            return "rejected", "weapon on cooldown"
+        addb(a, "bomb", -1)
+        bw = WEAPON_STATS["bomb"]
+        bid = new_entity(ents, cur, "bomb", a["x"], a["y"], a["id"],
+                         {"armed_tick": t, "fuse": 3, "aoe": min(int(bw["aoe"]), EXPLOSION_MAX_RADIUS),
+                          "dmg": int(bw["dmg"]), "owner": a["id"]})
+        a["attrs"]["wpn_cd_until"] = t + int(bw["cd"])
+        return "applied", f"armed bomb #{bid} at ({a['x']},{a['y']}) — fuse 3 ticks"
+    if verb == "detonate":                               # trigger your own bomb immediately
+        b = ents.get(args.get("bomb"))
+        if not b or b["type"] != "bomb":
+            return "rejected", "no such bomb"
+        if b["attrs"].get("owner") != a["id"]:
+            return "rejected", "not your bomb"
+        explode(b, ents, t, events, cur)
+        del_entity(ents, cur, b["id"])
+        return "applied", f"detonated bomb #{b['id']}"
+    if verb == "dock":                                   # latch onto an asteroid in orbit (flying ship required)
+        alt = int(a["attrs"].get("altitude", 0))
+        if not (ORBIT_LO <= alt < ORBIT_HI):
+            return "rejected", f"you must be in orbit (altitude {ORBIT_LO}-{ORBIT_HI - 1}) to dock"
+        cur.execute("SELECT 1 FROM entities WHERE type='vehicle' AND owner=%s "
+                    "AND (attrs->>'controllable')::boolean AND (attrs->>'flies')::boolean LIMIT 1", (a["id"],))
+        if not cur.fetchone():
+            return "rejected", "you need a controllable flying vehicle to dock"
+        asts = [x for x in ents.values() if x["type"] == "asteroid"]
+        if not asts:
+            return "rejected", "no asteroids in this orbit"
+        ast = min(asts, key=lambda x: abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]))
+        if abs(ast["x"] - a["x"]) + abs(ast["y"] - a["y"]) > DOCK_RANGE:
+            return "rejected", f"nearest asteroid is out of dock range ({DOCK_RANGE})"
+        a["attrs"]["docked_to"] = ast["id"]
+        a["x"], a["y"] = ast["x"], ast["y"]
+        events.append((t, a["id"], "dock", {"asteroid": ast["id"]}))
+        return "applied", f"docked to asteroid #{ast['id']} ({ast['attrs'].get('resource')}) — mine it"
+    if verb == "steal":                                  # lift a resource (or a loose part) off an adjacent agent
+        victim = ents.get(args.get("from"))
+        if not victim or victim["type"] != "agent" or victim["id"] == a["id"]:
+            return "rejected", "no such victim agent"
+        ok, why = _can_harm(a, victim, ents, t)
+        if not ok:
+            return "rejected", why
+        if max(abs(victim["x"] - a["x"]), abs(victim["y"] - a["y"])) > 1:
+            return "rejected", "you must be adjacent to steal"
+        if int(a["attrs"].get("last_steal_t", -10 ** 9)) + THEFT_COOLDOWN > t:
+            return "rejected", "still cooling down from your last theft"
+        if int(victim["attrs"].get("robbed_recent", -10 ** 9)) + THEFT_COOLDOWN > t:
+            return "rejected", "this agent was robbed too recently"
+        a["attrs"]["last_steal_t"] = t                   # stamp the attempt (cooldown applies even on a botch)
+        if args.get("part"):                             # try to lift one loose part
+            cur.execute("SELECT id, attrs->>'part' part FROM entities WHERE type='part' AND owner=%s "
+                        "AND (attrs->>'used') IS NULL ORDER BY id LIMIT 1", (victim["id"],))
+            prow = cur.fetchone()
+            if not prow:
+                return "applied", "no loose part to steal (a botched, noticed attempt)"
+            roll = _h(t, a["id"], victim["id"], a["x"] * 1000 + a["y"], 0) % 100
+            chance = max(STEAL_MIN_PCT, min(STEAL_MAX_PCT, STEAL_BASE_PCT - int(victim["attrs"].get("vigilance", 0))))
+            success = roll < chance
+            detected = (not success) or (roll >= chance - DETECT_MARGIN)
+            if success:
+                cur.execute("UPDATE entities SET owner=%s WHERE id=%s", (a["id"], prow["id"]))
+                if prow["id"] in ents:
+                    ents[prow["id"]]["owner"] = a["id"]
+            _theft_outcome(a, victim, ents, cur, t, success, detected, events, prow["part"], 1)
+            return "applied", (f"stole part {prow['part']}" if success else "failed to grab the part") + (" (noticed!)" if detected else " (clean)")
+        r = str(args.get("resource", ""))
+        if r == "credits":
+            return "rejected", "credits cannot be stolen"
+        if not r:
+            return "rejected", "specify a resource to steal"
+        held = get(victim, r)
+        if held < STEAL_FLOOR:
+            return "rejected", f"victim holds too little {r} to steal"
+        n = int(args.get("n", 3))
+        roll = _h(t, a["id"], victim["id"], a["x"] * 1000 + a["y"], sum(ord(c) for c in r)) % 100
+        chance = max(STEAL_MIN_PCT, min(STEAL_MAX_PCT, STEAL_BASE_PCT - int(victim["attrs"].get("vigilance", 0))))
+        success = roll < chance
+        detected = (not success) or (roll >= chance - DETECT_MARGIN)
+        take = min(max(1, n), STEAL_MAX_ABS, max(1, held // 4))
+        if success:
+            addb(victim, r, -take); addb(a, r, take)     # conserved transfer
+        _theft_outcome(a, victim, ents, cur, t, success, detected, events, r, take if success else 0)
+        return "applied", (f"stole {take} {r}" if success else f"failed to steal {r}") + (" (noticed!)" if detected else " (clean)")
+    if verb == "attune":                                 # bond with a nearby ancient artifact for a lasting boon
+        arts = [x for x in ents.values() if x["type"] == "artifact"
+                and abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]) <= 1]
+        if not arts:
+            return "rejected", "no artifact within reach"
+        art = min(arts, key=lambda x: abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]))
+        attuned = list(art["attrs"].get("attuned_by", []))
+        kind = art["attrs"].get("kind", "resonant_monolith")
+        cap = ART_MAX_MONOLITH if kind == "resonant_monolith" else ART_MAX_OTHER
+        if a["id"] in attuned:
+            return "rejected", "you are already attuned to this artifact"
+        if len(attuned) >= cap:
+            return "rejected", "this artifact is already fully attuned"
+        attuned.append(a["id"]); art["attrs"]["attuned_by"] = attuned
+        if kind == "resonant_monolith":
+            a["attrs"]["yield_buff"] = 1
+        elif kind == "gravity_lens":
+            a["attrs"]["lens_until"] = t + LENS_WINDOW
+        elif kind == "stasis_relic":
+            a["attrs"]["stasis"] = STASIS_CHARGES
+        cur.execute("SELECT 1 FROM events WHERE kind='attune' LIMIT 1")
+        first = cur.fetchone() is None
+        pts = ART_FIRST_PTS if first else ART_PTS
+        a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
+        events.append((t, a["id"], "attune", {"artifact": art["id"], "kind": kind, "first": first, "points": pts}))
+        return "applied", (f"{'FIRST to attune! ' if first else ''}attuned to the {kind} +{pts} pts")
+    if verb in ("ally", "accept_ally", "unally", "declare_war", "make_peace"):
+        other = ents.get(args.get("to"))
+        if not other or other["type"] != "agent" or other["id"] == a["id"]:
+            return "rejected", "no such other agent"
+        rel = _relation(ents, a["id"], other["id"])
+        if verb == "ally":
+            if rel and rel["attrs"].get("state") == "ally":
+                return "rejected", "already allied"
+            if rel and rel["attrs"].get("state") == "war":
+                return "rejected", "you are at war — make_peace first"
+            if rel and rel["attrs"].get("state") == "offer":
+                return "rejected", "an alliance offer is already pending"
+            lo, hi = _pair(a["id"], other["id"])
+            new_entity(ents, cur, "relation", 0, 0, None,
+                       {"a": lo, "b": hi, "state": "offer", "proposer": a["id"], "since": t})
+            return "applied", f"offered an alliance to #{other['id']}"
+        if verb == "accept_ally":
+            if not rel or rel["attrs"].get("state") != "offer" or rel["attrs"].get("proposer") == a["id"]:
+                return "rejected", "no alliance offer from that agent to accept"
+            rel["attrs"]["state"] = "ally"; rel["attrs"]["since"] = t
+            cur.execute("UPDATE entities SET attrs=%s WHERE id=%s", (Json(rel["attrs"]), rel["id"]))
+            events.append((t, a["id"], "ally", {"with": other["id"]}))
+            return "applied", f"alliance with #{other['id']} formed"
+        if verb == "unally":
+            if not rel or rel["attrs"].get("state") not in ("ally", "offer"):
+                return "rejected", "no alliance/offer to dissolve"
+            a["attrs"]["ally_cooldown_until"] = t + ALLY_COOLDOWN
+            del_entity(ents, cur, rel["id"])
+            return "applied", f"alliance with #{other['id']} dissolved"
+        if verb == "declare_war":
+            if rel and rel["attrs"].get("state") == "ally":
+                return "rejected", "you cannot declare war on an ally — unally first"
+            if rel and rel["attrs"].get("state") == "war":
+                return "rejected", "already at war"
+            if rel and int(rel["attrs"].get("redeclare_until", 0)) > t:
+                return "rejected", "too soon to re-declare war on this agent"
+            lo, hi = _pair(a["id"], other["id"])
+            if rel:
+                rel["attrs"] = {"a": lo, "b": hi, "state": "war", "proposer": a["id"], "since": t, "weariness": 0}
+                cur.execute("UPDATE entities SET attrs=%s WHERE id=%s", (Json(rel["attrs"]), rel["id"]))
+            else:
+                new_entity(ents, cur, "relation", 0, 0, None,
+                           {"a": lo, "b": hi, "state": "war", "proposer": a["id"], "since": t, "weariness": 0})
+            events.append((t, a["id"], "war", {"with": other["id"]}))
+            return "applied", f"declared war on #{other['id']}"
+        if verb == "make_peace":
+            if not rel or rel["attrs"].get("state") != "war":
+                return "rejected", "you are not at war with that agent"
+            del_entity(ents, cur, rel["id"])             # peace clears war state — NO credit payout
+            lo, hi = _pair(a["id"], other["id"])
+            new_entity(ents, cur, "relation", 0, 0, None,
+                       {"a": lo, "b": hi, "state": "peace", "proposer": a["id"], "since": t,
+                        "redeclare_until": t + WAR_REDECLARE_COOLDOWN})
+            events.append((t, a["id"], "peace", {"with": other["id"]}))
+            return "applied", f"made peace with #{other['id']}"
+    if verb == "assist":                                 # gift resources to an ally (capped, credits excluded)
+        other = ents.get(args.get("to"))
+        if not other or other["type"] != "agent" or other["id"] == a["id"]:
+            return "rejected", "no such ally"
+        rel = _relation(ents, a["id"], other["id"])
+        if not rel or rel["attrs"].get("state") != "ally":
+            return "rejected", "you can only assist an ally"
+        log = [int(x) for x in a["attrs"].get("assist_log", []) if int(x) > t - ASSIST_WINDOW]
+        if len(log) >= ASSIST_PER_WINDOW:
+            return "rejected", "assist limit reached for now"
+        give = args.get("give", {})
+        if not isinstance(give, dict) or not give:
+            return "rejected", "specify resources to give"
+        try:
+            give = {str(k): int(v) for k, v in give.items()}
+        except Exception:
+            return "rejected", "bad give amounts"
+        if any(k == "credits" for k in give):
+            return "rejected", "credits cannot be assisted"
+        if any(q < 1 or q > ASSIST_CAP for q in give.values()):
+            return "rejected", f"each gift must be 1..{ASSIST_CAP}"
+        if any(get(a, k) < q for k, q in give.items()):
+            return "rejected", "you don't hold that much to give"
+        for k, q in give.items():
+            addb(a, k, -q); addb(other, k, q)            # conserved transfer
+        log.append(t); a["attrs"]["assist_log"] = log
+        return "applied", f"assisted ally #{other['id']} with {give}"
+    if verb == "collect":                                # pick up an adjacent loot pile
+        loot = ents.get(args.get("loot"))
+        if not loot or loot["type"] != "loot":
+            return "rejected", "no such loot"
+        if abs(loot["x"] - a["x"]) + abs(loot["y"] - a["y"]) > 1:
+            return "rejected", "loot is out of reach (move adjacent)"
+        for k, q in list(loot["buffers"].items()):
+            addb(a, k, int(q))                           # conserved: pile is deleted
+        events.append((t, a["id"], "collect", {"loot": loot["id"]}))
+        del_entity(ents, cur, loot["id"])
+        return "applied", f"collected loot #{loot['id']}"
     return "rejected", "unknown verb"
+
+# ---------- season 3 shared helpers (deterministic, integer) ----------
+def _h(*parts):
+    """Deterministic hash int from the tick/ids/coords idiom (the engine's only 'randomness')."""
+    return int(hashlib.sha256(":".join(str(p) for p in parts).encode()).hexdigest(), 16)
+
+def _pair(i, j):
+    """Canonical (lo, hi) ordering for a relation between two agent ids."""
+    return (i, j) if i <= j else (j, i)
+
+def _relation(ents, i, j):
+    """The single relation entity between agents i and j, or None."""
+    lo, hi = _pair(i, j)
+    for e in ents.values():
+        if e["type"] == "relation" and e["attrs"].get("a") == lo and e["attrs"].get("b") == hi:
+            return e
+    return None
+
+def _are_allies(ents, i, j):
+    r = _relation(ents, i, j)
+    return bool(r and r["attrs"].get("state") == "ally")
+
+def _at_war(ents, i, j):
+    r = _relation(ents, i, j)
+    return bool(r and r["attrs"].get("state") == "war")
+
+def _protected(e, t):
+    """A young, poor agent is shielded from attack/steal (newbie protection; uses attrs.born, not events)."""
+    if e["type"] != "agent":
+        return False
+    born = int(e["attrs"].get("born", 0))
+    return (t - born) < PROTECT_AGE and get(e, "credits") < PROTECT_WEALTH
+
+def _can_harm(attacker, target, ents, t):
+    """Gating shared by attack + steal: returns (ok, why)."""
+    if int(attacker["attrs"].get("downed_until", 0)) > t:
+        return False, "you are downed"
+    if target["type"] == "agent":
+        if _are_allies(ents, attacker["id"], target["id"]):
+            return False, "you cannot harm an ally"
+        if _protected(target, t):
+            return False, "that agent is under newbie protection"
+        if int(target["attrs"].get("respawned_at", -10 ** 9)) + RESPAWN_GRACE > t:
+            return False, "target just respawned (grace period)"
+        if int(target["attrs"].get("downed_until", 0)) > t:
+            return False, "target is already downed"
+    return True, ""
+
+# structures that block line-of-sight (solid shapes only)
+_LOS_SHAPES = ("box", "cylinder", "pyramid", "sphere", "cone")
+
+def _los_blocked(x0, y0, x1, y1, ents):
+    """Integer Bresenham from (x0,y0)->(x1,y1); blocked if a live solid structure sits on an INTERIOR cell."""
+    walls = {(e["x"], e["y"]) for e in ents.values()
+             if e["type"] == "structure" and hp_of(e) > 0 and not e["attrs"].get("ruined")
+             and e["attrs"].get("shape") in _LOS_SHAPES}
+    if not walls:
+        return False
+    dx, dy = abs(x1 - x0), abs(y1 - y0)
+    sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+    err = dx - dy
+    cx, cy = x0, y0
+    while (cx, cy) != (x1, y1):
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy; cx += sx
+        if e2 < dx:
+            err += dx; cy += sy
+        if (cx, cy) == (x1, y1):
+            break
+        if (cx, cy) in walls:                            # endpoints excluded; interior wall blocks
+            return True
+    return False
+
+def hp_of(e):
+    """Current hp, materializing hp_max/hp deterministically on first touch (agents pre-materialized at register)."""
+    mx = int(e["attrs"].get("hp_max") or HP_BY_TYPE.get(e["type"], 100))
+    e["attrs"].setdefault("hp_max", mx)
+    return int(e["attrs"].setdefault("hp", mx))
+
+def armor(tgt):
+    """Damage reduction by type: vehicles from mass, structures from size."""
+    if tgt["type"] == "vehicle":
+        return int(tgt["attrs"].get("mass", 0)) // ARMOR_VEHICLE_DIV
+    if tgt["type"] == "structure":
+        return int(tgt["attrs"].get("size", 1))
+    return 0
+
+def apply_damage(e, eff, t, attacker, events, cur, ents):
+    """Subtract eff hp; on first reaching 0 run the death/down routine. Returns True if this hit was fatal."""
+    eff = max(MIN_EFF_DMG, int(eff))
+    hp = max(0, hp_of(e) - eff)
+    e["attrs"]["hp"] = hp
+    events.append((t, attacker["id"] if attacker else None, "damage",
+                   {"target": e["id"], "dmg": eff, "hp": hp, "type": e["type"]}))
+    if attacker and attacker["type"] == "agent" and e["type"] == "agent":   # mark live combat on a war pair
+        rel = _relation(ents, attacker["id"], e["id"])
+        if rel and rel["attrs"].get("state") == "war":
+            rel["attrs"]["war_combat_tick"] = t
+    if hp == 0:
+        kill_agent(e, t, attacker, events, cur, ents)
+        return True
+    return False
+
+def kill_agent(e, t, attacker, events, cur, ents):
+    """Down/wreck/ruin a target at 0 hp. Agents are DOWNED (never deleted) + drop a loot pile; vehicles
+    -> wrecked; structures -> ruined. All kept + rebuildable so the world can never become a permanent hole."""
+    if e["type"] == "agent":
+        e["attrs"]["death_x"] = e["x"]; e["attrs"]["death_y"] = e["y"]
+        e["attrs"]["downed_until"] = t + RESPAWN_AGENT_TICKS
+        e["attrs"].pop("docked_to", None)
+        drop = {}
+        for k in sorted(e["buffers"].keys()):
+            if k == "credits":
+                continue                                 # credits never drop/loot
+            q = get(e, k)
+            d = min(DROP_CAP, q // DROP_FRACTION)
+            if d > 0:
+                drop[k] = d; addb(e, k, -d)              # conserved: moved into the loot pile
+        events.append((t, e["id"], "destroyed", {"type": "agent", "by": attacker["id"] if attacker else None}))
+        if drop:
+            lid = new_entity(ents, cur, "loot", e["x"], e["y"], None, {"expires": t + LOOT_TTL, "from": e["id"]})
+            ents[lid]["buffers"] = dict(drop)
+            cur.execute("UPDATE entities SET buffers=%s WHERE id=%s", (Json(drop), lid))
+            events.append((t, e["id"], "drop", {"loot": lid, "contents": drop}))
+        if attacker and attacker["type"] == "agent":     # combat points (SEPARATE field, per-pair window-capped)
+            lk = dict(attacker["attrs"].get("last_kill", {}))
+            vk = str(e["id"])
+            if int(lk.get(vk, -10 ** 9)) + COMBAT_PTS_PAIR_WINDOW <= t:
+                attacker["attrs"]["combat_points"] = int(attacker["attrs"].get("combat_points", 0)) + COMBAT_PTS_KILL
+                lk[vk] = t; attacker["attrs"]["last_kill"] = lk
+    elif e["type"] == "vehicle":
+        e["attrs"]["wrecked"] = True
+        e["attrs"]["drives"] = False; e["attrs"]["flies"] = False; e["attrs"]["autonomous"] = False
+        events.append((t, e["id"], "destroyed", {"type": "vehicle", "by": attacker["id"] if attacker else None}))
+    elif e["type"] == "structure":
+        e["attrs"]["ruined"] = True
+        if e["attrs"].get("shape") == "elevator":
+            e["attrs"]["complete"] = False
+        events.append((t, e["id"], "destroyed", {"type": "structure", "by": attacker["id"] if attacker else None}))
+
+def explode(b, ents, t, events, cur):
+    """A bomb's blast: radius-falloff damage to entities + a small, self-healing dent to deposits in range."""
+    r = min(int(b["attrs"].get("aoe", 2)), EXPLOSION_MAX_RADIUS)
+    base = int(b["attrs"].get("dmg", 40))
+    owner = ents.get(b["attrs"].get("owner"))
+    targets = sorted([e for e in ents.values() if e["type"] in ("agent", "vehicle", "structure")
+                      and abs(e["x"] - b["x"]) + abs(e["y"] - b["y"]) <= r], key=lambda e: e["id"])
+    for tgt in targets:                                  # id-ordered, sequential (each reads hp left by the prior)
+        if tgt["type"] == "agent" and int(tgt["attrs"].get("downed_until", 0)) > t:
+            continue
+        d = abs(tgt["x"] - b["x"]) + abs(tgt["y"] - b["y"])
+        ring = max(MIN_EFF_DMG, base - base * d // (r + 1))
+        apply_damage(tgt, max(MIN_EFF_DMG, ring - armor(tgt)), t, owner, events, cur, ents)
+    for dep in ents.values():                            # deposits self-heal via respawn_deposits — bounded destruction
+        if dep["type"] == "deposit" and abs(dep["x"] - b["x"]) + abs(dep["y"] - b["y"]) <= r:
+            amt = int(dep["attrs"].get("amount", 0))
+            dep["attrs"]["amount"] = max(0, amt - CRATER_DEPOSIT_HIT)
+    events.append((t, b["id"], "explosion", {"x": b["x"], "y": b["y"], "r": r}))
+
+def _theft_outcome(thief, victim, ents, cur, t, success, detected, events, resource, took):
+    """Resolve a steal: bump the victim's vigilance + (if noticed) the thief's notoriety/wanted, set robbed_recent."""
+    victim["attrs"]["robbed_recent"] = t
+    victim["attrs"]["last_robbed_by"] = thief["id"]
+    if detected:
+        victim["attrs"]["vigilance"] = min(VIGIL_CAP, int(victim["attrs"].get("vigilance", 0)) + VIGIL_GAIN)
+        thief["attrs"]["notoriety"] = min(NOTORIETY_CAP, int(thief["attrs"].get("notoriety", 0)) + NOTORIETY_HIT)
+        thief["attrs"]["wanted_until"] = t + WANTED_TTL
+    events.append((t, thief["id"], "theft",
+                   {"victim": victim["id"], "resource": resource, "n": took,
+                    "success": bool(success), "detected": bool(detected)}))
+
+def _node_fortune(a, cur, t, dep, r):
+    """Deposit-richness variance: a tiny hash-derived swing in a node's effective yield (0 or 1 extra).
+    Reads breadth of the agent's recent value-bearing market activity from the prune-surviving events table."""
+    cur.execute("SELECT count(DISTINCT CASE WHEN data->>'seller'=%s THEN data->>'buyer' ELSE data->>'seller' END) c "
+                "FROM events WHERE kind='market' AND tick>=%s AND (data->>'seller'=%s OR data->>'buyer'=%s)",
+                (str(a["id"]), t - KARMA_WINDOW, str(a["id"]), str(a["id"])))
+    row = cur.fetchone()
+    coop = int((row["c"] if row else 0) or 0)
+    karma = min(KARMA_MAX, coop * _NF_W_MARKET // KARMA_DIV)
+    seed = int(hashlib.sha256(f"{t}:{a['id']}:{dep['x']}:{dep['y']}:{r}".encode()).hexdigest()[:4], 16)
+    jitter = seed % 5                                     # 0..4: with karma 0 the threshold (6) is never reached
+    return 1 if (jitter + karma) >= COOP_THRESH else 0
 
 # ---------- market clearing + trade expiry (run each tick) ----------
 def match_market(ents, cur, t, events):
@@ -563,25 +1114,156 @@ def storm_center(t, w, h):
     """A storm whose centre drifts and wraps across the map. mine/chop inside its radius = half yield (slowed, never blocked)."""
     return (t // 3) % w, (t // 5) % h, 14
 
-def orbital_decay(ents, t, events):
+def orbital_decay(ents, t, events, cur=None):
     """Space is unforgiving: agents in space slowly lose altitude unless they keep launching. Reach 0 → fall back to the surface
-    (the first-to-space RECORD persists — only the live in_space status decays)."""
+    (the first-to-space RECORD persists — only the live in_space status decays). An agent with NO controllable flying
+    vehicle takes a ONE-SHOT hard-fall hit the tick its altitude first crosses below FALL_FATAL_ALT (death fix D/E)."""
+    flyers = {v["owner"] for v in ents.values()
+              if v["type"] == "vehicle" and v["attrs"].get("flies") and not v["attrs"].get("wrecked")}
     for a in ents.values():
-        if a["type"] == "agent" and a["attrs"].get("in_space"):
-            alt = int(a["attrs"].get("altitude", 0)) - 2
-            if alt <= 0:
-                a["attrs"]["altitude"] = 0; a["attrs"]["in_space"] = False; a["attrs"]["space_level"] = 0
-                events.append((t, a["id"], "act", {"verb": "decay", "status": "applied", "result": "orbital decay — fell back to the surface"}))
-            else:
-                a["attrs"]["altitude"] = alt
+        if a["type"] != "agent" or not a["attrs"].get("in_space"):
+            continue
+        if int(a["attrs"].get("stasis", 0)) > 0:          # stasis_relic artifact: skip orbital decay, spend one of its charges
+            a["attrs"]["stasis"] = int(a["attrs"]["stasis"]) - 1
+            if a["attrs"]["stasis"] <= 0:
+                a["attrs"].pop("stasis", None)
+            continue
+        prev = int(a["attrs"].get("altitude", 0))
+        alt = prev - 2
+        safe = a["id"] in flyers                          # a controllable+flying vehicle catches the fall
+        if (not safe) and prev >= FALL_FATAL_ALT > alt and not a["attrs"].get("fell"):
+            a["attrs"]["fell"] = True                     # transient: fires ONCE on the crossing tick
+            dmg = max(MIN_EFF_DMG, prev // FALL_DMG_DIV)
+            if cur is not None:
+                apply_damage(a, dmg, t, None, events, cur, ents)
+        if alt <= 0:
+            a["attrs"]["altitude"] = 0; a["attrs"]["in_space"] = False; a["attrs"]["space_level"] = 0
+            a["attrs"].pop("fell", None)                  # cleared on land
+            events.append((t, a["id"], "act", {"verb": "decay", "status": "applied", "result": "orbital decay — fell back to the surface"}))
+        else:
+            a["attrs"]["altitude"] = alt
 
 def respawn_deposits(ents, t):
-    """Mineral deposits slowly replenish (deterministic, staggered by id) → the world never runs permanently dry."""
+    """Mineral deposits + asteroids slowly replenish (deterministic, staggered by id) → the world never runs permanently dry."""
     for e in ents.values():
         if e["type"] == "deposit" and e["attrs"].get("resource") != "wood":
             amt = int(e["attrs"].get("amount", 0))
             if amt < 18 and (t + e["id"]) % 12 == 0:
                 e["attrs"]["amount"] = amt + 1
+        elif e["type"] == "asteroid":
+            amt = int(e["attrs"].get("amount", 0))
+            cap = int(e["attrs"].get("max", amt))
+            if amt < cap and (t + e["id"]) % ASTEROID_RESPAWN_EVERY == 0:
+                e["attrs"]["amount"] = amt + 1
+
+# ---------- season 3 per-tick systems (deterministic → replay-safe) ----------
+def tick_bombs(ents, cur, t, events):
+    """Count down armed bombs (id-ordered) and detonate any whose fuse hits zero — sequential, documented."""
+    for b in sorted([e for e in ents.values() if e["type"] == "bomb"], key=lambda e: e["id"]):
+        if b["id"] not in ents:                           # an earlier blast in this loop may have removed it
+            continue
+        fuse = int(b["attrs"].get("fuse", 0)) - 1
+        b["attrs"]["fuse"] = fuse
+        if fuse <= 0:
+            explode(b, ents, t, events, cur)
+            del_entity(ents, cur, b["id"])
+
+def respawn_agents(ents, cur, t, events):
+    """Downed agents whose cooldown has elapsed respawn at full HP near their death cell (hash-jittered ±2)."""
+    mkt = next((x for x in ents.values() if x["type"] == "market"), None)
+    w = int(mkt["attrs"].get("w", 156)) if mkt else 156
+    h = int(mkt["attrs"].get("h", 156)) if mkt else 156
+    for a in ents.values():
+        if a["type"] != "agent":
+            continue
+        du = int(a["attrs"].get("downed_until", 0))
+        if du and t >= du:
+            mx = int(a["attrs"].get("hp_max", HP_MAX))
+            a["attrs"]["hp"] = mx
+            a["attrs"]["downed_until"] = 0
+            dx = int(a["attrs"].get("death_x", a["x"]))
+            dy = int(a["attrs"].get("death_y", a["y"]))
+            a["x"] = max(0, min(w - 1, dx + (_h(t, a["id"], "rx") % 5 - 2)))
+            a["y"] = max(0, min(h - 1, dy + (_h(t, a["id"], "ry") % 5 - 2)))
+            a["attrs"]["respawned_at"] = t                # RESPAWN_GRACE untargetability
+            events.append((t, a["id"], "respawn", {"x": a["x"], "y": a["y"]}))
+
+def cool_reputation(ents, t):
+    """Expire 'wanted' status and staggered-decay vigilance/notoriety; clear stale robbed_recent flags."""
+    for a in ents.values():
+        if a["type"] != "agent":
+            continue
+        at = a["attrs"]
+        if int(at.get("wanted_until", 0)) and t >= int(at.get("wanted_until", 0)):
+            at["wanted_until"] = 0
+        if int(at.get("notoriety", 0)) > 0 and (t + a["id"]) % NOTORIETY_DECAY_EVERY == 0:
+            at["notoriety"] = max(0, int(at["notoriety"]) - 1)
+        if int(at.get("vigilance", 0)) > 0 and (t + a["id"]) % VIGIL_DECAY_EVERY == 0:
+            at["vigilance"] = max(0, int(at["vigilance"]) - 1)
+        if "robbed_recent" in at and int(at.get("robbed_recent", 0)) + THEFT_COOLDOWN <= t:
+            at.pop("robbed_recent", None)
+
+def accrue_weariness(ents, t):
+    """War weariness builds ONLY on ticks where a real attack landed between the pair (no credit payout — C6)."""
+    for e in ents.values():
+        if e["type"] == "relation" and e["attrs"].get("state") == "war" and int(e["attrs"].get("war_combat_tick", -1)) == t:
+            e["attrs"]["weariness"] = min(WEARINESS_CAP, int(e["attrs"].get("weariness", 0)) + 1)
+
+def regen_hp(ents, t):
+    """Agents heal HP_REGEN/tick when not downed and not in active combat with a war foe this tick."""
+    fighting = {e["attrs"].get("a") for e in ents.values()
+                if e["type"] == "relation" and e["attrs"].get("state") == "war"
+                and int(e["attrs"].get("war_combat_tick", -1)) == t}
+    fighting |= {e["attrs"].get("b") for e in ents.values()
+                 if e["type"] == "relation" and e["attrs"].get("state") == "war"
+                 and int(e["attrs"].get("war_combat_tick", -1)) == t}
+    for a in ents.values():
+        if a["type"] != "agent":
+            continue
+        if int(a["attrs"].get("downed_until", 0)) > t or a["id"] in fighting:
+            continue
+        mx = int(a["attrs"].get("hp_max", HP_MAX))
+        cur_hp = hp_of(a)
+        if cur_hp < mx:
+            a["attrs"]["hp"] = min(mx, cur_hp + HP_REGEN)
+
+def expire_diplomacy(ents, cur, t):
+    """Drop alliance offers nobody accepted within OFFER_TTL, and lapsed peace markers past PEACE_TTL."""
+    for e in list(ents.values()):
+        if e["type"] != "relation":
+            continue
+        st = e["attrs"].get("state")
+        since = int(e["attrs"].get("since", t))
+        if st == "offer" and t - since > OFFER_TTL:
+            del_entity(ents, cur, e["id"])
+        elif st == "peace" and t - since > PEACE_TTL and int(e["attrs"].get("redeclare_until", 0)) <= t:
+            del_entity(ents, cur, e["id"])
+
+def drift_asteroids(ents, t, events):
+    """Asteroids ride a closed integer orbit keyed on stored gen_seed/phase + t, wrapped by the dims STORED at
+    placement (never live env → worldgen fix). A docked agent that drifts out of range is undocked."""
+    for ast in ents.values():
+        if ast["type"] != "asteroid":
+            continue
+        at = ast["attrs"]
+        w = int(at.get("w", 220)); h = int(at.get("h", 220))
+        seed = int(at.get("gen_seed", 0)); phase = int(at.get("phase", 0))
+        cx = int(at.get("cx", ast["x"])); cy = int(at.get("cy", ast["y"]))
+        ax = (cx + (_h(seed, "ox", (t + phase) // 3) % 5 - 2)) % w     # small closed wobble around the anchor
+        ay = (cy + (_h(seed, "oy", (t + phase) // 4) % 5 - 2)) % h
+        ast["x"], ast["y"] = ax, ay
+    for a in ents.values():                               # undock anyone the asteroid drifted away from
+        if a["type"] == "agent" and a["attrs"].get("docked_to") is not None:
+            ast = ents.get(a["attrs"].get("docked_to"))
+            if (not ast) or ast["type"] != "asteroid" or abs(ast["x"] - a["x"]) + abs(ast["y"] - a["y"]) > DOCK_RANGE:
+                a["attrs"].pop("docked_to", None)
+                events.append((t, a["id"], "undock", {"reason": "drift"}))
+
+def decay_loot(ents, cur, t):
+    """Loot piles past their TTL evaporate (the materials setback window closes)."""
+    for e in list(ents.values()):
+        if e["type"] == "loot" and t >= int(e["attrs"].get("expires", 0)):
+            del_entity(ents, cur, e["id"])
 
 # ---------- tick ----------
 def prune_tables(cur, t):
@@ -616,11 +1298,12 @@ def tick(conn):
                         "WHERE id=%s", (it["id"],))
             continue
         try:
-            st, res = apply_intent(it, ents, cur, t)
+            st, res = apply_intent(it, ents, cur, t, events)
         except Exception as e:                            # one malformed intent must never freeze the world
             st, res = "rejected", f"bad intent ({str(e)[:80]})"
         cur.execute("UPDATE intents SET status=%s, result=%s WHERE id=%s", (st, res, it["id"]))
         events.append((t, it["agent"], "act", {"verb": it["verb"], "status": st, "result": res}))
+    tick_bombs(ents, cur, t, events)                      # AFTER intents: bombs armed this tick tick down in id order
     for e in list(ents.values()):
         behave(e)
     match_market(ents, cur, t, events)
@@ -628,8 +1311,15 @@ def tick(conn):
     resolve_proposals(ents, cur, t, events)
     roam_autonomous(ents, t)
     grow_trees(ents, t)
-    orbital_decay(ents, t, events)
+    orbital_decay(ents, t, events, cur)
     respawn_deposits(ents, t)
+    respawn_agents(ents, cur, t, events)                  # season 3 per-tick systems (after respawn_deposits, before write-back)
+    cool_reputation(ents, t)
+    accrue_weariness(ents, t)
+    regen_hp(ents, t)
+    expire_diplomacy(ents, cur, t)
+    drift_asteroids(ents, t, events)
+    decay_loot(ents, cur, t)
     for e in ents.values():
         cur.execute("UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s",
                     (e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), e["id"]))
@@ -653,10 +1343,15 @@ def seed_demo(conn):
         cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES(%s,%s,%s,%s,%s) RETURNING id",
                     (tp, x, y, Json(buffers or {}), Json(attrs or {})))
         return cur.fetchone()[0]
-    ent("agent", 0, 0, buffers={"metal": 0})                       # idle starter agent (play.py demo); live agents self-register
+    ent("agent", 0, 0, buffers={"metal": 0},
+        attrs={"hp": HP_MAX, "hp_max": HP_MAX, "born": 0})          # idle starter agent (play.py demo); live agents self-register
     ent("depot", 0, 0, attrs={"base": {"ore": 2, "crystal": 8, "metal": 5, "water": 1,
         "copper": 4, "iron": 3, "aluminum": 4, "carbon": 2, "silicon": 6, "salt": 1, "sulfur": 3, "oil": 4,
-        "coal": 3, "wood": 2}})
+        "coal": 3, "wood": 2,
+        # --- season 3 raws + crafted goods (tradeable buffer resources) ---
+        "titanium": 7, "ice": 1, "iridium": 20, "nickel": 5, "superalloy": 14, "cryo_fuel": 8,
+        "ion_thruster": 18, "gunpowder": 5, "slug": 4, "energy_cell": 10, "kinetic_gun": 30,
+        "energy_weapon": 28, "bomb": 9}})
     ent("market", 0, 0, attrs={"last": {}})                        # holds last clearing prices + world dims (w/h)
     conn.commit()
     print("seeded: starter agent + depot + market (legacy demo power/mining rig removed)")

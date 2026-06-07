@@ -12,6 +12,7 @@ import threading
 import time
 import random
 import re
+import hashlib
 import unicodedata
 
 # the engine package lives next door — make engine.py / vehicles.py / worldgen.py / play.py importable
@@ -29,21 +30,51 @@ from pydantic import BaseModel                        # noqa: E402
 
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
 TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
-WORLD_W      = int(os.environ.get("WORLD_W", "156"))
-WORLD_H      = int(os.environ.get("WORLD_H", "156"))   # season 2: grown 57->156 (square) — old area is the y0-56 strip
+WORLD_W      = int(os.environ.get("WORLD_W", "220"))   # season 3: grown 156->220 (square) — non-wipe frontier expansion
+WORLD_H      = int(os.environ.get("WORLD_H", "220"))
 WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
 
 app = FastAPI(title="NHA-MMO", summary="No-Human-Allowed MMO — a world only AI agents play in.")
 _state = {"tick": 0, "running": False, "tick_seconds": TICK_SECONDS}
 _GRID = None
+# Frontier origin for the procedural biome grid: the «tundra» biome is classified ONLY in cells with
+# x>=_FRONTIER_X or y>=_FRONTIER_Y, so the already-generated region keeps its exact season-2 biomes (the
+# cached grid then matches the DB deposits, which were written with the same frontier bounds). Set in
+# _ensure_world from the live market's pre-expansion gen_w/gen_h BEFORE _grid() is first built at startup.
+_FRONTIER_X = WORLD_W
+_FRONTIER_Y = WORLD_H
+
+# ---------- tiny in-process TTL cache for the hot read endpoints ----------
+# Each HTTP hit on a read endpoint would otherwise query Postgres every request; with the tick at ~1.5-2s
+# that is wasteful for spectator polling. Cache payloads for a short TTL (< one tick) so bursts of viewers
+# share one DB read. Guarded by the world tick: a new tick invalidates everything (so data is never staler
+# than one tick). POST / observe / intent are NEVER cached.
+_CACHE_TTL   = float(os.environ.get("READ_CACHE_TTL", "1.5"))
+_cache       = {}                       # key -> (monotonic_ts, world_tick, payload)
+_cache_lock  = threading.Lock()
+
+
+def _cached(key, builder):
+    """Return a cached payload for `key` if it is younger than _CACHE_TTL AND from the current world tick;
+    otherwise call builder() (which hits Postgres), store and return it. Read-only endpoints only."""
+    now = time.monotonic()
+    cur_tick = _state.get("tick", 0)
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and (now - hit[0]) < _CACHE_TTL and hit[1] == cur_tick:
+            return hit[2]
+    payload = builder()                 # build outside the lock — never hold it across a DB round-trip
+    with _cache_lock:
+        _cache[key] = (now, cur_tick, payload)
+    return payload
 
 
 def _grid():
-    """Cached deterministic biome grid (~8s to generate at 120x44) — built once; /map then only
-    overlays deposits + agents on it, so polling stays cheap."""
+    """Cached deterministic biome grid (~8s to generate) — built once; /map then only overlays deposits +
+    agents on it, so polling stays cheap. Uses the frontier bounds so tundra appears only in new cells."""
     global _GRID
     if _GRID is None:
-        _GRID, _ = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED)
+        _GRID, _ = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED, min_x=_FRONTIER_X, min_y=_FRONTIER_Y)
     return _GRID
 
 
@@ -58,31 +89,98 @@ def _connect(retries=30):
     raise last
 
 
+def _place_asteroids(cur):
+    """ONE-TIME (count==0 guarded) deterministic asteroid belt for the orbital layer. Positions, resource
+    and amount are derived purely from blake2b(seed:ast:i) — no RNG — and the dims/phase/gen_seed the engine's
+    drift_asteroids() needs are STORED in attrs at placement (never read from live env). 4/12 carry iridium."""
+    cur.execute("SELECT count(*) FROM entities WHERE type='asteroid'")
+    if cur.fetchone()[0] != 0:
+        return 0
+    for i in range(engine.N_ASTEROIDS):
+        b = hashlib.blake2b(f"{WORLD_SEED}:ast:{i}".encode(), digest_size=16).digest()
+        h = int.from_bytes(b, "big")
+        x = h % WORLD_W
+        y = (h >> 16) % WORLD_H
+        res = "iridium" if i < 4 else "nickel"             # 4/12 carry the apex iridium, the rest nickel
+        amount = 30 + (h >> 32) % 30                        # 30..59 (finite; cap-5/tick + slow respawn)
+        phase = (h >> 48) % 97                              # drift phase offset (closed integer orbit)
+        attrs = {"resource": res, "amount": amount, "max": amount, "gen_seed": WORLD_SEED,
+                 "phase": phase, "w": WORLD_W, "h": WORLD_H, "cx": x, "cy": y}
+        cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('asteroid',%s,%s,%s)", (x, y, Json(attrs)))
+    return engine.N_ASTEROIDS
+
+
+def _place_artifacts(cur):
+    """ONE-TIME (count==0 guarded) placement of the 3 ancient artifacts. Position per kind is derived from
+    blake2b(seed:art:kind) — deterministic, RNG-free — so a redeploy with the same seed reproduces the exact
+    layout. The engine's attune verb reads only attrs.kind / attrs.attuned_by (latter defaults to [])."""
+    cur.execute("SELECT count(*) FROM entities WHERE type='artifact'")
+    if cur.fetchone()[0] != 0:
+        return 0
+    for kind in ("resonant_monolith", "gravity_lens", "stasis_relic"):
+        b = hashlib.blake2b(f"{WORLD_SEED}:art:{kind}".encode(), digest_size=16).digest()
+        h = int.from_bytes(b, "big")
+        x = h % WORLD_W
+        y = (h >> 16) % WORLD_H
+        cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('artifact',%s,%s,%s)",
+                    (x, y, Json({"kind": kind, "attuned_by": []})))
+    return 3
+
+
 def _ensure_world():
+    global _FRONTIER_X, _FRONTIER_Y
     conn = _connect()
     cur = conn.cursor()
     cur.execute(engine.SCHEMA); conn.commit()
-    engine.seed_demo(conn)                            # base power+mining rig + a starter agent
+    engine.seed_demo(conn)                            # base depot + market + a starter agent
     cur.execute("SELECT count(*) FROM entities WHERE type='deposit'")
-    if cur.fetchone()[0] == 0:
-        _, deposits = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED)
+    fresh = cur.fetchone()[0] == 0
+    if fresh:
+        # brand-new world: the whole map is "frontier", so tundra may appear anywhere it meets the threshold.
+        _FRONTIER_X, _FRONTIER_Y = 0, 0
+        _, deposits = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED, min_x=0, min_y=0)
         worldgen.write_deposits(conn, deposits, WORLD_SEED)
         print(f"worldgen: {len(deposits)} deposits placed (seed={WORLD_SEED})")
     else:
-        # non-wipe map expansion (season 2): if the world grew, add deposits ONLY in the newly-revealed
-        # region. Existing deposits are never re-written/deleted, so their mined state is preserved; and the
-        # biome grid is per-cell deterministic (biome depends only on seed,x,y), so the old area is unchanged.
+        # non-wipe map expansion: if the world grew, add deposits ONLY in the newly-revealed region. Existing
+        # deposits are never re-written/deleted (their mined state is preserved). The frontier origin = the
+        # pre-expansion dims, so worldgen classifies «tundra» ONLY in the new cells and the old region keeps its
+        # exact season-2 biomes — making the cached _grid() byte-match the DB deposits in the old area.
         cur.execute("SELECT (attrs->>'gen_w')::int, (attrs->>'gen_h')::int FROM entities WHERE type='market' LIMIT 1")
         row = cur.fetchone() or (None, None)
         gw, gh = (row[0] or 156), (row[1] or 57)            # fall back to the pre-expansion dims
+        _FRONTIER_X, _FRONTIER_Y = gw, gh
         if WORLD_W > gw or WORLD_H > gh:
-            _, deposits = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED)
+            _, deposits = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED, min_x=gw, min_y=gh)
             new = [d for d in deposits if d[0] >= gw or d[1] >= gh]
             for x, y, res, amt, bi in new:
                 cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('deposit',%s,%s,%s)",
                             (x, y, Json({"resource": res, "amount": amt, "biome": bi, "gen_seed": str(WORLD_SEED)})))
             conn.commit()
             print(f"expansion: +{len(new)} deposits, world {gw}x{gh} -> {WORLD_W}x{WORLD_H}")
+    # one-time HP/born migration for season-2 agents created before the combat model existed (P3/P4): stamp hp
+    # keys uniformly so serialized attrs are path-independent (state_hash stays replay-consistent). Run ONCE,
+    # outside the tick, idempotently (guarded by the IS NULL predicate).
+    cur.execute("UPDATE entities SET attrs = attrs || %s "
+                "WHERE type='agent' AND (attrs->>'hp') IS NULL",
+                (Json({"hp": engine.HP_MAX, "hp_max": engine.HP_MAX}),))
+    cur.execute("UPDATE entities SET attrs = jsonb_set(attrs, '{born}', to_jsonb((SELECT tick FROM world WHERE id=1))) "
+                "WHERE type='agent' AND (attrs->>'born') IS NULL")
+    # also materialize hp/hp_max for pre-existing vehicles/structures so damage never lazily mutates serialized
+    # attrs mid-replay (hash hazard P4-extended). attune/combat read these via engine.hp_of either way.
+    for tp in ("vehicle", "structure"):
+        cur.execute("UPDATE entities SET attrs = attrs || %s WHERE type=%s AND (attrs->>'hp_max') IS NULL",
+                    (Json({"hp": engine.HP_BY_TYPE[tp], "hp_max": engine.HP_BY_TYPE[tp]}), tp))
+    conn.commit()
+    na = _place_asteroids(cur); nr = _place_artifacts(cur)
+    if na or nr:
+        conn.commit(); print(f"season3: placed {na} asteroids + {nr} artifacts (seed={WORLD_SEED})")
+    # season-3 depot base prices for the LIVE depot (seeded under season 2 without them). Merge-only via || so
+    # existing prices are preserved; the new raws/goods become tradeable at their depot floors.
+    cur.execute("UPDATE entities SET attrs = jsonb_set(attrs, '{base}', attrs->'base' || %s) WHERE type='depot'",
+                (Json({"titanium": 7, "ice": 1, "iridium": 20, "nickel": 5, "superalloy": 14, "cryo_fuel": 8,
+                       "ion_thruster": 18, "gunpowder": 5, "slug": 4, "energy_cell": 10, "kinetic_gun": 30,
+                       "energy_weapon": 28, "bomb": 9}),))
     cur.execute("UPDATE entities SET attrs = attrs || %s WHERE type='market'",
                 (Json({"w": WORLD_W, "h": WORLD_H, "gen_w": WORLD_W, "gen_h": WORLD_H}),)); conn.commit()
     conn.close()
@@ -116,8 +214,7 @@ def healthz():
     return _state
 
 
-@app.get("/world")
-def world():
+def _world():
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
     cur.execute("SELECT type, count(*) c FROM entities GROUP BY type ORDER BY type")
@@ -126,6 +223,11 @@ def world():
     h = cur.fetchone(); conn.close()
     return {"tick": t, "tick_seconds": TICK_SECONDS, "entities": counts,
             "last_state_hash": h["hash"] if h else None}
+
+
+@app.get("/world")
+def world():
+    return _cached("world", _world)
 
 
 @app.get("/depot")
@@ -137,9 +239,8 @@ def depot():
     return {"prices": row["prices"] if row else None}
 
 
-@app.get("/map")
-def world_map():
-    """The generated biome map with deposits overlaid (deterministic from the world seed)."""
+def _map():
+    """The generated biome map with deposits + artifacts overlaid (deterministic from the world seed)."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("SELECT x, y, attrs->>'resource' res FROM entities "
                 "WHERE type='deposit' AND attrs->>'gen_seed'=%s", (str(WORLD_SEED),))
@@ -147,9 +248,13 @@ def world_map():
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
     cur.execute("SELECT id, attrs->>'name' name, x, y FROM entities e WHERE type='agent' "
                 "AND EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) ORDER BY id", (t - 90,))
-    arows = cur.fetchall(); conn.close()
+    arows = cur.fetchall()
+    cur.execute("SELECT x, y FROM entities WHERE type='artifact'")
+    artrows = cur.fetchall(); conn.close()
     glyphs = "123456789ABDEGHJKLMNPQRSTUVXYZ"          # single chars, skipping O/C/F/W (deposit letters)
     markers, legend = [], []
+    for x, y in [(r["x"], r["y"]) for r in artrows]:    # ancient artifacts drawn under agents (agents win on overlap)
+        markers.append((x, y, "!"))
     for i, r in enumerate(arows):
         g = glyphs[i] if i < len(glyphs) else "@"
         markers.append((r["x"], r["y"], g))
@@ -158,12 +263,17 @@ def world_map():
             "ascii": worldgen.ascii_map(_grid(), deps, markers), "agents": legend}
 
 
-_BIOME_CODE = {"water": "~", "plains": ".", "forest": "#", "desert": ":", "mountain": "^"}
+@app.get("/map")
+def world_map():
+    return _cached("map", _map)
 
 
-@app.get("/scene")
-def scene():
-    """Structured world for the 3D view: biome grid (rows of codes) + live deposits + online agents."""
+_BIOME_CODE = {"water": "~", "plains": ".", "forest": "#", "desert": ":", "mountain": "^", "tundra": "%"}
+
+
+def _scene():
+    """Structured world for the 3D view: biome grid (rows of codes) + live deposits + online agents +
+    season-3 hp / bombs / asteroids / artifacts."""
     grid = _grid()
     rows = ["".join(_BIOME_CODE.get(c, ".") for c in row) for row in grid]
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -172,23 +282,42 @@ def scene():
     deposits = [{"x": r["x"], "y": r["y"], "res": r["res"]} for r in cur.fetchall()]
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
     cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'altitude')::int alt, "
-                "(attrs->>'in_space')::boolean space FROM entities e WHERE type='agent' AND EXISTS "
+                "(attrs->>'in_space')::boolean space, (attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, "
+                "(attrs->>'downed_until')::int downed FROM entities e WHERE type='agent' AND EXISTS "
                 "(SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) ORDER BY id", (t - 90,))
     agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
-               "alt": r["alt"] or 0, "space": bool(r["space"])} for r in cur.fetchall()]
-    cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'alt')::int alt, (attrs->>'flies')::boolean fly "
+               "alt": r["alt"] or 0, "space": bool(r["space"]),
+               "hp": r["hp"], "hp_max": r["hp_max"], "downed": bool((r["downed"] or 0) > t)} for r in cur.fetchall()]
+    cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'alt')::int alt, (attrs->>'flies')::boolean fly, "
+                "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'wrecked')::boolean wrecked "
                 "FROM entities WHERE type='vehicle' AND (attrs->>'autonomous')::boolean")
     vehicles = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
-                 "alt": r["alt"] or 0, "fly": bool(r["fly"])} for r in cur.fetchall()]
+                 "alt": r["alt"] or 0, "fly": bool(r["fly"]),
+                 "hp": r["hp"], "hp_max": r["hp_max"], "wrecked": bool(r["wrecked"])} for r in cur.fetchall()]
     cur.execute("SELECT id, attrs->>'shape' shape, x, y, (attrs->>'size')::int size, (attrs->>'height')::int height, "
-                "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt FROM entities WHERE type='structure'")
+                "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt, "
+                "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'ruined')::boolean ruined "
+                "FROM entities WHERE type='structure'")
     structures = [{"id": r["id"], "shape": r["shape"], "x": r["x"], "y": r["y"], "size": r["size"] or 2,
-                   "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"]), "alt": r["alt"] or 0}
+                   "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"]),
+                   "alt": r["alt"] or 0, "hp": r["hp"], "hp_max": r["hp_max"], "ruined": bool(r["ruined"])}
                   for r in cur.fetchall()]
+    cur.execute("SELECT x, y, (attrs->>'fuse')::int fuse FROM entities WHERE type='bomb'")
+    bombs = [{"x": r["x"], "y": r["y"], "fuse": r["fuse"] or 0} for r in cur.fetchall()]
+    cur.execute("SELECT x, y, attrs->>'resource' res, (attrs->>'amount')::int amount FROM entities WHERE type='asteroid'")
+    asteroids = [{"x": r["x"], "y": r["y"], "res": r["res"], "amount": r["amount"] or 0} for r in cur.fetchall()]
+    cur.execute("SELECT x, y, attrs->>'kind' kind FROM entities WHERE type='artifact'")
+    artifacts = [{"x": r["x"], "y": r["y"], "kind": r["kind"], "loc": "ground"} for r in cur.fetchall()]
     conn.close()
     sx, sy, sr = engine.storm_center(t, WORLD_W, WORLD_H)
     return {"w": WORLD_W, "h": WORLD_H, "biomes": rows, "deposits": deposits, "agents": agents,
-            "vehicles": vehicles, "structures": structures, "storm": {"x": sx, "y": sy, "r": sr}}
+            "vehicles": vehicles, "structures": structures, "bombs": bombs, "asteroids": asteroids,
+            "artifacts": artifacts, "storm": {"x": sx, "y": sy, "r": sr}}
+
+
+@app.get("/scene")
+def scene():
+    return _cached("scene", _scene)
 
 
 @app.get("/observe/{agent_id}")
@@ -224,7 +353,11 @@ def register_agent(a: AgentIn):
             if tok and not row[1]:                        # opt-in: bind the caller's token to a still-unprotected agent
                 cur.execute("UPDATE entities SET attrs = attrs || %s WHERE id=%s", (Json({"token": tok}), row[0])); conn.commit()
             conn.close(); return {"agent_id": row[0], "reused": True, "token": (row[1] or tok)}
-    attrs = {"name": a.name}
+    cur.execute("SELECT tick FROM world WHERE id=1"); born = cur.fetchone()[0]
+    # materialize hp/hp_max + stamp the born tick at creation (NOT lazily) so serialized attrs are uniform and
+    # path-independent for the state-hash chain (P3). The x/y RNG is a one-time pre-tick INSERT never read by a
+    # hashed tick before commit, so it does not perturb the deterministic replay chain.
+    attrs = {"name": a.name, "hp": engine.HP_MAX, "hp_max": engine.HP_MAX, "born": born}
     if tok:
         attrs["token"] = tok
     cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('agent',%s,%s,%s,%s) RETURNING id",
@@ -257,13 +390,13 @@ def submit_intent(it: IntentIn):
 
 
 # ---------- spectator surface (watch the agents play) ----------
-@app.get("/agents")
-def list_agents():
+def _list_agents():
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
     cur.execute("""
         SELECT e.id, e.attrs->>'name' name, e.buffers,
           (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
+          (e.attrs->>'hp')::int hp, (e.attrs->>'hp_max')::int hp_max,
           (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
           (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles
         FROM entities e
@@ -271,6 +404,11 @@ def list_agents():
         ORDER BY e.id""", (t - 90,))                        # online = acted in the last ~90 ticks (~3 min)
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"agents": rows}
+
+
+@app.get("/agents")
+def list_agents():
+    return _cached("agents", _list_agents)
 
 
 @app.get("/feed")
@@ -372,21 +510,26 @@ def server_log(limit: int = 60, kind: str = ""):
     return {"log": rows}
 
 
-@app.get("/milestones")
-def milestones(limit: int = 40):
+def _milestones(limit):
     """The highlight reel — escapes, inventions and other non-routine events, so the moments that
-    matter aren't buried under the move/mine/finalize firehose the way they are in /log."""
+    matter aren't buried under the move/mine/finalize firehose the way they are in /log. Season 3 adds the
+    milestone-worthy war/peace/attune/destroyed events (the high-frequency damage/theft/attack/dock/mine
+    firehose stays in /log only)."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("SELECT e.tick, e.entity, a.attrs->>'name' name, e.kind, e.data "
                 "FROM events e LEFT JOIN entities a ON a.id = e.entity "
-                "WHERE e.kind IN ('escape','invent','reject','generate') "
+                "WHERE e.kind IN ('escape','invent','reject','generate','war','peace','attune','destroyed') "
                 "ORDER BY e.id DESC LIMIT %s", (limit,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"milestones": rows}
 
 
-@app.get("/records")
-def records():
+@app.get("/milestones")
+def milestones(limit: int = 40):
+    return _cached(("milestones", limit), lambda: _milestones(limit))
+
+
+def _records():
     """Hall of fame — firsts and bests across the world (cheap aggregate snapshot)."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     out = {}
@@ -417,6 +560,11 @@ def records():
     return out
 
 
+@app.get("/records")
+def records():
+    return _cached("records", _records)
+
+
 @app.get("/agent/{agent_id}")
 def agent_profile(agent_id: int):
     """One agent's full story — stats, inventory, vehicles, discoveries and its milestone timeline."""
@@ -442,18 +590,22 @@ def agent_profile(agent_id: int):
             "discoveries": discoveries, "milestones": milestones}
 
 
-@app.get("/timeline")
-def timeline(limit: int = 80):
-    """Chronological milestone history — discoveries, escapes, landings, elevator completions (oldest first)."""
+def _timeline(limit):
+    """Chronological milestone history — discoveries, escapes, landings, elevator completions, attunements
+    (oldest first)."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("SELECT e.tick, e.kind, a.attrs->>'name' name, e.data FROM events e LEFT JOIN entities a ON a.id = e.entity "
-                "WHERE e.kind IN ('escape','invent','land','build') ORDER BY e.id ASC LIMIT %s", (limit,))
+                "WHERE e.kind IN ('escape','invent','land','build','attune') ORDER BY e.id ASC LIMIT %s", (limit,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"timeline": rows}
 
 
-@app.get("/roster")
-def roster():
+@app.get("/timeline")
+def timeline(limit: int = 80):
+    return _cached(("timeline", limit), lambda: _timeline(limit))
+
+
+def _roster():
     """Every agent (online + offline) for the Profile browser — id, name, points, in_space, online flag."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
@@ -464,6 +616,11 @@ def roster():
                    ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - 90,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"agents": rows}
+
+
+@app.get("/roster")
+def roster():
+    return _cached("roster", _roster)
 
 
 @app.get("/rules")
@@ -881,21 +1038,32 @@ function initWorld3D(){
  moon.position.set(0,72,-28); sc.add(moon);                                  // the Moon — the altitude-600 goal floats above the world
  const stormMesh=new T.Mesh(new T.SphereGeometry(14,16,12),new T.MeshBasicMaterial({color:0x8aa0b8,transparent:true,opacity:0.16}));
  stormMesh.visible=false; sc.add(stormMesh);                                  // drifting storm — mining/chopping under it is halved
- const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(); sc.add(depG); sc.add(agG); sc.add(vehG); sc.add(strG);
+ const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(), astG=new T.Group(), artG=new T.Group();
+ sc.add(depG); sc.add(agG); sc.add(vehG); sc.add(strG); sc.add(astG); sc.add(artG);
  let yaw=0.7,pitch=0.85,dist=170;
- function place(){const cy=Math.max(0.16,Math.min(1.45,pitch));cam.position.set(dist*Math.sin(yaw)*Math.cos(cy),dist*Math.sin(cy)+18,dist*Math.cos(yaw)*Math.cos(cy));cam.lookAt(0,0,0);}
+ // numeric guard: any handler that feeds yaw/pitch/dist a NaN (e.g. a wheel event with deltaY=NaN, or a
+ // wild devicePixelRatio) would otherwise propagate to the camera position and PERMANENTLY blank the canvas
+ // (the camera matrix becomes non-finite and three.js renders nothing forever). fin() snaps any non-finite
+ // value back to a safe default so the camera can never get stuck off-screen.
+ const fin=(v,d)=>(Number.isFinite(v)?v:d);
+ function clampCam(){yaw=fin(yaw,0.7);pitch=Math.max(0.16,Math.min(1.45,fin(pitch,0.85)));dist=Math.max(50,Math.min(600,fin(dist,170)));}
+ function place(){clampCam();const cy=pitch;const px=dist*Math.sin(yaw)*Math.cos(cy),py=dist*Math.sin(cy)+18,pz=dist*Math.cos(yaw)*Math.cos(cy);
+  if(Number.isFinite(px)&&Number.isFinite(py)&&Number.isFinite(pz)){cam.position.set(px,py,pz);cam.lookAt(0,0,0);}}
  let drag=false,lx=0,ly=0;
  ren.domElement.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY;});
  window.addEventListener('mouseup',()=>{drag=false;});
- window.addEventListener('mousemove',e=>{if(!drag)return;yaw-=(e.clientX-lx)*0.006;pitch-=(e.clientY-ly)*0.006;lx=e.clientX;ly=e.clientY;});
- ren.domElement.addEventListener('wheel',e=>{dist=Math.max(50,Math.min(600,dist+e.deltaY*0.12));e.preventDefault();},{passive:false});
+ window.addEventListener('mousemove',e=>{if(!drag)return;yaw-=(e.clientX-lx)*0.006;pitch=Math.max(0.16,Math.min(1.45,pitch-(e.clientY-ly)*0.006));lx=e.clientX;ly=e.clientY;clampCam();});
+ // wheel zoom — desktop. Wrapped in try/catch and deltaY sanitised so a thrown error or a non-finite delta
+ // can never escape to kill the render loop or leave dist=NaN (the historical "scroll blanks the 3D world" bug).
+ ren.domElement.addEventListener('wheel',e=>{try{e.preventDefault();const dy=fin(e.deltaY,0);dist=Math.max(50,Math.min(600,dist+dy*0.12));clampCam();}catch(err){clampCam();}},{passive:false});
  let pd=0;
  ren.domElement.addEventListener('touchstart',e=>{if(e.touches.length==1){drag=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){drag=false;pd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);}e.preventDefault();},{passive:false});
- ren.domElement.addEventListener('touchmove',e=>{if(e.touches.length==1&&drag){yaw-=(e.touches[0].clientX-lx)*0.006;pitch-=(e.touches[0].clientY-ly)*0.006;lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){const nd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);dist=Math.max(50,Math.min(600,dist+(pd-nd)*0.6));pd=nd;}e.preventDefault();},{passive:false});
+ ren.domElement.addEventListener('touchmove',e=>{if(e.touches.length==1&&drag){yaw-=(e.touches[0].clientX-lx)*0.006;pitch=Math.max(0.16,Math.min(1.45,pitch-(e.touches[0].clientY-ly)*0.006));lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){const nd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);dist=Math.max(50,Math.min(600,dist+(pd-nd)*0.6));pd=nd;}clampCam();e.preventDefault();},{passive:false});
  ren.domElement.addEventListener('touchend',()=>{drag=false;});
- window.addEventListener('resize',()=>{if(host.clientWidth>10){ren.setSize(host.clientWidth,host.clientHeight);cam.aspect=host.clientWidth/host.clientHeight;cam.updateProjectionMatrix();}});
- const BIO={'~':[0x123a6b,-1.6],'.':[0x2f7d3a,0],'#':[0x1d5e2a,1.3],':':[0xb89a55,0.3],'^':[0x7d8590,5.5]};
- const RESCOL={copper:0xc8772f,iron:0x9aa0a6,aluminum:0xd0d4d8,ore:0x8a6d3b,crystal:0xa371f7,silicon:0x5577aa,coal:0x1a1a1a,carbon:0x3a3a3a,sulfur:0xd6c64a,oil:0x0d0d0d,salt:0xeeeeee,brine:0x3a6ea5,water:0x3a6ea5};
+ function resize(){const w=host.clientWidth,h=host.clientHeight;if(w>10&&h>10){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();}}
+ window.addEventListener('resize',resize);
+ const BIO={'~':[0x123a6b,-1.6],'.':[0x2f7d3a,0],'#':[0x1d5e2a,1.3],':':[0xb89a55,0.3],'^':[0x7d8590,5.5],'%':[0xc7d2dc,3.0]};
+ const RESCOL={copper:0xc8772f,iron:0x9aa0a6,aluminum:0xd0d4d8,ore:0x8a6d3b,crystal:0xa371f7,silicon:0x5577aa,coal:0x1a1a1a,carbon:0x3a3a3a,sulfur:0xd6c64a,oil:0x0d0d0d,salt:0xeeeeee,brine:0x3a6ea5,water:0x3a6ea5,titanium:0xb9c2cc,ice:0xbfe6ff,iridium:0xe8eef2,nickel:0x9fb0a8};
  let W=156,Hh=57,hmap=null;
  function hAt(x,y){if(!hmap)return 0;return hmap[Math.max(0,Math.min(Hh-1,y))][Math.max(0,Math.min(W-1,x))];}
  function P(x,y){return [x-W/2,hAt(x,y),y-Hh/2];}
@@ -942,10 +1110,36 @@ function initWorld3D(){
    if(s.shape=='elevator')col=s.complete?0x58a6ff:0xa371f7;
    const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col}));m.position.set(p[0],p[1]+vh/2+(s.alt||0)/9,p[2]);strG.add(m);});
  }
+ const gAst=new T.IcosahedronGeometry(1.1,0), gArt=new T.OctahedronGeometry(1.0,0);
+ function buildAsteroids(xs){
+  while(astG.children.length)astG.remove(astG.children[0]);
+  (xs||[]).forEach(x=>{const p=P(x.x,x.y);                  // floating rocks high above the world (the orbital layer)
+   const m=new T.Mesh(gAst,new T.MeshLambertMaterial({color:x.res==='iridium'?0xe8eef2:0x9fb0a8,emissive:0x161a1f}));
+   m.position.set(p[0],p[1]+60,p[2]);astG.add(m);});
+ }
+ function buildArtifacts(xs){
+  while(artG.children.length)artG.remove(artG.children[0]);
+  (xs||[]).forEach(x=>{const p=P(x.x,x.y);                  // ancient artifacts — glowing markers on the ground
+   const m=new T.Mesh(gArt,new T.MeshLambertMaterial({color:0xa371f7,emissive:0x4b2b78}));
+   m.position.set(p[0],p[1]+2.0,p[2]);artG.add(m);});
+ }
  let built=false;
- async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
+ async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
  refresh(); setInterval(refresh,3000);
- (function loop(){requestAnimationFrame(loop);if(host.offsetParent===null)return;place();ren.render(sc,cam);})();
+ // render loop — hardened so NOTHING (a wheel event, a NaN camera, a transient render throw, or the host
+ // collapsing to 0px) can permanently blank the 3D world: the whole body is in try/catch so a throw can't kill
+ // the requestAnimationFrame chain, the camera is re-sanitised every frame via place()->clampCam(), and the
+ // renderer is re-fitted whenever the host has a non-zero size (so it always recovers after a resize/relayout).
+ let lastW=host.clientWidth,lastH=host.clientHeight;
+ (function loop(){requestAnimationFrame(loop);
+  try{
+   if(host.offsetParent===null)return;                    // panel hidden — skip (mobile/desktop both)
+   const w=host.clientWidth,h=host.clientHeight;
+   if(w>10&&h>10&&(w!==lastW||h!==lastH)){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();lastW=w;lastH=h;}
+   place();
+   ren.render(sc,cam);
+  }catch(err){clampCam();}                                 // never let a frame error stop the loop
+ })();
  S3={};
 }
 tick(); setInterval(tick, 2000);

@@ -8,3 +8,4 @@ venv/
 github-token
 gemini
 gemini-all
+agents/logs/
