@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-"""NHA-MMO — agent loop demo: an autonomous agent observes the world, crafts parts from raw
-materials, and assembles a working vehicle. The core "your agent plays" loop (the scripted brain
-here is where an LLM agent would plug in).
+"""NHA-MMO — the curated per-agent observation used by the server's /observe endpoint.
 
-Self-contained over Postgres (engine.py's `entities` schema + vehicles.finalize / BUILD_COST).
-Run:  PG_DSN=... python play.py
+`observe(cur, agent_id)` returns the agent's view of the world (inventory, loose parts, vehicles, open
+orders, incoming trades, recent messages, nearby deposits, altitude). Read-only over engine.py's
+`entities` schema; the caller passes a psycopg2 RealDictCursor.
 """
-import os
-import psycopg2
-from psycopg2.extras import RealDictCursor, Json
-from vehicles import BUILD_COST, finalize
-
-DSN = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=postgres")
-
-CAR = ["frame", "wheel", "wheel", "wheel", "wheel", "engine", "fuel_tank", "cockpit"]
 
 
 def observe(cur, agent_id):
@@ -46,81 +37,3 @@ def observe(cur, agent_id):
     return {"position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
             "vehicles": vehicles, "orders": orders, "trade_offers": offers, "messages": inbox,
             "nearby_deposits": nearby, "altitude": altitude, "atmosphere_top": 100, "in_space": in_space}
-
-
-def can_afford(inv, part):
-    return all(int(inv.get(r, 0)) >= n for r, n in BUILD_COST.get(part, {}).items())
-
-
-def act_build(cur, agent_id, part):
-    cur.execute("SELECT buffers, x, y FROM entities WHERE id=%s FOR UPDATE", (agent_id,))
-    me = cur.fetchone()
-    inv = me["buffers"]
-    if part not in BUILD_COST:
-        return False, f"unknown part {part}"
-    if not can_afford(inv, part):
-        return False, f"не хватает на {part} (нужно {BUILD_COST[part]}, есть {inv})"
-    for r, n in BUILD_COST[part].items():
-        inv[r] = int(inv.get(r, 0)) - n
-    cur.execute("UPDATE entities SET buffers=%s WHERE id=%s", (Json(inv), agent_id))
-    cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('part',%s,%s,%s,%s)",
-                (me["x"], me["y"], agent_id, Json({"part": part})))
-    return True, f"собрал {part} (−{BUILD_COST[part]})"
-
-
-def act_finalize(cur, agent_id, name):
-    cur.execute("SELECT id, attrs->>'part' part FROM entities "
-                "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL", (agent_id,))
-    rows = cur.fetchall()
-    if not rows:
-        return False, "нет свободных деталей"
-    parts = [r["part"] for r in rows]
-    st = finalize(parts)                                  # схлопывание в одно тело + ТТХ
-    cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('vehicle',0,0,%s,%s) RETURNING id",
-                (agent_id, Json({"name": name, "parts": parts, **st})))
-    vid = cur.fetchone()["id"]
-    cur.execute("UPDATE entities SET attrs = attrs || '{\"used\":true}' WHERE id = ANY(%s)",
-                ([r["id"] for r in rows],))
-    verdict = " ".join(filter(None, [
-        f"ЕДЕТ v={st['v_ground']}" if st["drives"] else "",
-        f"ЛЕТИТ v={st['v_air']}" if st["flies"] else ""])) or "НЕ едет/НЕ летит"
-    return True, f"собрал машину #{vid} '{name}': {verdict}"
-
-
-def brain_build(cur, agent_id, blueprint, name):
-    """Scripted agent brain (an LLM agent would replace this): build each part, then finalize."""
-    print(f"[агент {agent_id}] цель: '{name}' из {len(blueprint)} деталей")
-    for part in blueprint:
-        ok, msg = act_build(cur, agent_id, part)
-        print(f"   {'✓' if ok else '✗'} {msg}")
-        if not ok:
-            print("   → стоп: не хватило материалов")
-            return
-    ok, msg = act_finalize(cur, agent_id, name)
-    print(f"   ★ {msg}")
-
-
-def main():
-    conn = psycopg2.connect(DSN)
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT id FROM entities WHERE type='agent' ORDER BY id LIMIT 1")
-    row = cur.fetchone()
-    if row:
-        agent_id = row["id"]
-        cur.execute("UPDATE entities SET buffers = buffers || %s WHERE id=%s",
-                    (Json({"metal": 60, "crystal": 4}), agent_id))
-    else:
-        cur.execute("INSERT INTO entities(type,x,y,buffers) VALUES('agent',0,0,%s) RETURNING id",
-                    (Json({"metal": 60, "crystal": 4}),))
-        agent_id = cur.fetchone()["id"]
-    conn.commit()
-
-    print("== observe (до) =="); print("  ", observe(cur, agent_id))
-    brain_build(cur, agent_id, CAR, "моя_тачка")
-    conn.commit()
-    print("== observe (после) =="); print("  ", observe(cur, agent_id))
-    conn.close()
-
-
-if __name__ == "__main__":
-    main()

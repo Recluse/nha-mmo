@@ -4,13 +4,9 @@
 Реализует лёгкую схему из ../PHYSICS-VEHICLES.md: суммируем целочисленные константы деталей →
 замкнутые формулы решают, едет/летит ли и как быстро. Без непрерывной физики и джоинт-солвера.
 
-Run:  PG_DSN=... python vehicles.py   # собирает демо: авто + 2 самолёта, финализирует, печатает + пишет в БД.
+Pure stats library: aggregate part constants → vehicle ТТХ. Imported by engine.py (PART + finalize_stats).
 """
-import os, math
-import psycopg2
-from psycopg2.extras import Json
-
-DSN = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=postgres")
+import math
 
 # деталь -> целочисленные физ-константы
 PART = {
@@ -61,11 +57,6 @@ def part_stats(part, upgrades=()):
 K_V, K_LIFT, G = 90, 1, 10   # коэффициенты-болванка под тюнинг
 
 
-def finalize(parts):
-    """parts: список имён деталей (без апгрейдов) → ТТХ (back-compat wrapper)."""
-    return finalize_stats([PART[p] for p in parts])
-
-
 def finalize_stats(stats_list):
     """stats_list: список per-part stat-словарей (возможно с апгрейдами) → агрегатные ТТХ + вердикт."""
     s = lambda k: sum(d.get(k, 0) for d in stats_list)
@@ -86,40 +77,3 @@ def finalize_stats(stats_list):
     return dict(mass=mass, drag=drag, power=power, drive_force=drive, thrust=thrust,
                 wing_area=wing_area, lift_coef=lift_coef, controllable=bool(control),
                 v_ground=v_ground, v_air=v_air, drives=drives, flies=flies)
-
-
-def store_vehicle(conn, name, parts, st):
-    cur = conn.cursor()
-    cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('vehicle',0,0,'{}',%s) RETURNING id",
-                (Json({"name": name, "parts": parts, **st}),))
-    return cur.fetchone()[0]
-
-
-DEMOS = {
-    "car":       ["frame", "wheel", "wheel", "wheel", "wheel", "engine", "fuel_tank", "cockpit"],
-    "plane":     ["frame", "wing", "wing", "tail", "propeller", "engine", "fuel_tank", "cockpit", "landing_gear"],
-    "bad_plane": ["frame", "propeller", "engine", "fuel_tank", "cockpit", "landing_gear"],   # нет крыльев
-    "no_driver": ["frame", "wheel", "wheel", "wheel", "wheel", "engine", "fuel_tank"],        # нет кокпита
-}
-
-
-def main():
-    conn = psycopg2.connect(DSN)
-    for name, parts in DEMOS.items():
-        st = finalize(parts)
-        vid = store_vehicle(conn, name, parts, st)
-        verdict = []
-        if st["drives"]:
-            verdict.append(f"ЕДЕТ v={st['v_ground']}")
-        if st["flies"]:
-            verdict.append(f"ЛЕТИТ v={st['v_air']}")
-        if not verdict:
-            verdict.append("НЕ едет / НЕ летит")
-        print(f"#{vid} {name:<10} mass={st['mass']:<4} drive={st['drive_force']:<4} "
-              f"thrust={st['thrust']:<4} wing={st['wing_area']:<3} ctrl={int(st['controllable'])} "
-              f"→ {', '.join(verdict)}")
-    conn.commit(); conn.close()
-
-
-if __name__ == "__main__":
-    main()

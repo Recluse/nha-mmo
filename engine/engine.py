@@ -33,18 +33,12 @@ INSERT INTO world (id, tick) VALUES (1,0) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS entities (id bigserial PRIMARY KEY, type text NOT NULL,
   x int NOT NULL DEFAULT 0, y int NOT NULL DEFAULT 0, owner bigint,
   buffers jsonb NOT NULL DEFAULT '{}', attrs jsonb NOT NULL DEFAULT '{}');
-CREATE TABLE IF NOT EXISTS ports (id bigserial PRIMARY KEY,
-  entity bigint NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
-  name text NOT NULL, kind text NOT NULL, dir text NOT NULL);
-CREATE INDEX IF NOT EXISTS ports_entity_idx ON ports(entity);
-CREATE TABLE IF NOT EXISTS links (id bigserial PRIMARY KEY,
-  a bigint NOT NULL REFERENCES ports(id) ON DELETE CASCADE,
-  b bigint NOT NULL REFERENCES ports(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS intents (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   verb text NOT NULL, args jsonb NOT NULL DEFAULT '{}', status text NOT NULL DEFAULT 'pending',
   result text, created int);
 CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, tick int NOT NULL,
   entity bigint, kind text NOT NULL, data jsonb NOT NULL DEFAULT '{}');
+CREATE INDEX IF NOT EXISTS events_kind_tick_idx ON events(kind, tick);
 CREATE TABLE IF NOT EXISTS tick_hashes (tick int PRIMARY KEY, hash text NOT NULL);
 CREATE TABLE IF NOT EXISTS market_orders (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   side text NOT NULL, resource text NOT NULL, qty int NOT NULL, price int NOT NULL,
@@ -78,30 +72,6 @@ def state_hash(ents):
                         sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canon.encode()).hexdigest()[:16]
 
-def linked(eid, ents, ports, links, kind=None, want_type=None):
-    """Entities connected to eid via a port-link (optionally filtered by my port kind / their type)."""
-    mine = {p["id"] for p in ports if p["entity"] == eid and (kind is None or p["kind"] == kind)}
-    port_owner = {p["id"]: p["entity"] for p in ports}
-    out = []
-    for l in links:
-        other = l["b"] if l["a"] in mine else (l["a"] if l["b"] in mine else None)
-        if other is None:
-            continue
-        oe = port_owner.get(other)
-        if oe in ents and (want_type is None or ents[oe]["type"] == want_type):
-            out.append(ents[oe])
-    return out
-
-def battery_of(eid, ents, ports, links):
-    bs = linked(eid, ents, ports, links, kind="power", want_type="battery")
-    return bs[0] if bs else None
-
-def container_of(eid, ents, ports, links, resource):
-    for c in linked(eid, ents, ports, links, kind="item"):
-        if c["type"] == "container" and c["attrs"].get("resource") == resource:
-            return c
-    return None
-
 def depot_price(depot, r):
     """Floating depot price for resource r: glut (recent sells) pushes the buy price down."""
     base = depot["attrs"]["base"].get(r)
@@ -112,32 +82,9 @@ def depot_price(depot, r):
     return {"buy": buy, "sell": buy + base}      # depot resells at buy + base markup
 
 # ---------- per-component behaviors (run each tick) ----------
-def behave(e, ents, ports, links, t, events):
-    typ = e["type"]
-    ev = lambda kind, **d: events.append((t, e["id"], kind, d))
-    if typ == "solar":
-        b = battery_of(e["id"], ents, ports, links)
-        if b and get(b, "energy") < b["attrs"].get("cap", 10**9):
-            addb(b, "energy", 1); ev("solar", energy=1)
-    elif typ == "generator":
-        b = battery_of(e["id"], ents, ports, links)
-        if b and get(e, "fuel") >= 1:
-            addb(e, "fuel", -1); addb(b, "energy", 10); ev("generate", fuel=-1, energy=10)
-    elif typ == "drill":
-        b = battery_of(e["id"], ents, ports, links)
-        dep = next((x for x in ents.values() if x["type"] == "ore_deposit"
-                    and x["x"] == e["x"] and x["y"] == e["y"]), None)
-        oc = container_of(e["id"], ents, ports, links, "ore")
-        if b and dep and oc and get(b, "energy") >= 5 and dep["attrs"].get("ore", 0) >= 1:
-            addb(b, "energy", -5); dep["attrs"]["ore"] -= 1; addb(oc, "ore", 1); ev("mine", ore=1)
-    elif typ == "furnace":
-        b = battery_of(e["id"], ents, ports, links)
-        oc = container_of(e["id"], ents, ports, links, "ore")
-        mc = container_of(e["id"], ents, ports, links, "metal")
-        if (b and oc and mc and get(b, "energy") >= 5 and get(oc, "ore") >= 2 and get(e, "fuel") >= 1):
-            addb(b, "energy", -5); addb(oc, "ore", -2); addb(e, "fuel", -1); addb(mc, "metal", 1)
-            ev("smelt", metal=1)
-    elif typ == "depot":                                 # floating-price market maker
+def behave(e):
+    """Per-tick component behavior. Only the depot (floating-price market maker) remains live."""
+    if e["type"] == "depot":
         glut = e["attrs"].setdefault("glut", {})
         for r in list(glut):
             glut[r] = glut[r] * 4 // 5                    # decay the glut 20%/tick → prices recover
@@ -637,13 +584,23 @@ def respawn_deposits(ents, t):
                 e["attrs"]["amount"] = amt + 1
 
 # ---------- tick ----------
+def prune_tables(cur, t):
+    """Keep the DB bounded: drop old high-frequency log rows, preserve milestone events, recipe caches,
+    and recent history (loop-guard + spectator feeds). Entity state is untouched, so the hash chain holds."""
+    cur.execute("DELETE FROM events WHERE kind = 'act' AND tick < %s", (t - 1000,))   # milestones (escape/invent/land/build) kept
+    cur.execute("DELETE FROM tick_hashes WHERE tick < %s", (t - 20000,))
+    cur.execute("DELETE FROM intents WHERE status <> 'pending' AND id < (SELECT COALESCE(MAX(id),0) FROM intents) - 5000")
+    cur.execute("DELETE FROM messages WHERE id < (SELECT COALESCE(MAX(id),0) FROM messages) - 2000")
+    cur.execute("DELETE FROM market_orders WHERE status <> 'open' AND id < (SELECT COALESCE(MAX(id),0) FROM market_orders) - 2000")
+    cur.execute("DELETE FROM trades WHERE status <> 'open' AND id < (SELECT COALESCE(MAX(id),0) FROM trades) - 2000")
+    cur.execute("DELETE FROM proposals WHERE status <> 'pending' AND id < (SELECT COALESCE(MAX(id),0) FROM proposals) - 1000")
+
+
 def tick(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("UPDATE world SET tick = tick + 1 WHERE id = 1 RETURNING tick")
     t = cur.fetchone()["tick"]
     cur.execute("SELECT * FROM entities"); ents = {e["id"]: e for e in cur.fetchall()}
-    cur.execute("SELECT id, entity, kind, dir FROM ports"); ports = cur.fetchall()
-    cur.execute("SELECT id, a, b FROM links"); links = cur.fetchall()
     events = []
     cur.execute("SELECT * FROM intents WHERE status = 'pending' ORDER BY id")
     for it in cur.fetchall():
@@ -665,7 +622,7 @@ def tick(conn):
         cur.execute("UPDATE intents SET status=%s, result=%s WHERE id=%s", (st, res, it["id"]))
         events.append((t, it["agent"], "act", {"verb": it["verb"], "status": st, "result": res}))
     for e in list(ents.values()):
-        behave(e, ents, ports, links, t, events)
+        behave(e)
     match_market(ents, cur, t, events)
     expire_trades(ents, cur, t)
     resolve_proposals(ents, cur, t, events)
@@ -681,6 +638,8 @@ def tick(conn):
                     (tk, eid, kind, Json(data)))
     cur.execute("INSERT INTO tick_hashes(tick, hash) VALUES(%s,%s) "
                 "ON CONFLICT (tick) DO UPDATE SET hash=EXCLUDED.hash", (t, state_hash(ents)))
+    if t % 200 == 0:                                      # bound the log tables periodically (cheap, not every tick)
+        prune_tables(cur, t)
     conn.commit()
     return t, events
 
