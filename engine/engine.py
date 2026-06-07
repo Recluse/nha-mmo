@@ -421,6 +421,15 @@ def apply_intent(it, ents, cur, t):
             return "applied", ((("touched down — FIRST round trip to space and back! ") if first
                                 else "touched down — round trip complete! ") + f"+{pts} pts")
         return "applied", "landed safely back on the surface"
+    if verb == "deploy":                                 # send a finalized vehicle off to roam the world autonomously
+        cand = [v for v in ents.values() if v["type"] == "vehicle" and v.get("owner") == a["id"]
+                and not v["attrs"].get("autonomous") and (v["attrs"].get("drives") or v["attrs"].get("flies"))]
+        if not cand:
+            return "rejected", "no un-deployed vehicle that drives or flies (build + finalize one first)"
+        v = max(cand, key=lambda e: e["id"])
+        v["attrs"]["autonomous"] = True
+        v["x"], v["y"] = a["x"], a["y"]                  # it sets off from where you stand
+        return "applied", f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------
@@ -499,6 +508,20 @@ def resolve_proposals(ents, cur, t, events):
             events.append((t, p["agent"], "reject", {"reason": p["reason"], "sig": p["sig"]}))
             cur.execute("UPDATE proposals SET status='refunded' WHERE id=%s", (p["id"],))
 
+def roam_autonomous(ents, t):
+    """Deployed autonomous vehicles wander the world on their own each tick. DETERMINISTIC (no RNG, so the
+    replay/state-hash chain stays valid): heading varies with tick+id; flyers also drift altitude."""
+    mkt = next((x for x in ents.values() if x["type"] == "market"), None)
+    w = int(mkt["attrs"].get("w", 156)) if mkt else 156
+    h = int(mkt["attrs"].get("h", 156)) if mkt else 156
+    for v in ents.values():
+        if v["type"] != "vehicle" or not v["attrs"].get("autonomous"):
+            continue
+        v["x"] = max(0, min(w - 1, v["x"] + ((t + v["id"]) % 3) - 1))
+        v["y"] = max(0, min(h - 1, v["y"] + ((t * 2 + v["id"] * 3) % 3) - 1))
+        if v["attrs"].get("flies"):
+            v["attrs"]["alt"] = max(0, min(600, int(v["attrs"].get("alt", 0)) + (((t + v["id"]) % 5) - 2) * 6))
+
 # ---------- tick ----------
 def tick(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -532,6 +555,7 @@ def tick(conn):
     match_market(ents, cur, t, events)
     expire_trades(ents, cur, t)
     resolve_proposals(ents, cur, t, events)
+    roam_autonomous(ents, t)
     for e in ents.values():
         cur.execute("UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s",
                     (e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), e["id"]))
