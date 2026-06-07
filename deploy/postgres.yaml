@@ -20,7 +20,7 @@ spec:
   template:
     metadata: {labels: {app: postgres}}
     spec:
-      nodeSelector: {ci-build: "true"}   # w1/w2
+      nodeName: k8s-w1.recluse.ru        # PIN to one node — its hostPath below holds the DB
       containers:
         - name: postgres
           image: postgres:16-alpine
@@ -39,8 +39,10 @@ spec:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {memory: 512Mi}
       volumes:
-        # Ephemeral: this cluster has no dynamic storage provisioner (only local-no-provisioner).
-        # The world is deterministically seeded (worldgen) and re-seeds on restart. For persistence,
-        # pre-create a static local PV and swap this for a PersistentVolumeClaim.
+        # Persistent host-path on k8s-w1 (this cluster has no dynamic-storage provisioner). The pod is
+        # pinned to k8s-w1 via nodeName, so this directory always holds the DB and survives pod restarts.
+        # The postgres image's entrypoint runs as root and chowns PGDATA, so no initContainer is needed.
         - name: data
-          emptyDir: {}
+          hostPath:
+            path: /var/lib/nha-postgres
+            type: DirectoryOrCreate
