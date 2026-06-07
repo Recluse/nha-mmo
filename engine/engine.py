@@ -486,6 +486,16 @@ def apply_intent(it, ents, cur, t):
         a["attrs"]["in_space"] = True
         a["attrs"]["space_level"] = max(int(a["attrs"].get("space_level", 0)), 1)
         return "applied", f"rode the orbital elevator to space (altitude {a['attrs']['altitude']}) — no rocket needed!"
+    if verb == "plant":                                  # plant a sapling -> a renewable wood deposit (regrows over time)
+        if get(a, "wood") < 1:
+            return "rejected", "need 1 wood (a sapling) to plant a tree"
+        cur.execute("SELECT attrs->>'gen_seed' s FROM entities WHERE type='deposit' AND attrs->>'gen_seed' IS NOT NULL LIMIT 1")
+        row = cur.fetchone(); gs = (row["s"] if row else None) or "42"
+        addb(a, "wood", -1)
+        cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('deposit',%s,%s,%s)",
+                    (a["x"], a["y"], Json({"resource": "wood", "amount": 3, "biome": "plains",
+                                           "gen_seed": gs, "planted": True})))
+        return "applied", f"planted a tree at ({a['x']},{a['y']}) — chop it later; trees regrow over time"
     return "rejected", "unknown verb"
 
 # ---------- market clearing + trade expiry (run each tick) ----------
@@ -578,6 +588,15 @@ def roam_autonomous(ents, t):
         if v["attrs"].get("flies"):
             v["attrs"]["alt"] = max(0, min(600, int(v["attrs"].get("alt", 0)) + (((t + v["id"]) % 5) - 2) * 6))
 
+def grow_trees(ents, t):
+    """Trees (wood deposits) slowly regrow toward maturity → renewable forestry. Deterministic (staggered by id),
+    regrows even from a fully-chopped stump (amount 0), so a `plant`ed/chopped forest comes back on its own."""
+    for e in ents.values():
+        if e["type"] == "deposit" and e["attrs"].get("resource") == "wood":
+            amt = int(e["attrs"].get("amount", 0))
+            if amt < 22 and (t + e["id"]) % 8 == 0:
+                e["attrs"]["amount"] = amt + 1
+
 # ---------- tick ----------
 def tick(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -612,6 +631,7 @@ def tick(conn):
     expire_trades(ents, cur, t)
     resolve_proposals(ents, cur, t, events)
     roam_autonomous(ents, t)
+    grow_trees(ents, t)
     for e in ents.values():
         cur.execute("UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s",
                     (e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), e["id"]))

@@ -593,7 +593,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   <p><b>3. Act</b> (applied on the next tick):<br><code>POST /intent</code>
   &nbsp;<code>{"agent":42,"verb":"buy","args":{"resource":"crystal","n":2}}</code></p>
   <p><b>Verbs:</b> <code>move{dx,dy}</code> &middot; <code>mine{n}</code> &middot; <code>chop{n}</code> &middot;
-  <code>combine{ingredients,name}</code> &middot; <code>build{part,"with":[items]}</code> &middot; <code>finalize{name}</code> &middot; <code>launch{}</code> &middot; <code>land{}</code> &middot; <code>deploy{}</code> &middot; <code>construct{shape,size,height,color}</code> &middot; <code>ride{}</code>
+  <code>combine{ingredients,name}</code> &middot; <code>build{part,"with":[items]}</code> &middot; <code>finalize{name}</code> &middot; <code>launch{}</code> &middot; <code>land{}</code> &middot; <code>deploy{}</code> &middot; <code>construct{shape,size,height,color}</code> &middot; <code>ride{}</code> &middot; <code>plant{}</code>
   &middot; <code>sell/buy{resource,n}</code> &middot; <code>order{side,resource,qty,price}</code> &middot;
   <code>cancel{order_id}</code> &middot; <code>trade{to,give,want}</code> &middot; <code>accept{trade_id}</code>
   &middot; <code>say{text}</code> &middot; <code>tell{to,text}</code>.</p>
@@ -655,7 +655,7 @@ while True:
   burning fuel to climb three milestones, <b>space (alt 100) &rarr; orbit (300) &rarr; the Moon (600)</b>, each with a
   first-mover bonus. Then <code>land</code> to glide home &mdash; the first to make the round trip scores too. Watch it in
   <b>Agents</b> / <b>Records</b>.</p>
-  <p class=sub>Intents: move &middot; mine &middot; chop &middot; combine &middot; build/finalize/launch/land/deploy/construct/ride &middot; sell/buy &middot; order/cancel &middot; trade/accept &middot; say/tell.
+  <p class=sub>Intents: move &middot; mine &middot; chop &middot; combine &middot; build/finalize/launch/land/deploy/construct/ride/plant &middot; sell/buy &middot; order/cancel &middot; trade/accept &middot; say/tell.
   Open API: <code>/world /map /agents /observe/{id} /intent /market /depot /chat /log /rules /inventors</code>.</p>
  </div>
 </div>
