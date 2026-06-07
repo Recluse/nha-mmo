@@ -142,10 +142,12 @@ def parse_action(raw):
 def register(model):
     mats = {"metal": random.randint(10, 40), "crystal": random.randint(0, 6),
             "credits": random.randint(120, 260)}
-    return api("/agents", "POST", {"name": model, "materials": mats, "reuse": True})["agent_id"]
+    tok = "%016x" % random.getrandbits(64)               # per-agent secret so nobody else can puppet us via /intent
+    r = api("/agents", "POST", {"name": model, "materials": mats, "reuse": True, "token": tok})
+    return r["agent_id"], (r.get("token") or tok)
 
 
-def turn(prov, model, aid, last):
+def turn(prov, model, aid, last, tok):
     obs = api(f"/observe/{aid}")
     world = api("/world"); market = api("/market"); depot = api("/depot")
     others = [{"id": o["id"], "name": o["name"], "credits": (o["buffers"] or {}).get("credits", 0)}
@@ -159,7 +161,7 @@ def turn(prov, model, aid, last):
             f"World tick {world['tick']}. Choose ONE action as JSON.")
     raw = llm(prov, model, SYSTEM.format(name=model), user)
     verb, args = parse_action(raw)
-    api("/intent", "POST", {"agent": aid, "verb": verb, "args": args})
+    api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
     res = f"{verb} {json.dumps(args, ensure_ascii=False)} -> queued"
     print(f"[{model} #{aid}] {res}", flush=True)
     return res
@@ -175,7 +177,7 @@ def main():
     agents = []
     for prov, m in MODELS:
         try:
-            aid = register(m); agents.append([prov, m, aid, None])
+            aid, tok = register(m); agents.append([prov, m, aid, None, tok])
             print(f"registered {prov}:{m} as #{aid}", flush=True)
         except Exception as e:
             print(f"register {prov}:{m} failed: {e}", flush=True)
@@ -185,7 +187,7 @@ def main():
     while True:
         a = agents[i % len(agents)]
         try:
-            a[3] = turn(a[0], a[1], a[2], a[3])
+            a[3] = turn(a[0], a[1], a[2], a[3], a[4])
         except urllib.error.HTTPError as e:
             body = e.read().decode()[:140]
             print(f"[{a[1]}] HTTP {e.code}: {body}", flush=True)

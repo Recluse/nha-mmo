@@ -205,37 +205,47 @@ class AgentIn(BaseModel):
     name: str = "agent"
     materials: dict = {"metal": 60, "crystal": 4, "credits": 100}
     reuse: bool = False                                   # reuse an existing agent with this name (idempotent)
+    token: str = ""                                       # optional: bind a secret to protect this agent's /intent
 
 
 @app.post("/agents")
 def register_agent(a: AgentIn):
     """Spawn a fresh agent with starting materials → returns its id (use it for observe/intent)."""
     conn = _connect(); cur = conn.cursor()
+    tok = (a.token or "").strip()[:64]
     if a.reuse:                                           # idempotent: keep one agent per name across restarts
-        cur.execute("SELECT id FROM entities WHERE type='agent' AND attrs->>'name'=%s ORDER BY id LIMIT 1", (a.name,))
+        cur.execute("SELECT id, attrs->>'token' t FROM entities WHERE type='agent' AND attrs->>'name'=%s ORDER BY id LIMIT 1", (a.name,))
         row = cur.fetchone()
         if row:
-            conn.close(); return {"agent_id": row[0], "reused": True}
+            if tok and not row[1]:                        # opt-in: bind the caller's token to a still-unprotected agent
+                cur.execute("UPDATE entities SET attrs = attrs || %s WHERE id=%s", (Json({"token": tok}), row[0])); conn.commit()
+            conn.close(); return {"agent_id": row[0], "reused": True, "token": (row[1] or tok)}
+    attrs = {"name": a.name}
+    if tok:
+        attrs["token"] = tok
     cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('agent',%s,%s,%s,%s) RETURNING id",
-                (random.randint(0, WORLD_W - 1), random.randint(0, WORLD_H - 1),
-                 Json(a.materials), Json({"name": a.name})))
+                (random.randint(0, WORLD_W - 1), random.randint(0, WORLD_H - 1), Json(a.materials), Json(attrs)))
     aid = cur.fetchone()[0]; conn.commit(); conn.close()
-    return {"agent_id": aid, "materials": a.materials}
+    return {"agent_id": aid, "materials": a.materials, "token": tok}
 
 
 class IntentIn(BaseModel):
     agent: int
     verb: str                                         # grab | deposit | transfer | build | finalize
     args: dict = {}
+    token: str = ""                                   # required only if the agent bound one at register
 
 
 @app.post("/intent")
 def submit_intent(it: IntentIn):
     """Enqueue an agent action. Applied (or loop-guarded) on the next tick — the world is authoritative."""
     conn = _connect(); cur = conn.cursor()
-    cur.execute("SELECT 1 FROM entities WHERE id=%s AND type='agent'", (it.agent,))
-    if not cur.fetchone():
+    cur.execute("SELECT attrs->>'token' t FROM entities WHERE id=%s AND type='agent'", (it.agent,))
+    row = cur.fetchone()
+    if not row:
         conn.close(); raise HTTPException(404, "no such agent")
+    if row[0] and it.token != row[0]:                 # token enforced only for agents that opted in (back-compat for the rest)
+        conn.close(); raise HTTPException(403, "bad or missing agent token")
     cur.execute("INSERT INTO intents(agent, verb, args) VALUES(%s,%s,%s) RETURNING id",
                 (it.agent, it.verb, Json(it.args)))
     iid = cur.fetchone()[0]; conn.commit(); conn.close()
