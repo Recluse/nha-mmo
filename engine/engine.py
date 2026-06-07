@@ -28,6 +28,7 @@ DESCEND = 40             # altitude shed per `land` (controlled descent back hom
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
+ALTER TABLE world ADD COLUMN IF NOT EXISTS notices jsonb NOT NULL DEFAULT '[]'::jsonb;
 INSERT INTO world (id, tick) VALUES (1,0) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS entities (id bigserial PRIMARY KEY, type text NOT NULL,
   x int NOT NULL DEFAULT 0, y int NOT NULL DEFAULT 0, owner bigint,
