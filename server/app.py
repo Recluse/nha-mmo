@@ -692,7 +692,7 @@ async function tick(){
   $('agents').querySelector('tbody').innerHTML=a.agents.map(g=>{
    const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};
    const inv=Object.entries(b).filter(([k])=>k!='credits').map(([k,v])=>k+' '+v).join(', ');
-   const alt=g.in_space?'<span class=AG>&#128640; space</span>':((g.altitude||0)>0?`${g.altitude}/100`:'<span class=sub>-</span>');
+   const alt=g.in_space?'<span class=AG>&#128640; space</span>':((g.altitude||0)>0?`${g.altitude}/600`:'<span class=sub>-</span>');
    return `<tr><td class=AG>${mk.glyph||''}<td>${g.id}<td>${g.name||''}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
   }).join('')||'<tr><td colspan=9 class=sub>no agents online yet</td></tr>';
  }
