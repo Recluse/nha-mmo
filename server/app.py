@@ -403,6 +403,41 @@ def records():
     return out
 
 
+@app.get("/agent/{agent_id}")
+def agent_profile(agent_id: int):
+    """One agent's full story — stats, inventory, vehicles, discoveries and its milestone timeline."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, x, y, buffers, attrs FROM entities WHERE id=%s AND type='agent'", (agent_id,))
+    a = cur.fetchone()
+    if not a:
+        conn.close(); raise HTTPException(404, "no such agent")
+    cur.execute("SELECT attrs->>'name' name, (attrs->>'flies')::boolean flies, (attrs->>'drives')::boolean drives, "
+                "(attrs->>'v_air')::int v_air, (attrs->>'mass')::int mass, (attrs->>'autonomous')::boolean autonomous "
+                "FROM entities WHERE type='vehicle' AND owner=%s ORDER BY id DESC LIMIT 60", (agent_id,))
+    vehicles = [dict(r) for r in cur.fetchall()]
+    cur.execute("SELECT name, points, tick FROM discoveries WHERE discoverer=%s "
+                "UNION ALL SELECT name, points, tick FROM dynamic_rules WHERE discoverer=%s ORDER BY tick", (agent_id, agent_id))
+    discoveries = [dict(r) for r in cur.fetchall()]
+    cur.execute("SELECT tick, kind, data FROM events WHERE entity=%s AND kind IN ('escape','invent','reject','build') "
+                "ORDER BY id DESC LIMIT 40", (agent_id,))
+    milestones = [dict(r) for r in cur.fetchall()]
+    cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle' AND owner=%s", (agent_id,))
+    nveh = cur.fetchone()["c"]
+    conn.close()
+    return {"agent": dict(a), "vehicles": vehicles, "vehicle_count": nveh,
+            "discoveries": discoveries, "milestones": milestones}
+
+
+@app.get("/timeline")
+def timeline(limit: int = 80):
+    """Chronological milestone history — discoveries, escapes, landings, elevator completions (oldest first)."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT e.tick, e.kind, a.attrs->>'name' name, e.data FROM events e LEFT JOIN entities a ON a.id = e.entity "
+                "WHERE e.kind IN ('escape','invent','land','build') ORDER BY e.id ASC LIMIT %s", (limit,))
+    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    return {"timeline": rows}
+
+
 @app.get("/rules")
 def rules():
     """Crafting Codex — resources + properties, the formation patterns, and who discovered each."""
@@ -541,6 +576,14 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   <h2>&#10024; Highlights &mdash; escapes, inventions &amp; milestones (newest first)</h2>
   <div id=milestones class=feed>...</div>
  </div>
+ <div class=panel data-tab=Profile>
+  <div style="margin-bottom:10px"><input id=pid placeholder="agent id" style="width:90px"> <button id=pload>load</button> <span class=sub>&mdash; or click an id in the Agents tab</span></div>
+  <div id=profile class=sub>pick an agent to see its story</div>
+ </div>
+ <div class=panel data-tab=Timeline>
+  <h2>&#128220; Timeline &mdash; the world's milestone history (oldest first)</h2>
+  <div id=timeline class=feed>...</div>
+ </div>
  <div class=panel data-tab=World>
   <div id=scene3d></div>
   <div class=sub style="padding:7px 12px;line-height:1.9">
@@ -663,7 +706,7 @@ while True:
 </div>
 <script>
 const $=id=>document.getElementById(id);
-const TABS=["Agents","Records","Map","World","Inventors","Codex","Chat","Log","Connect","About"];
+const TABS=["Agents","Profile","Records","Timeline","Map","World","Inventors","Codex","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(t=>`<span class="tab${t==active?' active':''}" data-t="${t}">${t}</span>`).join('');
@@ -679,6 +722,15 @@ $('nick').value=localStorage.getItem('nha_nick')||'';
 $('send').onclick=sendMsg;
 $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+async function loadProfile(id){id=String(id||'').replace(/\D/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;
+ const d=await j('/agent/'+id);if(!d){$('profile').innerHTML='<span class=rej>agent not found</span>';return;}
+ const a=d.agent,at=a.attrs||{},b=a.buffers||{};
+ const inv=Object.entries(b).filter(([k,v])=>v).map(([k,v])=>esc(k)+' '+v).join(', ')||'(empty)';
+ const veh=(d.vehicles||[]).map(v=>esc(v.name||'?')+(v.flies?' [fly]':'')+(v.drives?' [drive]':'')+(v.autonomous?' [auto]':'')).join(', ')||'none';
+ const disc=(d.discoveries||[]).map(x=>`<div><b>${esc(x.name)}</b> <span class=sub>t${x.tick}</span> +${x.points}</div>`).reverse().join('')||'<div class=sub>none</div>';
+ const ms=(d.milestones||[]).map(e=>{const dt=e.data||{};let tx;if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points+' pts';else if(e.kind=='invent')tx='invented '+esc(dt.name||dt.item)+' +'+dt.points;else if(e.kind=='build'&&dt.elevator)tx='orbital elevator complete +'+dt.points;else tx=esc(e.kind);return `<div><span class=sub>t${e.tick}</span> ${tx}</div>`;}).join('')||'<div class=sub>none</div>';
+ $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span></h2><div>pos (${a.x},${a.y}) &middot; alt ${at.altitude||0}${at.in_space?' <span class=AG>in space</span>':''} &middot; ${at.inventor_points||0} pts</div><h2>Inventory</h2><div class=sub>${inv}</div><h2>Vehicles (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>Discoveries</h2><div class=feed>${disc}</div><h2>Milestones</h2><div class=feed>${ms}</div>`;}
+$('pload').onclick=()=>loadProfile($('pid').value);
 function colorize(s){let o='';for(const ch of s){
  if(ch==='*')o+='<span class=O>*</span>';
  else if(ch==='♣')o+='<span class=F>♣</span>';
@@ -708,7 +760,7 @@ async function tick(){
    const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};
    const inv=Object.entries(b).filter(([k])=>k!='credits').map(([k,v])=>k+' '+v).join(', ');
    const alt=g.in_space?'<span class=AG>&#128640; space</span>':((g.altitude||0)>0?`${g.altitude}/600`:'<span class=sub>-</span>');
-   return `<tr><td class=AG>${mk.glyph||''}<td>${g.id}<td>${g.name||''}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
+   return `<tr><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${g.name||''}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
   }).join('')||'<tr><td colspan=9 class=sub>no agents online yet</td></tr>';
  }
  const d=await j('/depot');
@@ -752,6 +804,14 @@ async function tick(){
   else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
   return `<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${txt}</div>`;}).join('')||'<div class=sub>no milestones yet</div>';
+ const tl=await j('/timeline');
+ if(tl)$('timeline').innerHTML=tl.timeline.map(e=>{const dt=e.data||{};let tx;
+  if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points;
+  else if(e.kind=='invent')tx='invented '+esc(dt.name||dt.item)+' +'+dt.points;
+  else if(e.kind=='land')tx='landed'+(dt.round_trip?' (round trip!)':'')+' +'+(dt.points||0);
+  else if(e.kind=='build'&&dt.elevator)tx='orbital elevator complete +'+dt.points;
+  else tx=esc(e.kind);
+  return `<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${tx}</div>`;}).join('')||'<div class=sub>nothing yet</div>';
  const rl=await j('/rules');
  if(rl){
   $('codex_rec').innerHTML='<table><tr><th>item<th>recipe (physics)<th>inventor</tr>'+rl.recipes.map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:'<span class=sub>undiscovered</span>'}</tr>`).join('')+'</table>';
