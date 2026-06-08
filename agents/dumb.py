@@ -32,13 +32,13 @@ def register():
 def act(obs):
     """One random, harmless, VARIED action — dumbness that never repeats a failing action identically."""
     roll = random.random()
-    if roll < 0.45:
+    if roll < 0.50:
         return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}
-    if roll < 0.65:
+    if roll < 0.73:
         return "mine", {"n": random.randint(1, 6)}
-    if roll < 0.77:
+    if roll < 0.90:
         return "gather", {"n": random.randint(1, 4)}
-    return "say", {"text": random.choice(LINES)}
+    return "say", {"text": random.choice(LINES)}   # ~10% chatter (was ~23% — it yapped too much)
 
 
 def main():

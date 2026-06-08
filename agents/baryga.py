@@ -45,23 +45,24 @@ def deal(obs, depot):
     inv = obs.get("inventory", {}) or {}
     cr = int(inv.get("credits", 0))
     prices = (depot or {}).get("prices", {}) or {}
-    if random.random() < 0.16:                            # sleazy patter
+    if random.random() < 0.08:                            # less patter (it yapped too much)
         return "say", {"text": random.choice(LINES)}
-    # SELL: dump the fattest (most valuable) stockpile when holding a lot or running low on cash
-    heavy = [(r, int(inv.get(r, 0))) for r in SELLABLE if int(inv.get(r, 0)) >= 12]
-    if heavy and (cr < 120 or random.random() < 0.5):
-        r, q = max(heavy, key=lambda x: x[1] * (prices.get(x[0], {}).get("sell", 1) or 1))
-        return "sell", {"resource": r, "n": min(random.randint(8, 25), q)}
-    # BUY: snap up one of the cheapest raws the depot offers (a "deal")
+    held = [(r, int(inv.get(r, 0))) for r in SELLABLE if int(inv.get(r, 0)) >= 3]
+    # SELL: cash out the most valuable holding when broke, sitting on a fat pile, or just to keep churning.
+    # (low threshold + broke-trigger so it can ALWAYS recover credits — the old 12-floor stranded it at 1 credit.)
+    if held and (cr < 40 or max(q for _, q in held) >= 15 or random.random() < 0.45):
+        r, q = max(held, key=lambda x: x[1] * (prices.get(x[0], {}).get("sell", 1) or 1))
+        return "sell", {"resource": r, "n": min(random.randint(5, 20), q)}
+    # BUY: snap up a cheap raw, but never blow more than ~half the cash (so it can't bankrupt itself)
     buyable = [(r, p.get("buy")) for r, p in prices.items() if p.get("buy") and r in SELLABLE]
-    if buyable and cr >= 10:
-        buyable.sort(key=lambda x: x[1])                  # cheapest first
-        r, price = random.choice(buyable[:4])             # one of the 4 cheapest -> varied
-        n = max(1, min(random.randint(5, 20), cr // max(1, int(price))))
+    if buyable and cr >= 15:
+        buyable.sort(key=lambda x: x[1])
+        r, price = random.choice(buyable[:4])
+        n = max(1, min(random.randint(3, 12), cr // max(2, int(price) * 2)))
         return "buy", {"resource": r, "n": n}
-    if random.random() < 0.5:                             # nothing to trade -> drift to a new market vibe
-        return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}
-    return "say", {"text": random.choice(LINES)}
+    if random.random() < 0.6:                             # broke + nothing to sell -> dig up goods to flip
+        return "mine", {"n": random.randint(2, 6)}
+    return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}
 
 
 def main():
