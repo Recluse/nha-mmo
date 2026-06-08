@@ -161,7 +161,8 @@ def main():
             obs = runner.api(f"/observe/{aid}")
             inv = obs.get("inventory", {}) or {}
             armed = int(inv.get("kinetic_gun", 0)) > 0 and int(inv.get("slug", 0)) > 0
-            inrange = [x for x in (obs.get("nearby_agents") or []) if x.get("dist", 99) <= KIN_RANGE]
+            inrange = [x for x in (obs.get("nearby_agents") or [])
+                       if x.get("dist", 99) <= KIN_RANGE and not x.get("downed") and int(x.get("hp", 1) or 0) > 0]
 
             if not armed:                                  # (1) SCRIPTED arm-up — never let the LLM spam unarmed attacks
                 verb, args = arm_up(inv); tag = "(arming) "; idle = 0
@@ -188,8 +189,10 @@ def main():
             if sig == last_sig:
                 if verb == "move":
                     args = {"dx": random.randint(-3, 3) or 1, "dy": random.randint(-3, 3) or -1}
-                elif verb == "attack" and isinstance(args, dict):
-                    pass                                   # a real in-range target: repeated attack is PROGRESS (success), not a loop — let it ride
+                elif verb == "attack":                     # NEVER let an identical attack stack — /intent is async so we
+                    # can't tell a "landing" hit from a rejected one; reposition a single step (stays inside range 6)
+                    # this turn, attack again next turn. Interleaving guarantees 3 identical fails never stack -> no freeze.
+                    verb, args = "move", {"dx": random.choice([-2, -1, 1, 2]), "dy": random.choice([-1, 0, 1])}
                 else:                                      # any other repeat -> break out to a guaranteed-varying wander
                     verb, args = "move", {"dx": random.randint(-3, 3) or 1, "dy": random.randint(-3, 3) or -1}
                 sig = (verb, json.dumps(args, sort_keys=True, ensure_ascii=False))
