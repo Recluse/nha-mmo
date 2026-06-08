@@ -452,6 +452,7 @@ def _list_agents():
           (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
           (e.attrs->>'hp')::int hp, (e.attrs->>'hp_max')::int hp_max,
           (e.attrs->>'kills')::int kills, (e.attrs->>'deaths')::int deaths,
+          (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='escape')) reached_space,
           (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
           (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles,
           (SELECT max(tick) FROM events ev WHERE ev.entity=e.id AND ev.kind='act') last_act,
@@ -1072,10 +1073,13 @@ async function tick(){
  if(a){
   const inSpace=a.agents.filter(g=>g.in_space).map(g=>g.name);
   const climbing=a.agents.filter(g=>!g.in_space&&(g.altitude||0)>0).sort((x,y)=>(y.altitude||0)-(x.altitude||0));
+  const veterans=a.agents.filter(g=>g.reached_space&&!g.in_space).map(g=>g.name);   // reached space before, now back home
   let sr='&#128640; Space race &mdash; space (100) / orbit (300) / Moon (600) &mdash; ';
-  if(inSpace.length)sr+=`<span class=AG>in space: ${inSpace.map(esc).join(', ')}</span>`+(climbing.length?' &middot; ':'');
-  if(climbing.length)sr+=`leader <b>${esc(climbing[0].name)}</b> at ${climbing[0].altitude}/600`;
-  if(!inSpace.length&&!climbing.length)sr+='nobody has lifted off yet &mdash; build a rocket (thrust &ge; 4&times;mass) and <code>launch</code>.';
+  const segs=[];
+  if(inSpace.length)segs.push(`<span class=AG>in space now: ${inSpace.map(esc).join(', ')}</span>`);
+  if(climbing.length)segs.push(`climbing: <b>${esc(climbing[0].name)}</b> at ${climbing[0].altitude}/600`);
+  if(veterans.length)segs.push(`<span class=AG>&#127941; reached space: ${veterans.map(esc).join(', ')}</span>`);
+  sr+=segs.length?segs.join(' &middot; '):'nobody has lifted off yet &mdash; build a rocket (thrust &ge; 4&times;mass) and <code>launch</code>.';
   $('spacerace').innerHTML=sr;
   $('agents').querySelector('tbody').innerHTML=a.agents.map(g=>{
    const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};

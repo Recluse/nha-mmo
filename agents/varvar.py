@@ -38,18 +38,23 @@ def register():
 
 
 def arm_up(inv):
-    """Scripted self-arming (gemma2 won't): raise credits by selling spare materials, then buy a kinetic_gun and
-    stock slugs from the depot. Returns one (verb, args) step; called every turn варвар lacks gun+ammo."""
-    cr = int(inv.get("credits", 0)); gun = int(inv.get("kinetic_gun", 0))
+    """Scripted self-arming. KEY: if варвар already has a gun, just BUY ammo with whatever credits it has — never
+    sit mining. (Standing on a barren cell -> repeated failed `mine` -> the engine's loop-guard rejects 3 identical
+    failures and freezes the agent for good. That's exactly how варвар once died of boredom.)"""
+    cr = int(inv.get("credits", 0)); gun = int(inv.get("kinetic_gun", 0)); slug = int(inv.get("slug", 0))
     sellable = ("metal", "iron", "copper", "aluminum", "carbon", "silicon", "crystal", "titanium", "nickel", "coal", "oil")
-    if cr < 150:                                          # need credits first
+    if gun and slug < 1 and cr >= 8:                      # armed but out of ammo + can afford -> just restock, don't mine
+        return "buy", {"resource": "slug", "n": max(1, min(20, cr // 8))}
+    if cr < 60:                                           # too poor for a gun -> sell spare, else wander+dig to earn
         for r in sellable:
-            if int(inv.get(r, 0)) >= 5:
+            if int(inv.get(r, 0)) >= 3:
                 return "sell", {"resource": r, "n": min(30, int(inv[r]))}
-        return "mine", {"n": 5}                           # nothing to sell -> dig materials to sell
+        if random.random() < 0.5:
+            return "mine", {"n": random.randint(3, 8)}    # vary n so a barren cell can't trip the loop-guard
+        return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}   # wander to find a deposit
     if gun == 0:
         return "buy", {"resource": "kinetic_gun", "n": 1}
-    return "buy", {"resource": "slug", "n": 12}           # have gun, low on ammo -> restock
+    return "buy", {"resource": "slug", "n": 12}           # gun + cash, low ammo -> restock
 
 
 def parse(raw):
