@@ -307,12 +307,21 @@ def _map():
     cur.execute("SELECT id, attrs->>'name' name, x, y FROM entities e WHERE type='agent' ORDER BY id")   # whole roster on the map (idle agents included)
     arows = cur.fetchall()
     cur.execute("SELECT x, y FROM entities WHERE type='artifact'")
-    artrows = cur.fetchall(); conn.close()
+    artrows = cur.fetchall()
+    cur.execute("SELECT x, y FROM entities WHERE type='vehicle'")     # all vehicles (built or roaming) sit on a cell
+    vehrows = cur.fetchall()
+    cur.execute("SELECT x, y, attrs->>'shape' shape FROM entities WHERE type='structure'")
+    strrows = cur.fetchall(); conn.close()
     glyphs = "123456789ABDEGHJKLMNPQRSTUVXYZ"          # single chars, skipping O/C/F/W (deposit letters)
     markers, legend = [], []
-    for x, y in [(r["x"], r["y"]) for r in artrows]:    # ancient artifacts drawn under agents (agents win on overlap)
+    # precedence (built last → wins in ascii_map's amap): deposits < artifacts < structures/vehicles < agents
+    for x, y in [(r["x"], r["y"]) for r in artrows]:    # ancient artifacts
         markers.append((x, y, "!"))
-    for i, r in enumerate(arows):
+    for r in strrows:                                   # structures: elevator = '╫' (tower), everything else = '▣' (building)
+        markers.append((r["x"], r["y"], "╫" if r["shape"] == "elevator" else "▣"))
+    for r in vehrows:                                   # vehicles (rover/craft) = '▾'
+        markers.append((r["x"], r["y"], "▾"))
+    for i, r in enumerate(arows):                       # agents drawn last → win on overlap
         g = glyphs[i] if i < len(glyphs) else "@"
         markers.append((r["x"], r["y"], g))
         legend.append({"glyph": g, "id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"]})
@@ -829,6 +838,8 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  h2{font-size:12px;margin:16px 0 8px;color:#58a6ff;text-transform:uppercase;letter-spacing:.5px} h2:first-child{margin-top:0}
  pre.map{line-height:1.05;font-size:12px;white-space:pre;margin:0;overflow:auto}
  .O{color:#f0883e}.C{color:#a371f7}.F{color:#3fb950}.W{color:#58a6ff}.AG{color:#ffd866;font-weight:bold}.PL{color:#7bd66a}.AR{color:#a371f7;font-weight:bold}
+ .ME{color:#b0bac6}.CR{color:#d2a8ff}.EN{color:#8b949e}.SU{color:#e3b341}.OL{color:#bc8cff}.SI{color:#79c0ff}.AQ{color:#58a6ff}
+ .VH{color:#39d0d8;font-weight:bold}.ST{color:#d29922;font-weight:bold}
  table{width:100%;border-collapse:collapse} td,th{text-align:left;padding:3px 8px;border-bottom:1px solid #1b2430}
  th{color:#7d8590;font-weight:400}
  .feed div{padding:3px 0;border-bottom:1px solid #161b22}
@@ -895,11 +906,19 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  </div>
  <div class=panel data-tab=Map>
   <pre class=map id=map></pre>
-  <div class=sub style=margin-top:8px>~ water . plains # forest : desert ^ mountain <span class=sub>%</span> tundra &middot;
-  <span class=O>*</span> = mineral deposit &middot; <span class=F>&#9827;</span> = tree (wood) &middot;
-  <span class=PL>,</span> = plant (herb / lichen / fungus / algae &mdash; medicine) &middot;
-  <span class=AR>!</span> = ancient artifact &middot;
-  <span class=AG>1-9 / A-Z</span> = agents &middot; <span class=sub>exact types in Codex / nearby_deposits</span></div>
+  <div class=sub style=margin-top:8px><b>biomes:</b> ~ water &middot; . plains &middot; # forest &middot; : desert &middot; ^ mountain &middot; <span class=sub>%</span> tundra</div>
+  <div class=sub style=margin-top:4px><b>resources:</b>
+  <span class=ME>&curren;</span> metal (iron/copper/aluminum/titanium) &middot;
+  <span class=O>*</span> ore &middot; <span class=CR>&#9670;</span> crystal &middot;
+  <span class=EN>&#9679;</span> coal/carbon &middot; <span class=SU>&sect;</span> sulfur &middot;
+  <span class=OL>&oslash;</span> oil &middot; <span class=SI>&#9671;</span> silicon &middot;
+  <span class=AQ>&#8776;</span> water/salt/brine/ice &middot;
+  <span class=F>&#9827;</span> tree (wood) &middot;
+  <span class=PL>,</span> plant (herb/lichen/fungus/algae)</div>
+  <div class=sub style=margin-top:4px><b>units:</b>
+  <span class=VH>&#9662;</span> vehicle &middot; <span class=ST>&#9635;</span> structure &middot; <span class=ST>&#9579;</span> orbital elevator &middot;
+  <span class=AR>!</span> ancient artifact &middot; <span class=AG>1-9 / A-Z</span> agents
+  &middot; <span class=sub>agents &gt; vehicles/structures &gt; artifacts &gt; deposits</span></div>
  </div>
  <div class=panel data-tab=Inventors>
   <h2>&#127942; Inventor leaderboard &mdash; first to discover a recipe names it &amp; scores</h2>
@@ -1079,10 +1098,20 @@ async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)re
  $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span></h2><div>pos (${a.x},${a.y}) &middot; <span class=O>&#10084; ${at.hp||0}/${at.hp_max||100} hp</span> &middot; <span class=AG>&#9876; ${at.kills||0} kills / ${at.deaths||0} deaths</span> &middot; alt ${at.altitude||0}${at.in_space?' <span class=AG>in space</span>':''} &middot; ${at.inventor_points||0} pts</div><h2>Inventory</h2><div class=sub>${inv}</div><h2>Vehicles (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>Discoveries</h2><div class=feed>${disc}</div><h2>Milestones</h2><div class=feed>${ms}</div>`;}
 $('pload').onclick=()=>loadProfile($('pid').value);
 function colorize(s){let o='';for(const ch of s){
- if(ch==='*')o+='<span class=O>*</span>';
- else if(ch==='♣')o+='<span class=F>♣</span>';
- else if(ch===',')o+='<span class=PL>,</span>';          // gatherable plant/flora (medicine branch)
- else if(ch==='!')o+='<span class=AR>!</span>';          // ancient artifact
+ if(ch==='*')o+='<span class=O>*</span>';               // generic ore
+ else if(ch==='¤')o+='<span class=ME>¤</span>';         // metals (iron/copper/aluminum/titanium)
+ else if(ch==='◆')o+='<span class=CR>◆</span>';         // crystal
+ else if(ch==='●')o+='<span class=EN>●</span>';         // coal / carbon (energy)
+ else if(ch==='§')o+='<span class=SU>§</span>';         // sulfur
+ else if(ch==='ø')o+='<span class=OL>ø</span>';         // oil
+ else if(ch==='◇')o+='<span class=SI>◇</span>';         // silicon
+ else if(ch==='≈')o+='<span class=AQ>≈</span>';         // water / brine / salt / ice
+ else if(ch==='♣')o+='<span class=F>♣</span>';          // tree (wood)
+ else if(ch===',')o+='<span class=PL>,</span>';         // gatherable plant/flora (medicine branch)
+ else if(ch==='!')o+='<span class=AR>!</span>';         // ancient artifact
+ else if(ch==='▾')o+='<span class=VH>▾</span>';         // vehicle (rover / craft)
+ else if(ch==='▣')o+='<span class=ST>▣</span>';         // structure (building)
+ else if(ch==='╫')o+='<span class=ST>╫</span>';         // structure — orbital elevator (tower)
  else if(/[1-9A-Z]/.test(ch))o+='<span class=AG>'+ch+'</span>';
  else o+=esc(ch);}return o;}
 function fitMap(){const el=$('map'); if(!el||!el.dataset.w)return;          // scale the ASCII map to fill the panel width (capped by height)

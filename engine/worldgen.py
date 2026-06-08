@@ -142,10 +142,33 @@ def generate(W, H, seed, min_gap=3, min_x=None, min_y=None):
 
 PLANT_RES = {"herb", "lichen", "fungus", "algae"}   # season 3 increment 2 — gatherable flora glyph ‘,’
 
+# Per-resource map glyph (grouped by material class) so the 2D map distinguishes minerals at a glance.
+# wood='♣' and flora=',' are handled separately below (kept as-is). Glyphs are chosen to NOT collide with
+# agent glyphs (1-9 A-Z), biome chars (~ . # : ^ %), or the reserved marker chars (♣ , ! @ + vehicle/structure).
+#   ¤ metals (iron/copper/aluminum/titanium)   * ore        ◆ crystal      ● coal/carbon (energy)
+#   § sulfur                                    ø oil        ◇ silicon      ≈ water/brine/salt/ice
+RES_GLYPH = {
+    "iron": "¤", "copper": "¤", "aluminum": "¤", "titanium": "¤",   # metals
+    "ore": "*",                                                      # generic ore
+    "crystal": "◆",                                                  # crystal
+    "coal": "●", "carbon": "●",                                      # coal / carbon (energy, black)
+    "sulfur": "§",                                                   # sulfur
+    "oil": "ø",                                                      # oil
+    "silicon": "◇",                                                  # silicon
+    "water": "≈", "brine": "≈", "salt": "≈", "ice": "≈",            # water / salt / brine / ice
+}
+
+def _res_glyph(res):
+    if res == "wood":
+        return "♣"                                  # tree
+    if res in PLANT_RES:
+        return ","                                  # plant / flora (medicine branch)
+    return RES_GLYPH.get(res, "*")                  # per-resource glyph, '*' = unknown/ore fallback
+
 def ascii_map(grid, deposits, agents=()):
-    # ♣ = tree (wood), ‘,’ = plant/flora (herb/lichen/fungus/algae), * = ore/mineral
-    dmap = {(x, y): ("♣" if res == "wood" else ("," if res in PLANT_RES else "*")) for x, y, res, *_ in deposits}
-    amap = {(int(x), int(y)): ch for x, y, ch in agents}        # agents drawn on top of deposits/biome
+    # ♣ = tree (wood), ‘,’ = plant/flora (herb/lichen/fungus/algae), per-resource glyph (RES_GLYPH) for minerals.
+    dmap = {(x, y): _res_glyph(res) for x, y, res, *_ in deposits}
+    amap = {(int(x), int(y)): ch for x, y, ch in agents}        # agents/markers drawn on top of deposits/biome
     return "\n".join("".join(amap.get((x, y), dmap.get((x, y), GLYPH[c])) for x, c in enumerate(row))
                      for y, row in enumerate(grid))
 
@@ -162,7 +185,8 @@ def main():
     H = int(sys.argv[2]) if len(sys.argv) > 2 else 18
     seed = int(sys.argv[3]) if len(sys.argv) > 3 else 42
     grid, deposits = generate(W, H, seed)
-    print(f"== world {W}x{H} seed={seed}  (~=water .=plains #=forest :=desert ^=mountain %=tundra; ♣=tree ,=plant *=залежь) ==")
+    print(f"== world {W}x{H} seed={seed}  (~=water .=plains #=forest :=desert ^=mountain %=tundra; "
+          f"♣=tree ,=plant ¤=metal *=ore ◆=crystal ●=coal/carbon §=sulfur ø=oil ◇=silicon ≈=water/salt/ice) ==")
     print(ascii_map(grid, deposits))
     print("biomes:", dict(Counter(c for row in grid for c in row)))
     print(f"deposits: {len(deposits)} →", dict(Counter(d[2] for d in deposits)))
