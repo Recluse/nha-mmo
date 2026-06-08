@@ -430,9 +430,10 @@ def _list_agents():
           (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
           (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles,
           (SELECT max(tick) FROM events ev WHERE ev.entity=e.id AND ev.kind='act') last_act,
-          EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) online
+          (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s)
+                          OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
         FROM entities e WHERE e.type='agent'                 -- whole roster; offline shown greyed, online first
-        ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS,))
+        ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS, t - ONLINE_TICKS))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"agents": rows, "tick": t}
 
@@ -642,9 +643,10 @@ def _roster():
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
     cur.execute("""SELECT e.id, e.attrs->>'name' name, (e.attrs->>'inventor_points')::int pts,
                      (e.attrs->>'in_space')::boolean in_space,
-                     EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) online
+                     (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s)
+                          OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
                    FROM entities e WHERE e.type='agent'
-                   ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS,))
+                   ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS, t - ONLINE_TICKS))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"agents": rows}
 
