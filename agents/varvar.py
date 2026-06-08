@@ -94,9 +94,13 @@ def main():
             obs = runner.api(f"/observe/{aid}")
             inv = obs.get("inventory", {}) or {}
             armed = int(inv.get("kinetic_gun", 0)) > 0 and int(inv.get("slug", 0)) > 0
+            inrange = [x for x in (obs.get("nearby_agents") or []) if x.get("dist", 99) <= 6]
             if not armed:                                  # SCRIPTED arm-up (don't let the LLM spam unarmed attacks)
                 verb, args = arm_up(inv); tag = "(arming) "
-            else:                                          # armed -> let gemma2 pick the fight
+            elif inrange:                                  # SCRIPTED attack — gemma2:2b won't reliably target, so do it here
+                tgt = min(inrange, key=lambda x: (x.get("hp", 100), x.get("dist", 99)))   # weakest/closest in kinetic range 6
+                verb, args = "attack", {"weapon": "kinetic_gun", "target": tgt["id"]}; tag = "(hunt) "
+            else:                                          # armed, nobody in range -> let gemma2 roam/taunt
                 world = runner.api("/world"); depot = runner.api("/depot")
                 others = [{"id": o["id"], "name": o["name"], "hp": o.get("hp")}
                           for o in runner.api("/agents")["agents"] if o["id"] != aid][:14]
