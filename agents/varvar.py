@@ -79,6 +79,30 @@ def chase_fallback(obs):
     return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}
 
 
+TAUNTS = ["Бегите, черви!", "Кто следующий на убой?", "Ваши черепа украсят мой лагерь!", "Я иду за тобой!",
+          "Слабаки! Все вы — мясо!", "Кровь и сталь!", "От варвара не убежать!", "Сегодня кто-то умрёт!"]
+
+
+def seek_target(aid, obs):
+    """Nobody in kinetic range -> march across the WHOLE map toward the nearest LIVE agent (scene-wide positions;
+    random roaming never finds anyone in 220x220). Occasionally taunts. Returns (verb, args), or None if no prey exists."""
+    if random.random() < 0.12:
+        return "say", {"text": random.choice(TAUNTS)}
+    pos = obs.get("position") or [0, 0]
+    try:
+        others = [a for a in (runner.api("/scene").get("agents") or [])
+                  if a.get("id") != aid and not a.get("downed")]
+    except Exception:
+        return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}   # scene unreachable -> roam
+    if not others:
+        return None                                        # genuinely nobody else alive
+    t = min(others, key=lambda a: abs(a.get("x", 0) - pos[0]) + abs(a.get("y", 0) - pos[1]))   # nearest prey
+    dx = max(-3, min(3, t.get("x", pos[0]) - pos[0])); dy = max(-3, min(3, t.get("y", pos[1]) - pos[1]))
+    if dx or dy:
+        return "move", {"dx": dx, "dy": dy}
+    return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}
+
+
 def main():
     print(f"варвар: server={runner.SERVER} model=ollama:{MODEL} interval={INTERVAL}s", flush=True)
     for _ in range(40):
@@ -100,23 +124,12 @@ def main():
             elif inrange:                                  # SCRIPTED attack — gemma2:2b won't reliably target, so do it here
                 tgt = min(inrange, key=lambda x: (x.get("hp", 100), x.get("dist", 99)))   # weakest/closest in kinetic range 6
                 verb, args = "attack", {"weapon": "kinetic_gun", "target": tgt["id"]}; tag = "(hunt) "
-            else:                                          # armed, nobody in range -> let gemma2 roam/taunt
-                world = runner.api("/world"); depot = runner.api("/depot")
-                others = [{"id": o["id"], "name": o["name"], "hp": o.get("hp")}
-                          for o in runner.api("/agents")["agents"] if o["id"] != aid][:14]
-                user = (f"You are agent #{aid} («{NAME}»). World tick {world['tick']}.\n"
-                        f"Your state: {json.dumps(obs, ensure_ascii=False)}\n"
-                        f"Last action result: {last or 'none yet'}\n"
-                        f"Other agents (your prey): {json.dumps(others, ensure_ascii=False)}\n"
-                        f"You ARE armed (kinetic_gun + slugs). Choose ONE aggressive action as JSON.")
-                raw = runner.llm("ollama", MODEL, SYSTEM, user)
-                try:
-                    verb, args = parse(raw)
-                except Exception:
-                    verb, args = None, {}
-                tag = ""
-                if not verb or verb == "attack" and not (obs.get("nearby_agents")):
-                    verb, args = chase_fallback(obs); tag = "(fallback) "
+            else:                                          # armed, nobody in kinetic range -> HUNT across the whole map
+                sk = seek_target(aid, obs)                 # march toward the nearest LIVE agent (scene-wide positions)
+                if sk:
+                    verb, args = sk; tag = "(seek) "
+                else:                                      # no prey anywhere -> taunt
+                    verb, args = "say", {"text": random.choice(TAUNTS)}; tag = "(taunt) "
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             last = f"{verb} {json.dumps(args, ensure_ascii=False)} -> queued"
             print(f"[варвар #{aid}] {tag}{last}", flush=True)
