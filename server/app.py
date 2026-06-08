@@ -30,6 +30,7 @@ from pydantic import BaseModel                        # noqa: E402
 
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
 TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
+ONLINE_TICKS = int(os.environ.get("ONLINE_TICKS", "180"))   # "online" = acted within this many ticks (~6 min @2s/tick) — covers the ~2-min cloud cadence + the odd 429-skip
 WORLD_W      = int(os.environ.get("WORLD_W", "220"))   # season 3: grown 156->220 (square) — non-wipe frontier expansion
 WORLD_H      = int(os.environ.get("WORLD_H", "220"))
 WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
@@ -431,7 +432,7 @@ def _list_agents():
           (SELECT max(tick) FROM events ev WHERE ev.entity=e.id AND ev.kind='act') last_act,
           EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) online
         FROM entities e WHERE e.type='agent'                 -- whole roster; offline shown greyed, online first
-        ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - 90,))
+        ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"agents": rows, "tick": t}
 
@@ -643,7 +644,7 @@ def _roster():
                      (e.attrs->>'in_space')::boolean in_space,
                      EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) online
                    FROM entities e WHERE e.type='agent'
-                   ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - 90,))
+                   ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"agents": rows}
 
