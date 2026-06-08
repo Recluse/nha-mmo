@@ -1025,6 +1025,7 @@ def kill_agent(e, t, attacker, events, cur, ents):
     if e["type"] == "agent":
         e["attrs"]["death_x"] = e["x"]; e["attrs"]["death_y"] = e["y"]
         e["attrs"]["downed_until"] = t + RESPAWN_AGENT_TICKS
+        e["attrs"]["deaths"] = int(e["attrs"].get("deaths", 0)) + 1
         e["attrs"].pop("docked_to", None)
         drop = {}
         for k in sorted(e["buffers"].keys()):
@@ -1041,6 +1042,7 @@ def kill_agent(e, t, attacker, events, cur, ents):
             cur.execute("UPDATE entities SET buffers=%s WHERE id=%s", (Json(drop), lid))
             events.append((t, e["id"], "drop", {"loot": lid, "contents": drop}))
         if attacker and attacker["type"] == "agent":     # combat points (SEPARATE field, per-pair window-capped)
+            attacker["attrs"]["kills"] = int(attacker["attrs"].get("kills", 0)) + 1   # raw lifetime kill count (uncapped)
             lk = dict(attacker["attrs"].get("last_kill", {}))
             vk = str(e["id"])
             if int(lk.get(vk, -10 ** 9)) + COMBAT_PTS_PAIR_WINDOW <= t:

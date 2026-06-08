@@ -552,7 +552,9 @@ def _milestones(limit):
     milestone-worthy war/peace/attune/destroyed events (the high-frequency damage/theft/attack/dock/mine
     firehose stays in /log only)."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT e.tick, e.entity, a.attrs->>'name' name, e.kind, e.data "
+    cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name', "
+                "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
+                "  (SELECT discoverer_name FROM dynamic_rules WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1)) name, e.kind, e.data "
                 "FROM events e LEFT JOIN entities a ON a.id = e.entity "
                 "WHERE e.kind IN ('escape','invent','reject','generate','war','peace','attune','destroyed') "
                 "ORDER BY e.id DESC LIMIT %s", (limit,))
@@ -630,7 +632,10 @@ def _timeline(limit):
     """Chronological milestone history — discoveries, escapes, landings, elevator completions, attunements
     (oldest first)."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT e.tick, e.kind, a.attrs->>'name' name, e.data FROM events e LEFT JOIN entities a ON a.id = e.entity "
+    cur.execute("SELECT e.tick, e.kind, COALESCE(a.attrs->>'name', "
+                "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
+                "  (SELECT discoverer_name FROM dynamic_rules WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1)) name, e.data "
+                "FROM events e LEFT JOIN entities a ON a.id = e.entity "
                 "WHERE e.kind IN ('escape','invent','land','build','attune') ORDER BY e.id ASC LIMIT %s", (limit,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"timeline": rows}
@@ -1017,7 +1022,7 @@ async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)re
  const veh=(d.vehicles||[]).map(v=>esc(v.name||'?')+(v.flies?' [fly]':'')+(v.drives?' [drive]':'')+(v.autonomous?' [auto]':'')).join(', ')||'none';
  const disc=(d.discoveries||[]).map(x=>`<div><b>${esc(x.name)}</b> <span class=sub>t${x.tick}</span> +${x.points}</div>`).reverse().join('')||'<div class=sub>none</div>';
  const ms=(d.milestones||[]).map(e=>{const dt=e.data||{};let tx;if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points+' pts';else if(e.kind=='invent')tx='invented '+esc(dt.name||dt.item)+' +'+dt.points;else if(e.kind=='build'&&dt.elevator)tx='orbital elevator complete +'+dt.points;else tx=esc(e.kind);return `<div><span class=sub>t${e.tick}</span> ${tx}</div>`;}).join('')||'<div class=sub>none</div>';
- $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span></h2><div>pos (${a.x},${a.y}) &middot; alt ${at.altitude||0}${at.in_space?' <span class=AG>in space</span>':''} &middot; ${at.inventor_points||0} pts</div><h2>Inventory</h2><div class=sub>${inv}</div><h2>Vehicles (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>Discoveries</h2><div class=feed>${disc}</div><h2>Milestones</h2><div class=feed>${ms}</div>`;}
+ $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span></h2><div>pos (${a.x},${a.y}) &middot; <span class=O>&#10084; ${at.hp||0}/${at.hp_max||100} hp</span> &middot; <span class=AG>&#9876; ${at.kills||0} kills / ${at.deaths||0} deaths</span> &middot; alt ${at.altitude||0}${at.in_space?' <span class=AG>in space</span>':''} &middot; ${at.inventor_points||0} pts</div><h2>Inventory</h2><div class=sub>${inv}</div><h2>Vehicles (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>Discoveries</h2><div class=feed>${disc}</div><h2>Milestones</h2><div class=feed>${ms}</div>`;}
 $('pload').onclick=()=>loadProfile($('pid').value);
 function colorize(s){let o='';for(const ch of s){
  if(ch==='*')o+='<span class=O>*</span>';
@@ -1063,7 +1068,7 @@ async function tick(){
   const ob=(mk.orders||[]).slice(0,16).map(o=>`<div>#${o.agent} <span class=${o.side=='sell'?'O':'F'}>${o.side}</span> ${o.qty} ${o.resource} @ ${o.price}</div>`).join('');
   $('market').innerHTML=`<div style="margin-bottom:6px">last: ${lp}</div>${ob||'<span class=sub>order book empty</span>'}`;}
  const ch=await j('/chat');
- if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':'#'+x.sender+' '}${esc(x.sender_name||'')}</span>${x.recipient?`<span class=sub>to #${x.recipient}</span> `:''}${esc(x.text)}</div>`).join('')||'<div class=sub>silence... no messages yet</div>';
+ if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to #${x.recipient}</span> `:''}${esc(x.text)}</div>`).join('')||'<div class=sub>silence... no messages yet</div>';
  const lg=await j('/log');
  if(lg)$('log').innerHTML=lg.log.map(e=>{const dt=e.data||{};let txt;
   if(e.kind=='act')txt=`<b>${dt.verb}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
@@ -1072,7 +1077,7 @@ async function tick(){
   else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
   else if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
-  return `<div><span class=sub>t${e.tick}</span> ${e.entity?`<span class=pill>#${e.entity}</span>`:''}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
+  return `<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
  const iv=await j('/inventors');
  if(iv){
   $('inv_board').innerHTML=iv.leaderboard.length?('<table><tr><th>#<th>model<th>&#127942; pts</tr>'+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${g.name||''}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):'<div class=sub>no inventions yet — be the first!</div>';
