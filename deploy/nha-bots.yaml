@@ -24,10 +24,13 @@ spec:
         env:
         - name: SERVER_URL
           value: "http://nha-mmo:8000"
+        envFrom:
+        - secretRef:
+            name: nha-groq        # GROQ_API_KEY + GROQ_URL for varvar_groq (the scripted bots ignore them)
         command: ["sh", "-c"]
         args:
         # absolute paths so every backgrounded bot finds its file regardless of cwd (each bot adds /app to sys.path itself)
-        - "python /app/dumb.py & python /app/baryga.py & python /app/woodcutter.py & python /app/miner.py & wait"
+        - "python /app/dumb.py & python /app/baryga.py & python /app/woodcutter.py & python /app/miner.py & python /app/varvar_groq.py & wait"
         volumeMounts:
         - name: code
           mountPath: /app
