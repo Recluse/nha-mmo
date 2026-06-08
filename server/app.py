@@ -313,10 +313,14 @@ def _scene():
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
     cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'altitude')::int alt, "
                 "(attrs->>'in_space')::boolean space, (attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, "
-                "(attrs->>'downed_until')::int downed FROM entities e WHERE type='agent' ORDER BY id")   # show the whole roster (idle agents included) so the map never looks empty between actions
+                "(attrs->>'downed_until')::int downed, "
+                "(EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) "
+                " OR COALESCE((attrs->>'born')::int,-1) >= %s) online "
+                "FROM entities e WHERE type='agent' ORDER BY id", (t - ONLINE_TICKS, t - ONLINE_TICKS))   # whole roster + online flag so the map can dim offline
     agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
                "alt": r["alt"] or 0, "space": bool(r["space"]),
-               "hp": r["hp"], "hp_max": r["hp_max"], "downed": bool((r["downed"] or 0) > t)} for r in cur.fetchall()]
+               "hp": r["hp"], "hp_max": r["hp_max"], "downed": bool((r["downed"] or 0) > t),
+               "online": bool(r["online"])} for r in cur.fetchall()]
     cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'alt')::int alt, (attrs->>'flies')::boolean fly, "
                 "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'wrecked')::boolean wrecked "
                 "FROM entities WHERE type='vehicle' AND (attrs->>'autonomous')::boolean")
@@ -1178,8 +1182,10 @@ function initWorld3D(){
  function buildAgents(as){
   while(agG.children.length)agG.remove(agG.children[0]);
   as.forEach(a=>{const p=P(a.x,a.y),yy=p[1]+1.3+(a.alt||0)/9;
-   const m=new T.Mesh(gAg,new T.MeshLambertMaterial({color:a.space?0x58a6ff:0xffd866}));m.position.set(p[0],yy,p[2]);agG.add(m);
-   const lb=label((a.space?'\\u{1F680} ':'')+(a.name||('#'+a.id)));lb.position.set(p[0],yy+2.4,p[2]);agG.add(lb);});
+   const on=a.online!==false;                                   // offline -> dim grey + translucent so live agents stand out
+   const col=on?(a.space?0x58a6ff:0xffd866):0x6e7681;
+   const m=new T.Mesh(gAg,new T.MeshLambertMaterial({color:col,transparent:!on,opacity:on?1:0.3}));m.position.set(p[0],yy,p[2]);agG.add(m);
+   const lb=label((a.space?'\\u{1F680} ':'')+(a.name||('#'+a.id)));lb.position.set(p[0],yy+2.4,p[2]);lb.material.opacity=on?1:0.4;agG.add(lb);});
  }
  const gVeh=new T.OctahedronGeometry(0.7,0);
  function buildVehicles(vs){
