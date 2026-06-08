@@ -664,10 +664,10 @@ def roster():
 def rules():
     """Crafting Codex — resources + properties, the formation patterns, and who discovered each."""
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT d.rule_key, d.name, a.attrs->>'name' discoverer, d.points "
+    cur.execute("SELECT d.rule_key, d.name, COALESCE(a.attrs->>'name', d.discoverer_name) discoverer, d.points "
                 "FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer")
     disc = {r["rule_key"]: dict(r) for r in cur.fetchall()}
-    cur.execute("SELECT r.sig, r.item_key, r.name, r.props, r.points, a.attrs->>'name' by "
+    cur.execute("SELECT r.sig, r.item_key, r.name, r.props, r.points, COALESCE(a.attrs->>'name', r.discoverer_name) by "
                 "FROM dynamic_rules r LEFT JOIN entities a ON a.id = r.discoverer ORDER BY r.tick")
     dynamic = [dict(r) for r in cur.fetchall()]
     cur.execute("SELECT count(*) c FROM proposals WHERE status='pending'")
@@ -685,10 +685,10 @@ def inventors():
     cur.execute("SELECT id, attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
                 "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC")
     board = [dict(r) for r in cur.fetchall()]
-    cur.execute("""SELECT d.name, d.points, a.attrs->>'name' by, d.tick, d.rule_key key, false guild
+    cur.execute("""SELECT d.name, d.points, COALESCE(a.attrs->>'name', d.discoverer_name) by, d.tick, d.rule_key key, false guild
                      FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer
                    UNION ALL
-                   SELECT r.name, r.points, a.attrs->>'name' by, r.tick, r.item_key key, true guild
+                   SELECT r.name, r.points, COALESCE(a.attrs->>'name', r.discoverer_name) by, r.tick, r.item_key key, true guild
                      FROM dynamic_rules r LEFT JOIN entities a ON a.id = r.discoverer
                    ORDER BY tick""")
     discs = [dict(r) for r in cur.fetchall()]; conn.close()

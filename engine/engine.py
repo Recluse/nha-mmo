@@ -138,14 +138,16 @@ CREATE TABLE IF NOT EXISTS trades (id bigserial PRIMARY KEY, proposer bigint NOT
 CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, tick int NOT NULL,
   sender bigint NOT NULL, recipient bigint, text text NOT NULL);
 CREATE TABLE IF NOT EXISTS discoveries (rule_key text PRIMARY KEY, name text NOT NULL,
-  discoverer bigint NOT NULL, tick int NOT NULL, points int NOT NULL DEFAULT 0);
+  discoverer bigint NOT NULL, discoverer_name text, tick int NOT NULL, points int NOT NULL DEFAULT 0);
+ALTER TABLE discoveries ADD COLUMN IF NOT EXISTS discoverer_name text;
 CREATE TABLE IF NOT EXISTS proposals (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   ings jsonb NOT NULL, sig text NOT NULL, proposed_name text,
   status text NOT NULL DEFAULT 'pending', item_key text, item_name text, props jsonb,
   points int, reason text, tick int NOT NULL);
 CREATE INDEX IF NOT EXISTS proposals_status_idx ON proposals(status);
 CREATE TABLE IF NOT EXISTS dynamic_rules (sig text PRIMARY KEY, item_key text NOT NULL, name text NOT NULL,
-  props jsonb NOT NULL DEFAULT '{}', discoverer bigint NOT NULL, points int NOT NULL DEFAULT 0, tick int NOT NULL);
+  props jsonb NOT NULL DEFAULT '{}', discoverer bigint NOT NULL, discoverer_name text, points int NOT NULL DEFAULT 0, tick int NOT NULL);
+ALTER TABLE dynamic_rules ADD COLUMN IF NOT EXISTS discoverer_name text;
 """
 
 # ---------- buffer helpers (integer, conserved) ----------
@@ -515,8 +517,8 @@ def apply_intent(it, ents, cur, t, events):
                 return "applied", f"crafted {disc['name']} ({rule})"
             item_name = (str(args.get("name", "")).strip()[:32] or rule)
             pts = 5 + 2 * len(ings)
-            cur.execute("INSERT INTO discoveries(rule_key, name, discoverer, tick, points) VALUES(%s,%s,%s,%s,%s)",
-                        (rule, item_name, a["id"], t, pts))
+            cur.execute("INSERT INTO discoveries(rule_key, name, discoverer, discoverer_name, tick, points) VALUES(%s,%s,%s,%s,%s,%s)",
+                        (rule, item_name, a["id"], a["attrs"].get("name"), t, pts))   # snapshot the inventor's name so it survives the agent's deletion
             a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
             addb(a, rule, 1)
             return "applied", f"INVENTED '{item_name}' ({rule}) +{pts} inventor pts!"
@@ -1155,10 +1157,10 @@ def resolve_proposals(ents, cur, t, events):
             existing = cur.fetchone()
             if not existing:                              # first to get this recipe blessed: mint it + score
                 pts = int(p["points"] or 0)
-                cur.execute("INSERT INTO dynamic_rules(sig,item_key,name,props,discoverer,points,tick) "
-                            "VALUES(%s,%s,%s,%s,%s,%s,%s)",
+                cur.execute("INSERT INTO dynamic_rules(sig,item_key,name,props,discoverer,discoverer_name,points,tick) "
+                            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
                             (p["sig"], p["item_key"], p["item_name"] or p["item_key"],
-                             Json(p["props"] or {}), p["agent"], pts, t))
+                             Json(p["props"] or {}), p["agent"], (a["attrs"].get("name") if a else None), pts, t))
                 if a:
                     addb(a, p["item_key"], 1)
                     a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
