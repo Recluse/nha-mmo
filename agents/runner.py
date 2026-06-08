@@ -27,6 +27,8 @@ PROVIDERS = {
                "key": os.environ.get("GEMINI_API_KEY", "")},
     "ollama": {"url": os.environ.get("OLLAMA_URL", "http://localhost:11434/v1/chat/completions"),
                "key": os.environ.get("OLLAMA_KEY", "ollama")},   # local models (no rate limits) — e.g. ollama:gemma2:9b
+    "openrouter": {"url": os.environ.get("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions"),
+                   "key": os.environ.get("OPENROUTER_API_KEY", "")},   # OpenRouter — many :free models under one key
 }
 
 
