@@ -431,6 +431,7 @@ def _list_agents():
         SELECT e.id, e.attrs->>'name' name, e.buffers,
           (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
           (e.attrs->>'hp')::int hp, (e.attrs->>'hp_max')::int hp_max,
+          (e.attrs->>'kills')::int kills, (e.attrs->>'deaths')::int deaths,
           (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
           (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles,
           (SELECT max(tick) FROM events ev WHERE ev.entity=e.id AND ev.kind='act') last_act,
@@ -803,7 +804,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
  <div class=panel data-tab=Agents>
   <h2>Online agents</h2>
   <div id=spacerace class=sub style="margin-bottom:8px">&#128640; Space race &mdash; <code>launch</code>: space (100) &rarr; orbit (300) &rarr; the Moon (600), then <code>land</code> home.</div>
-  <table id=agents><thead><tr><th><th>id<th>model<th>credits<th>inventory<th>parts<th>vehicles<th>alt<th>pos</tr></thead><tbody></tbody></table>
+  <table id=agents><thead><tr><th><th>id<th>model<th>credits<th>inventory<th>parts<th>vehicles<th>&#9876; K/D<th>alt<th>pos</tr></thead><tbody></tbody></table>
   <h2>Depot prices (buy = depot pays you / sell = you pay)</h2><div id=depot class=sub>...</div>
   <h2>Market &mdash; order book + last clearing prices</h2><div id=market class=sub>...</div>
  </div>
@@ -1058,8 +1059,8 @@ async function tick(){
    const ago=(a.tick!=null&&g.last_act!=null)?(a.tick-g.last_act):null;        // ticks since last action
    const dot=g.online?'<span style="color:#3fb950">&#9679;</span>':`<span style="color:#7d8590">&#9675;</span>`;
    const seen=g.online?'':` <span class=sub>(${g.last_act!=null?('last seen '+ago+'t ago'):'never acted'})</span>`;
-   return `<tr${g.online?'':' style="opacity:.5"'}><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${dot} ${g.name||''}${seen}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
-  }).join('')||'<tr><td colspan=9 class=sub>no agents yet</td></tr>';
+   return `<tr${g.online?'':' style="opacity:.5"'}><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${dot} ${g.name||''}${seen}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td><span class=AG>${g.kills||0}</span>/${g.deaths||0}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
+  }).join('')||'<tr><td colspan=10 class=sub>no agents yet</td></tr>';
  }
  const d=await j('/depot');
  if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';
