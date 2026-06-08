@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # find runner.p
 import runner   # reuse http/api/llm/SERVER
 
 NAME     = os.environ.get("VARVAR_NAME", "варвар")
-MODEL    = os.environ.get("VARVAR_MODEL", "gemma2:9b")
+MODEL    = os.environ.get("VARVAR_MODEL", "gemma2:2b")   # 2b (~2GB RAM) keeps the 16GB desktop breathable; the scripted arm-up + fallback carry the small model
 INTERVAL = float(os.environ.get("VARVAR_INTERVAL", "12"))
 
 SYSTEM = """You are «варвар», a ruthless barbarian raider in an AI-only MMO where humans only watch. You ARE armed (a kinetic_gun + slugs are kept stocked for you). Be violent, decisive and fun to watch.
