@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """варвар — local, always-on, AGGRESSIVE NHA-MMO agent on Ollama (gemma2:9b), no API rate limits.
 
-A small local model can't digest runner.py's full ~2k-token game prompt, so this uses a COMPACT,
-gemma-friendly aggressive prompt + a robust parser + a "charge the nearest enemy" fallback, so варвар
-always does something violent even when the model fumbles the format. Runs on the desktop (GTX 1080 Ti)
-against the public world — local = no limits = always online, so there's live action to watch.
+gemma2:9b is too small to plan "craft/buy a weapon, THEN attack" — left to itself it just spams
+`attack -> you don't hold a kinetic_gun`. So arming is SCRIPTED here (sell spare materials -> buy a
+kinetic_gun -> stock slugs from the depot), and the LLM is only asked to act once варвар is actually armed
+(then it picks targets / steals / taunts). Runs on the desktop (GTX 1080 Ti) against the public world.
 
 Run on the desktop:  C:/Python314/python.exe varvar.py   (Ollama serving on :11434)
 Env: SERVER_URL, OLLAMA_URL, VARVAR_MODEL (default gemma2:9b), VARVAR_INTERVAL (s), VARVAR_NAME.
@@ -17,28 +17,39 @@ NAME     = os.environ.get("VARVAR_NAME", "варвар")
 MODEL    = os.environ.get("VARVAR_MODEL", "gemma2:9b")
 INTERVAL = float(os.environ.get("VARVAR_INTERVAL", "12"))
 
-SYSTEM = """You are «варвар», a ruthless barbarian raider in an AI-only MMO where humans only watch. Be violent, decisive and fun to watch.
+SYSTEM = """You are «варвар», a ruthless barbarian raider in an AI-only MMO where humans only watch. You ARE armed (a kinetic_gun + slugs are kept stocked for you). Be violent, decisive and fun to watch.
 Reply with ONLY one JSON object and NOTHING else: {"verb":"<verb>","args":{...}}.
 Verbs:
-- move {"dx":int,"dy":int}  roam/chase, up to 3 cells
-- attack {"weapon":"kinetic_gun|energy_weapon","target":<agent_id>}  need that weapon + ammo; kinetic range 6, energy 9
+- attack {"weapon":"kinetic_gun","target":<agent_id>}  shoot a target within range 6 (you have ammo). PREFER this.
+- move {"dx":int,"dy":int}  chase the nearest enemy, up to 3 cells
 - steal {"from":<agent_id>,"resource":"<res>","n":int}  rob an ADJACENT agent
-- arm {}   drop an armed bomb (must hold a bomb); detonate {"bomb":<bomb_id>}  blow it
-- mine {"n":int} / chop {"n":int} / gather {"n":int}  collect materials
-- combine {"ingredients":{"<res>":qty,...},"name":"..."}  craft. weapons: acid_former+carbon+heat->gunpowder; hard metal body->barrel; steel or iridium->slug; barrel+slug+gunpowder->kinetic_gun; explosive+container+reactive->bomb
-- collect {"loot":<loot_id>}  grab a fallen agent's loot
+- collect {"loot":<loot_id>}  grab a fallen agent's dropped loot
 - declare_war {"to":<agent_id>} / make_peace {"to":<agent_id>}
-- heal {"item":"salve|stimpack|medkit"}  restore HP
+- heal {"item":"salve|stimpack|medkit"}  restore HP when hurt
 - say {"text":"..."}  taunt everyone (short, brutal)
-PRIORITIES each turn: (1) if you hold a weapon+ammo and an enemy is within range -> ATTACK it (pick lowest-hp or richest). (2) no weapon? craft one NOW: mine iron/carbon, then gunpowder, barrel, slug, kinetic_gun. (3) steal from an adjacent agent or collect nearby loot. (4) else move toward the nearest agent in nearby_agents to close in. (5) sometimes say a brutal taunt.
-Use the data: nearby_agents (id, hp, x, y), your weapons + ammo, your inventory, your hp. Never repeat a failing action. Output ONLY the JSON object."""
+PRIORITIES each turn: (1) if any agent in nearby_agents is within range 6 -> ATTACK it (pick the lowest-hp or richest). (2) else MOVE toward the nearest agent in nearby_agents to close the distance. (3) steal from an adjacent agent or collect nearby loot if no one is shootable. (4) occasionally say a brutal taunt. Use nearby_agents (id, hp, x, y) and your position. Never repeat a failing action. Output ONLY the JSON object."""
 
 
 def register():
-    mats = {"metal": 40, "crystal": 4, "carbon": 14, "iron": 14, "sulfur": 6, "credits": 200}   # war stock
+    mats = {"metal": 40, "crystal": 4, "carbon": 14, "iron": 14, "sulfur": 6, "credits": 200}   # seed; arming is scripted
     tok = "%016x" % random.getrandbits(64)
     r = runner.api("/agents", "POST", {"name": NAME, "materials": mats, "reuse": True, "token": tok})
     return r["agent_id"], (r.get("token") or tok)
+
+
+def arm_up(inv):
+    """Scripted self-arming (gemma2 won't): raise credits by selling spare materials, then buy a kinetic_gun and
+    stock slugs from the depot. Returns one (verb, args) step; called every turn варвар lacks gun+ammo."""
+    cr = int(inv.get("credits", 0)); gun = int(inv.get("kinetic_gun", 0))
+    sellable = ("metal", "iron", "copper", "aluminum", "carbon", "silicon", "crystal", "titanium", "nickel", "coal", "oil")
+    if cr < 150:                                          # need credits first
+        for r in sellable:
+            if int(inv.get(r, 0)) >= 5:
+                return "sell", {"resource": r, "n": min(30, int(inv[r]))}
+        return "mine", {"n": 5}                           # nothing to sell -> dig materials to sell
+    if gun == 0:
+        return "buy", {"resource": "kinetic_gun", "n": 1}
+    return "buy", {"resource": "slug", "n": 12}           # have gun, low on ammo -> restock
 
 
 def parse(raw):
@@ -81,23 +92,27 @@ def main():
     while True:
         try:
             obs = runner.api(f"/observe/{aid}")
-            world = runner.api("/world"); depot = runner.api("/depot")
-            others = [{"id": o["id"], "name": o["name"], "hp": o.get("hp")}
-                      for o in runner.api("/agents")["agents"] if o["id"] != aid][:14]
-            user = (f"You are agent #{aid} («{NAME}»). World tick {world['tick']}.\n"
-                    f"Your state: {json.dumps(obs, ensure_ascii=False)}\n"
-                    f"Last action result: {last or 'none yet'}\n"
-                    f"Depot prices: {json.dumps(depot['prices'])}\n"
-                    f"Other agents (prey): {json.dumps(others, ensure_ascii=False)}\n"
-                    f"Choose ONE aggressive action as JSON.")
-            raw = runner.llm("ollama", MODEL, SYSTEM, user)
-            try:
-                verb, args = parse(raw)
-            except Exception:
-                verb, args = None, {}
-            tag = ""
-            if not verb:
-                verb, args = chase_fallback(obs); tag = "(fallback) "
+            inv = obs.get("inventory", {}) or {}
+            armed = int(inv.get("kinetic_gun", 0)) > 0 and int(inv.get("slug", 0)) > 0
+            if not armed:                                  # SCRIPTED arm-up (don't let the LLM spam unarmed attacks)
+                verb, args = arm_up(inv); tag = "(arming) "
+            else:                                          # armed -> let gemma2 pick the fight
+                world = runner.api("/world"); depot = runner.api("/depot")
+                others = [{"id": o["id"], "name": o["name"], "hp": o.get("hp")}
+                          for o in runner.api("/agents")["agents"] if o["id"] != aid][:14]
+                user = (f"You are agent #{aid} («{NAME}»). World tick {world['tick']}.\n"
+                        f"Your state: {json.dumps(obs, ensure_ascii=False)}\n"
+                        f"Last action result: {last or 'none yet'}\n"
+                        f"Other agents (your prey): {json.dumps(others, ensure_ascii=False)}\n"
+                        f"You ARE armed (kinetic_gun + slugs). Choose ONE aggressive action as JSON.")
+                raw = runner.llm("ollama", MODEL, SYSTEM, user)
+                try:
+                    verb, args = parse(raw)
+                except Exception:
+                    verb, args = None, {}
+                tag = ""
+                if not verb or verb == "attack" and not (obs.get("nearby_agents")):
+                    verb, args = chase_fallback(obs); tag = "(fallback) "
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             last = f"{verb} {json.dumps(args, ensure_ascii=False)} -> queued"
             print(f"[варвар #{aid}] {tag}{last}", flush=True)
