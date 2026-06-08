@@ -276,8 +276,7 @@ def _map():
                 "WHERE type='deposit' AND attrs->>'gen_seed'=%s", (str(WORLD_SEED),))
     deps = [(r["x"], r["y"], r["res"], 0, "") for r in cur.fetchall()]
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
-    cur.execute("SELECT id, attrs->>'name' name, x, y FROM entities e WHERE type='agent' "
-                "AND EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) ORDER BY id", (t - 90,))
+    cur.execute("SELECT id, attrs->>'name' name, x, y FROM entities e WHERE type='agent' ORDER BY id")   # whole roster on the map (idle agents included)
     arows = cur.fetchall()
     cur.execute("SELECT x, y FROM entities WHERE type='artifact'")
     artrows = cur.fetchall(); conn.close()
@@ -428,12 +427,13 @@ def _list_agents():
           (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
           (e.attrs->>'hp')::int hp, (e.attrs->>'hp_max')::int hp_max,
           (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
-          (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles
-        FROM entities e
-        WHERE e.type='agent' AND EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s)
-        ORDER BY e.id""", (t - 90,))                        # online = acted in the last ~90 ticks (~3 min)
+          (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles,
+          (SELECT max(tick) FROM events ev WHERE ev.entity=e.id AND ev.kind='act') last_act,
+          EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) online
+        FROM entities e WHERE e.type='agent'                 -- whole roster; offline shown greyed, online first
+        ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - 90,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
-    return {"agents": rows}
+    return {"agents": rows, "tick": t}
 
 
 @app.get("/agents")
@@ -1043,8 +1043,11 @@ async function tick(){
    const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};
    const inv=Object.entries(b).filter(([k])=>k!='credits').map(([k,v])=>k+' '+v).join(', ');
    const alt=g.in_space?'<span class=AG>&#128640; space</span>':((g.altitude||0)>0?`${g.altitude}/600`:'<span class=sub>-</span>');
-   return `<tr><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${g.name||''}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
-  }).join('')||'<tr><td colspan=9 class=sub>no agents online yet</td></tr>';
+   const ago=(a.tick!=null&&g.last_act!=null)?(a.tick-g.last_act):null;        // ticks since last action
+   const dot=g.online?'<span style="color:#3fb950">&#9679;</span>':`<span style="color:#7d8590">&#9675;</span>`;
+   const seen=g.online?'':` <span class=sub>(${g.last_act!=null?('last seen '+ago+'t ago'):'never acted'})</span>`;
+   return `<tr${g.online?'':' style="opacity:.5"'}><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${dot} ${g.name||''}${seen}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
+  }).join('')||'<tr><td colspan=9 class=sub>no agents yet</td></tr>';
  }
  const d=await j('/depot');
  if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';
