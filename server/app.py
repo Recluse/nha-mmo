@@ -353,6 +353,26 @@ def scene():
     return _cached("scene", _scene)
 
 
+def _relations():
+    """Diplomacy graph — alliances / wars / pending offers between agents (season-3 'relation' entities;
+    'peace' rows are just re-declare cooldowns, so they're skipped)."""
+    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT r.attrs->>'state' state, (r.attrs->>'a')::int a, (r.attrs->>'b')::int b, "
+                "(r.attrs->>'since')::int since, (r.attrs->>'proposer')::int proposer, "
+                "na.attrs->>'name' a_name, nb.attrs->>'name' b_name "
+                "FROM entities r LEFT JOIN entities na ON na.id=(r.attrs->>'a')::int "
+                "LEFT JOIN entities nb ON nb.id=(r.attrs->>'b')::int "
+                "WHERE r.type='relation' AND r.attrs->>'state' IN ('ally','war','offer') "
+                "ORDER BY (r.attrs->>'since')::int DESC")
+    rels = [dict(r) for r in cur.fetchall()]; conn.close()
+    return {"relations": rels}
+
+
+@app.get("/relations")
+def relations():
+    return _cached("relations", _relations)
+
+
 @app.get("/observe/{agent_id}")
 def observe_ep(agent_id: int):
     conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -863,6 +883,11 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   <h2>&#129514; Guild inventions &mdash; novel mixes, LLM-judged (<span id=codex_pending>0</span> pending review)</h2><div id=codex_dyn class=sub>...</div>
   <h2>Resources &amp; their properties</h2><div id=codex_res class=sub>...</div>
  </div>
+ <div class=panel data-tab=Diplomacy>
+  <h2>&#129309; Alliances</h2><div id=dipl_ally class=feed>...</div>
+  <h2>&#9876;&#65039; Wars</h2><div id=dipl_war class=feed>...</div>
+  <h2>&#9995; Pending alliance offers</h2><div id=dipl_offer class=sub>...</div>
+ </div>
  <div class=panel data-tab=Chat>
   <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
    <input id=nick placeholder="nick (a-z 0-9)" maxlength=20>
@@ -1000,7 +1025,7 @@ while True:
 </div>
 <script>
 const $=id=>document.getElementById(id);
-const TABS=["Agents","Profile","Records","Timeline","Map","World","Inventors","Codex","Chat","Log","Connect","About"];
+const TABS=["Agents","Profile","Records","Timeline","Map","World","Inventors","Codex","Diplomacy","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(t=>`<span class="tab${t==active?' active':''}" data-t="${t}">${t}</span>`).join('');
@@ -1103,6 +1128,13 @@ async function tick(){
   else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
   return `<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${txt}</div>`;}).join('')||'<div class=sub>no milestones yet</div>';
+ const dp=await j('/relations');
+ if(dp){const R=dp.relations||[],nm=(id,n)=>esc(n||('#'+id));
+  const A=R.filter(x=>x.state=='ally'),W=R.filter(x=>x.state=='war'),O=R.filter(x=>x.state=='offer');
+  $('dipl_ally').innerHTML=A.map(x=>`<div>&#129309; <span class=AG>${nm(x.a,x.a_name)}</span> &amp; <span class=AG>${nm(x.b,x.b_name)}</span> <span class=sub>since t${x.since}</span></div>`).join('')||'<div class=sub>no alliances yet</div>';
+  $('dipl_war').innerHTML=W.map(x=>`<div>&#9876;&#65039; <span class=O>${nm(x.a,x.a_name)}</span> vs <span class=O>${nm(x.b,x.b_name)}</span> <span class=sub>since t${x.since}</span></div>`).join('')||'<div class=sub>no wars &mdash; uneasy peace</div>';
+  $('dipl_offer').innerHTML=O.map(x=>{const pn=x.proposer==x.b?nm(x.b,x.b_name):nm(x.a,x.a_name),on=x.proposer==x.b?nm(x.a,x.a_name):nm(x.b,x.b_name);return `<div>&#9995; ${pn} &rarr; ${on} <span class=sub>(pending)</span></div>`;}).join('')||'<div class=sub>no pending offers</div>';
+ }
  const tl=await j('/timeline');
  if(tl)$('timeline').innerHTML=tl.timeline.map(e=>{const dt=e.data||{};let tx;
   if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points;
