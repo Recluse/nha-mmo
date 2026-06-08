@@ -156,6 +156,8 @@ def _ensure_world():
     conn = _connect()
     cur = conn.cursor()
     cur.execute(engine.SCHEMA); conn.commit()
+    cur.execute("CREATE TABLE IF NOT EXISTS visitors (ip_hash text PRIMARY KEY, first_seen timestamptz DEFAULT now())")
+    conn.commit()                                     # unique-spectator counter (hashed IPs, no raw addresses stored)
     engine.seed_demo(conn)                            # base depot + market + a starter agent
     cur.execute("SELECT count(*) FROM entities WHERE type='deposit'")
     fresh = cur.fetchone()[0] == 0
@@ -240,6 +242,29 @@ def _startup():
     _state["running"] = True
 
 
+import hashlib                                            # for hashed-IP unique-visitor counting (no raw IPs kept)
+_seen_ips = set()                                        # in-process dedup: touch the DB at most once per new IP per process
+
+
+@app.middleware("http")
+async def _count_visitor(request, call_next):
+    """Count unique spectators by hashed client IP (X-Forwarded-For from the gw-public nginx). Only the dashboard
+    root counts, and the in-process set means the DB is hit at most once per new IP — not on every poll."""
+    if request.url.path == "/":
+        try:
+            xff = request.headers.get("x-forwarded-for", "")
+            ip = (xff.split(",")[0].strip() if xff else "") or (request.client.host if request.client else "")
+            h = hashlib.sha256(ip.encode()).hexdigest()[:16] if ip else ""
+            if h and h not in _seen_ips:
+                _seen_ips.add(h)
+                conn = _connect(); cur = conn.cursor()
+                cur.execute("INSERT INTO visitors(ip_hash) VALUES(%s) ON CONFLICT DO NOTHING", (h,))
+                conn.commit(); conn.close()
+        except Exception:
+            pass
+    return await call_next(request)
+
+
 @app.get("/healthz")
 def healthz():
     return _state
@@ -251,9 +276,11 @@ def _world():
     cur.execute("SELECT type, count(*) c FROM entities GROUP BY type ORDER BY type")
     counts = {r["type"]: r["c"] for r in cur.fetchall()}
     cur.execute("SELECT tick, hash FROM tick_hashes ORDER BY tick DESC LIMIT 1")
-    h = cur.fetchone(); conn.close()
+    h = cur.fetchone()
+    cur.execute("SELECT count(*) c FROM visitors"); vc = cur.fetchone()["c"]
+    conn.close()
     return {"tick": t, "tick_seconds": TICK_SECONDS, "entities": counts,
-            "last_state_hash": h["hash"] if h else None}
+            "last_state_hash": h["hash"] if h else None, "visitors": vc}
 
 
 @app.get("/world")
@@ -1066,7 +1093,7 @@ window.addEventListener('resize',fitMap);
 async function j(p){try{const r=await fetch(p);return r.ok?await r.json():null;}catch(e){return null;}}
 async function tick(){
  const w=await j('/world'); if(!w)return;
- $('hdr').innerHTML=`tick <b>${w.tick}</b> &middot; ${w.tick_seconds}s/tick &middot; hash <code>${w.last_state_hash||'-'}</code> &middot; `+Object.entries(w.entities).map(([k,v])=>`${k}:${v}`).join(' ');
+ $('hdr').innerHTML=`tick <b>${w.tick}</b> &middot; ${w.tick_seconds}s/tick &middot; hash <code>${w.last_state_hash||'-'}</code> &middot; `+Object.entries(w.entities).map(([k,v])=>`${k}:${v}`).join(' ')+` &middot; <span style="color:#58a6ff" title="unique spectators (hashed IPs)">&#128065; ${w.visitors||0} visitors</span>`;
  const m=await j('/map'); const by={};
  if(m){$('map').innerHTML=colorize(m.ascii); $('map').dataset.w=m.w; $('map').dataset.h=m.h; fitMap(); (m.agents||[]).forEach(x=>by[x.id]=x);}
  const a=await j('/agents');
