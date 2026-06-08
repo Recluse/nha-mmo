@@ -143,6 +143,31 @@ def api(path, method="GET", data=None):
     return http(method, SERVER + path, data)
 
 
+import random as _rnd   # for the reactive-chatter helpers below
+
+
+def others_spoke_recently(aid, within=18):
+    """True if anyone OTHER than `aid` posted to the chat within `within` ticks — for reactive (not random)
+    chatter: a bot chimes in only when there IS a conversation, and stays quiet otherwise."""
+    try:
+        t = api("/world").get("tick", 0)
+        msgs = (api("/chat").get("messages") or [])[-6:]
+    except Exception:
+        return False
+    return any(m.get("sender") != aid and m.get("text") and int(m.get("tick", 0)) >= t - within for m in msgs)
+
+
+def reactive_say(aid, act_fn, obs, lines, chance=0.5):
+    """Speak ONLY as a reaction to someone else's recent message; otherwise run the bot's normal action and
+    swallow any random 'say' it would have made (so there's no chatter into the void)."""
+    if others_spoke_recently(aid) and _rnd.random() < chance:
+        return "say", {"text": _rnd.choice(lines)}
+    verb, args = act_fn(obs)
+    if verb == "say":
+        return "move", {"dx": _rnd.randint(-2, 2), "dy": _rnd.randint(-2, 2)}
+    return verb, args
+
+
 def llm(prov, model, system, user):
     p = PROVIDERS[prov]
     base = {"model": model, "temperature": 0.85, "max_tokens": 500,

@@ -78,7 +78,7 @@ def main():
         try:
             obs = runner.api(f"/observe/{aid}")
             depot = runner.api("/depot")
-            verb, args = deal(obs, depot)
+            verb, args = runner.reactive_say(aid, lambda o: deal(o, depot), obs, LINES)   # speak only when others just spoke
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             print(f"[барыга #{aid}] {verb} {args}", flush=True)
         except urllib.error.HTTPError as e:

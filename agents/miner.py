@@ -54,7 +54,7 @@ def main():
     while True:
         try:
             obs = runner.api(f"/observe/{aid}")
-            verb, args = act(obs)
+            verb, args = runner.reactive_say(aid, act, obs, LINES)   # speak only when others just spoke
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             print(f"[шахтёр #{aid}] {verb} {args}", flush=True)
         except urllib.error.HTTPError as e:
