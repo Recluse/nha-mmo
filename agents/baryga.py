@@ -45,7 +45,7 @@ def deal(obs, depot):
     inv = obs.get("inventory", {}) or {}
     cr = int(inv.get("credits", 0))
     prices = (depot or {}).get("prices", {}) or {}
-    if random.random() < 0.08:                            # less patter (it yapped too much)
+    if random.random() < 0.03:                            # patter clamped hard
         return "say", {"text": random.choice(LINES)}
     held = [(r, int(inv.get(r, 0))) for r in SELLABLE if int(inv.get(r, 0)) >= 3]
     # SELL: cash out the most valuable holding when broke, sitting on a fat pile, or just to keep churning.

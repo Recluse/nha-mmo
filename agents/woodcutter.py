@@ -34,9 +34,9 @@ def act(obs):
         return "plant", {}
     if roll < 0.62:
         return "chop", {"n": random.randint(1, 5)}        # chop wood (auto-walks to the nearest tree in range)
-    if roll < 0.90:
+    if roll < 0.97:
         return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}   # roam to fresh forest
-    return "say", {"text": random.choice(LINES)}
+    return "say", {"text": random.choice(LINES)}   # ~3% chatter (clamped hard)
 
 
 def main():

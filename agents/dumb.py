@@ -36,9 +36,9 @@ def act(obs):
         return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}
     if roll < 0.73:
         return "mine", {"n": random.randint(1, 6)}
-    if roll < 0.90:
+    if roll < 0.97:
         return "gather", {"n": random.randint(1, 4)}
-    return "say", {"text": random.choice(LINES)}   # ~10% chatter (was ~23% — it yapped too much)
+    return "say", {"text": random.choice(LINES)}   # ~3% chatter (clamped hard)
 
 
 def main():
