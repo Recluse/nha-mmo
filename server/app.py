@@ -358,10 +358,11 @@ def _scene():
                "hp": r["hp"], "hp_max": r["hp_max"], "downed": bool((r["downed"] or 0) > t),
                "online": bool(r["online"])} for r in cur.fetchall()]
     cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'alt')::int alt, (attrs->>'flies')::boolean fly, "
+                "(attrs->>'autonomous')::boolean auto, "
                 "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'wrecked')::boolean wrecked "
                 "FROM entities WHERE type='vehicle' AND (attrs->>'autonomous')::boolean")
     vehicles = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
-                 "alt": r["alt"] or 0, "fly": bool(r["fly"]),
+                 "alt": r["alt"] or 0, "fly": bool(r["fly"]), "auto": bool(r["auto"]),
                  "hp": r["hp"], "hp_max": r["hp_max"], "wrecked": bool(r["wrecked"])} for r in cur.fetchall()]
     cur.execute("SELECT id, attrs->>'shape' shape, x, y, (attrs->>'size')::int size, (attrs->>'height')::int height, "
                 "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt, "
@@ -893,12 +894,22 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
    <span style="display:inline-block;width:11px;height:11px;background:#b89a55;border-radius:2px;vertical-align:middle"></span> desert
    <span style="display:inline-block;width:11px;height:11px;background:#7d8590;border-radius:2px;vertical-align:middle"></span> mountain
    <span style="display:inline-block;width:11px;height:11px;background:#c7d2dc;border-radius:2px;vertical-align:middle"></span> tundra (frontier) &nbsp;&middot;&nbsp;
-   <span style="display:inline-block;width:11px;height:11px;background:#c8772f;border-radius:2px;vertical-align:middle"></span> cubes = mineral deposits (colour = resource: copper orange, iron/aluminium grey, crystal purple, silicon blue, sulfur yellow, salt white, coal/oil black, titanium/iridium/nickel pale metal, ice cyan) &nbsp;&middot;&nbsp;
+   <b>deposits</b> (shape + colour = resource, matched to the Map tab):
+   <span style="display:inline-block;width:11px;height:11px;background:#b0bac6;border-radius:2px;vertical-align:middle"></span> cubes = metal (iron/copper/aluminium/titanium)
+   <span style="display:inline-block;width:11px;height:11px;background:#f0883e;border-radius:2px;vertical-align:middle"></span> ore
+   <span style="display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-bottom:12px solid #d2a8ff;vertical-align:middle"></span> spikes = crystal
+   <span style="display:inline-block;width:11px;height:11px;background:#79c0ff;border-radius:2px;vertical-align:middle"></span> chips = silicon
+   <span style="display:inline-block;width:11px;height:11px;background:#8b949e;border-radius:2px;vertical-align:middle"></span> coal / carbon
+   <span style="display:inline-block;width:11px;height:11px;background:#e3b341;border-radius:2px;vertical-align:middle"></span> sulfur
+   <span style="display:inline-block;width:11px;height:11px;background:#bc8cff;border-radius:50%;vertical-align:middle"></span> pools = oil
+   <span style="display:inline-block;width:11px;height:11px;background:#58a6ff;transform:rotate(45deg);vertical-align:middle"></span> gems = water / salt / brine / ice &nbsp;&middot;&nbsp;
    <span style="display:inline-block;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid #2f8f3a;vertical-align:middle"></span> cones = trees (wood) &nbsp;&middot;&nbsp;
    <span style="display:inline-block;width:9px;height:9px;background:#7bd66a;border-radius:50%;vertical-align:middle"></span> tufts = plants (herb / lichen / fungus / algae &mdash; the medicine branch) &nbsp;&middot;&nbsp;
    <span style="display:inline-block;width:11px;height:11px;background:#ffd866;border-radius:50%;vertical-align:middle"></span> spheres = agents (labelled by model);
-   <span style="display:inline-block;width:11px;height:11px;background:#58a6ff;border-radius:50%;vertical-align:middle"></span> blue &amp; rising = reached space &#128640; &nbsp;&middot;&nbsp;
-   <span style="display:inline-block;width:11px;height:11px;background:#f0883e;border-radius:2px;vertical-align:middle"></span> diamonds = deployed vehicles (blue = flyers) &nbsp;&middot;&nbsp;
+   <span style="display:inline-block;width:11px;height:11px;background:#58a6ff;border-radius:50%;vertical-align:middle"></span> blue &amp; rising = reached space &#128640;;
+   <span style="display:inline-block;width:11px;height:11px;background:#f85149;border-radius:50%;vertical-align:middle"></span> red = downed &nbsp;&middot;&nbsp;
+   <span style="display:inline-block;width:14px;height:8px;background:#f0883e;border-radius:2px;vertical-align:middle"></span> rovers / <span style="display:inline-block;width:14px;height:8px;background:#58a6ff;border-radius:2px;vertical-align:middle"></span> craft = deployed vehicles (blue = flyers, green dot = roaming autonomously) &nbsp;&middot;&nbsp;
+   <span style="display:inline-block;width:9px;height:12px;background:#9aa4b2;vertical-align:middle"></span> buildings = structures (shape = box/cylinder/sphere/cone/pyramid; tall tower = orbital elevator; lit = complete) &nbsp;&middot;&nbsp;
    <span style="display:inline-block;width:11px;height:11px;background:#9fb0a8;border-radius:50%;vertical-align:middle"></span> floating rocks = asteroids (pale = iridium) &nbsp;&middot;&nbsp;
    <span style="display:inline-block;width:11px;height:11px;background:#a371f7;vertical-align:middle"></span> glowing octahedra = ancient artifacts
    <br>Drag (1 finger) to orbit &middot; scroll / pinch to zoom. If blank, the CDN was blocked &mdash; use the <b>Map</b> tab.
@@ -1223,8 +1234,10 @@ function initWorld3D(){
  const ren=new T.WebGLRenderer({antialias:true}); ren.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); ren.setSize(host.clientWidth,host.clientHeight); host.appendChild(ren.domElement);
  const sc=new T.Scene(); sc.background=new T.Color(0x070b12); sc.fog=new T.Fog(0x070b12,200,560);
  const cam=new T.PerspectiveCamera(55, host.clientWidth/host.clientHeight, 0.5, 3000);
- sc.add(new T.AmbientLight(0xffffff,0.75));
- const sun=new T.DirectionalLight(0xfff0d0,0.9); sun.position.set(80,160,50); sc.add(sun);
+ sc.add(new T.AmbientLight(0xffffff,0.5));
+ sc.add(new T.HemisphereLight(0x9fc0ff,0x2a2418,0.55));                       // sky-blue top / warm-earth bottom — gives terrain natural depth
+ const sun=new T.DirectionalLight(0xfff0d0,1.0); sun.position.set(80,160,50); sc.add(sun);
+ const rim=new T.DirectionalLight(0x6f8cff,0.35); rim.position.set(-90,40,-70); sc.add(rim);  // cool rim light from behind for contrast
  const moon=new T.Mesh(new T.SphereGeometry(9,24,18),new T.MeshLambertMaterial({color:0xd0d4db,emissive:0x20232a}));
  moon.position.set(0,72,-28); sc.add(moon);                                  // the Moon — the altitude-600 goal floats above the world
  const stormMesh=new T.Mesh(new T.SphereGeometry(14,16,12),new T.MeshBasicMaterial({color:0x8aa0b8,transparent:true,opacity:0.16}));
@@ -1254,7 +1267,21 @@ function initWorld3D(){
  function resize(){const w=host.clientWidth,h=host.clientHeight;if(w>10&&h>10){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();}}
  window.addEventListener('resize',resize);
  const BIO={'~':[0x123a6b,-1.6],'.':[0x2f7d3a,0],'#':[0x1d5e2a,1.3],':':[0xb89a55,0.3],'^':[0x7d8590,5.5],'%':[0xc7d2dc,3.0]};
- const RESCOL={copper:0xc8772f,iron:0x9aa0a6,aluminum:0xd0d4d8,ore:0x8a6d3b,crystal:0xa371f7,silicon:0x5577aa,coal:0x1a1a1a,carbon:0x3a3a3a,sulfur:0xd6c64a,oil:0x0d0d0d,salt:0xeeeeee,brine:0x3a6ea5,water:0x3a6ea5,titanium:0xb9c2cc,ice:0xbfe6ff,iridium:0xe8eef2,nickel:0x9fb0a8};
+ // Resource families — colours kept in lock-step with the 2D Map palette (engine RES_GLYPH + colorize):
+ //  metals #b0bac6 · ore #f0883e · crystal #d2a8ff · coal/carbon #8b949e · sulfur #e3b341 · silicon #79c0ff ·
+ //  water/salt/brine/ice #58a6ff · oil #bc8cff · wood #3fb950. Shape/height also varies per family (RESSHAPE)
+ //  so iron vs crystal vs coal vs water read as obviously different even at a glance / colour-blind.
+ const RESCOL={iron:0xb0bac6,copper:0xb0bac6,aluminum:0xb0bac6,titanium:0xb0bac6,
+   ore:0xf0883e,crystal:0xd2a8ff,coal:0x8b949e,carbon:0x8b949e,sulfur:0xe3b341,
+   silicon:0x79c0ff,oil:0xbc8cff,water:0x58a6ff,salt:0x58a6ff,brine:0x58a6ff,ice:0x58a6ff,
+   iridium:0xe8eef2,nickel:0xb0bac6};
+ // family -> [geometry-key, y-scale]. metal=low cube, ore=blocky cube, crystal=tall spike, coal=dark squat
+ // cube, sulfur=short prism, silicon=flat chip, oil=low pooled cylinder, water/ice=low gem.
+ const RESSHAPE={iron:['cube',0.8],copper:['cube',0.8],aluminum:['cube',0.8],titanium:['cube',1.0],
+   ore:['cube',0.6],crystal:['spike',1.9],coal:['cube',0.55],carbon:['cube',0.55],
+   sulfur:['prism',0.7],silicon:['chip',0.35],oil:['pool',0.4],
+   water:['gem',0.5],salt:['gem',0.5],brine:['gem',0.5],ice:['spike',1.0],
+   iridium:['spike',1.3],nickel:['cube',0.9]};
  const PLANTCOL={herb:0x7bd66a,lichen:0xa8c98f,fungus:0xc77fd6,algae:0x3fb6a0};  // gatherable flora (medicine branch)
  const PLANTRES={herb:1,lichen:1,fungus:1,algae:1};
  let W=156,Hh=57,hmap=null;
@@ -1268,32 +1295,66 @@ function initWorld3D(){
   geo.setAttribute('color',new T.Float32BufferAttribute(col,3)); geo.computeVertexNormals();
   sc.add(new T.Mesh(geo,new T.MeshLambertMaterial({vertexColors:true,flatShading:true})));
  }
- const gBox=new T.BoxGeometry(0.85,0.85,0.85), gTree=new T.ConeGeometry(0.55,1.8,6), gAg=new T.SphereGeometry(0.95,12,10), gPlant=new T.SphereGeometry(0.42,8,6);
+ const gTree=mark(new T.ConeGeometry(0.55,1.8,6)), gAg=mark(new T.SphereGeometry(0.95,12,10)), gPlant=mark(new T.SphereGeometry(0.42,8,6));
+ // shared per-family deposit geometries (each 1 unit tall, scaled per-deposit by RESSHAPE -> reused, never rebuilt)
+ const DEPGEO={cube:new T.BoxGeometry(0.85,1,0.85),spike:new T.ConeGeometry(0.42,1,5),
+   prism:new T.CylinderGeometry(0,0.6,1,4),chip:new T.BoxGeometry(0.95,1,0.95),
+   pool:new T.CylinderGeometry(0.6,0.7,1,12),gem:new T.OctahedronGeometry(0.6,0)};
+ Object.values(DEPGEO).forEach(mark);
+ // Live groups are rebuilt every poll (~3s); shared geometries/materials are reused (flagged keep), and the
+ // per-entity ones (structure geos, agent label textures, vehicle/agent mats) are disposed on clear so GPU
+ // memory can't creep over a long-running session. mark() flags an object as shared/keep.
+ const mark=o=>{o.userData=o.userData||{};o.userData.keep=true;return o;};
+ function disp(o){if(o.userData&&o.userData.keep)return;if(o.dispose)o.dispose();}
+ function clearGroup(grp){while(grp.children.length){const o=grp.children[0];grp.remove(o);
+   if(o.isSprite){if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose();}continue;}
+   o.traverse(n=>{if(n.geometry)disp(n.geometry);if(n.material)(Array.isArray(n.material)?n.material:[n.material]).forEach(disp);});}}
+ // metals/crystal/silicon get a faint sheen + emissive so ore-fields catch the sun and pop from the ground.
+ const depMat={};                                                          // res -> shared MeshLambertMaterial (cached)
+ function depMatFor(res){if(depMat[res])return depMat[res];const c=RESCOL[res]||0xcccccc;
+  const shiny=(res==='crystal'||res==='silicon'||res==='iridium');
+  return depMat[res]=mark(new T.MeshLambertMaterial({color:c,emissive:shiny?c:0x000000,emissiveIntensity:shiny?0.22:0}));}
  function buildDeposits(ds){
-  while(depG.children.length)depG.remove(depG.children[0]);
+  clearGroup(depG);
   ds.forEach(d=>{const p=P(d.x,d.y);
    if(d.res==='wood'){const m=new T.Mesh(gTree,new T.MeshLambertMaterial({color:0x2f8f3a}));m.position.set(p[0],p[1]+0.9,p[2]);depG.add(m);}
    else if(PLANTRES[d.res]){const m=new T.Mesh(gPlant,new T.MeshLambertMaterial({color:PLANTCOL[d.res]||0x7bd66a}));m.position.set(p[0],p[1]+0.3,p[2]);m.scale.y=0.6;depG.add(m);}  // low flora tufts (herb/lichen/fungus/algae)
-   else{const m=new T.Mesh(gBox,new T.MeshLambertMaterial({color:RESCOL[d.res]||0xcccccc}));m.position.set(p[0],p[1]+0.5,p[2]);depG.add(m);}});
+   else{const sh=RESSHAPE[d.res]||['cube',0.8],hy=sh[1];const m=new T.Mesh(DEPGEO[sh[0]]||DEPGEO.cube,depMatFor(d.res));
+    m.scale.y=hy;m.position.set(p[0],p[1]+hy/2,p[2]);depG.add(m);}});
  }
  function label(txt){const c=document.createElement('canvas');c.width=512;c.height=128;const g=c.getContext('2d');g.fillStyle='rgba(8,10,18,0.72)';g.fillRect(0,0,512,128);g.font='bold 52px ui-monospace,monospace';g.fillStyle='#ffd866';g.textBaseline='middle';g.fillText(String(txt).slice(0,19),14,70);const tx=new T.CanvasTexture(c);tx.minFilter=T.LinearFilter;tx.anisotropy=4;const sp=new T.Sprite(new T.SpriteMaterial({map:tx,depthTest:false}));sp.scale.set(13,3.2,1);return sp;}
+ const gAgPin=mark(new T.ConeGeometry(0.5,1.4,4));               // little downward pin under each agent → reads as a map marker
  function buildAgents(as){
-  while(agG.children.length)agG.remove(agG.children[0]);
+  clearGroup(agG);
   as.forEach(a=>{const p=P(a.x,a.y),yy=p[1]+1.3+(a.alt||0)/9;
-   const on=a.online!==false;                                   // offline -> dim grey + translucent so live agents stand out
-   const col=on?(a.space?0x58a6ff:0xffd866):0x6e7681;
-   const m=new T.Mesh(gAg,new T.MeshLambertMaterial({color:col,transparent:!on,opacity:on?1:0.3}));m.position.set(p[0],yy,p[2]);agG.add(m);
-   const lb=label((a.space?'\\u{1F680} ':'')+(a.name||('#'+a.id)));lb.position.set(p[0],yy+2.4,p[2]);lb.material.opacity=on?1:0.4;agG.add(lb);});
+   const on=a.online!==false, down=a.downed===true;             // offline -> dim grey + translucent so live agents stand out; downed -> red
+   const col=down?0xf85149:(on?(a.space?0x58a6ff:0xffd866):0x6e7681);
+   const op=down?0.85:(on?1:0.3);
+   const m=new T.Mesh(gAg,new T.MeshLambertMaterial({color:col,emissive:col,emissiveIntensity:on&&!down?0.18:0,transparent:on?down:true,opacity:op}));
+   m.position.set(p[0],yy,p[2]);agG.add(m);
+   const pin=new T.Mesh(gAgPin,new T.MeshLambertMaterial({color:col,transparent:true,opacity:op*0.9}));
+   pin.position.set(p[0],yy-1.4,p[2]);pin.rotation.x=Math.PI;agG.add(pin);   // tip points at the ground
+   const lb=label((a.space?'\\u{1F680} ':'')+(down?'\\u{1F480} ':'')+(a.name||('#'+a.id)));lb.position.set(p[0],yy+2.4,p[2]);lb.material.opacity=on||down?1:0.4;agG.add(lb);});
  }
- const gVeh=new T.OctahedronGeometry(0.7,0);
+ // little vehicle bodies, assembled once from shared parts. rover = chassis + cabin + 4 wheels; craft = fuselage + wings.
+ const gvBody=mark(new T.BoxGeometry(1.5,0.5,0.9)), gvCab=mark(new T.BoxGeometry(0.7,0.45,0.7)), gvWheel=mark(new T.CylinderGeometry(0.28,0.28,0.18,10));
+ const gvFus=mark(new T.CylinderGeometry(0.22,0.45,1.7,10)), gvWing=mark(new T.BoxGeometry(0.12,0.5,1.9)), gvBeacon=mark(new T.SphereGeometry(0.18,8,6));
  function buildVehicles(vs){
-  while(vehG.children.length)vehG.remove(vehG.children[0]);
-  (vs||[]).forEach(v=>{const p=P(v.x,v.y),yy=p[1]+0.9+(v.alt||0)/9;
-   const m=new T.Mesh(gVeh,new T.MeshLambertMaterial({color:v.fly?0x58a6ff:0xf0883e,emissive:0x111111}));
-   m.position.set(p[0],yy,p[2]);vehG.add(m);});
+  clearGroup(vehG);
+  (vs||[]).forEach(v=>{const p=P(v.x,v.y),yy=p[1]+0.55+(v.alt||0)/9;const wr=v.wrecked===true;
+   const base=wr?0x6e7681:(v.fly?0x58a6ff:0xf0883e);
+   const mat=new T.MeshLambertMaterial({color:base,emissive:wr?0x000000:base,emissiveIntensity:wr?0:0.12,transparent:wr,opacity:wr?0.45:1});
+   const g=new T.Group();g.position.set(p[0],yy,p[2]);
+   if(v.fly){const fus=new T.Mesh(gvFus,mat);fus.rotation.z=Math.PI/2;g.add(fus);
+    const wing=new T.Mesh(gvWing,mat);wing.position.y=-0.05;g.add(wing);}
+   else{g.add(new T.Mesh(gvBody,mat));const cab=new T.Mesh(gvCab,mat);cab.position.set(-0.15,0.42,0);g.add(cab);
+    const wm=new T.MeshLambertMaterial({color:0x20242b});
+    [[0.5,0.5],[0.5,-0.5],[-0.5,0.5],[-0.5,-0.5]].forEach(o=>{const w=new T.Mesh(gvWheel,wm);w.rotation.x=Math.PI/2;w.position.set(o[0],-0.28,o[1]);g.add(w);});}
+   if(v.auto!==false&&!wr){const b=new T.Mesh(gvBeacon,new T.MeshBasicMaterial({color:0x3fff8a}));b.position.set(0,0.78,0);g.add(b);}  // green beacon = roaming autonomously
+   vehG.add(g);});
  }
  function buildStructures(ss){
-  while(strG.children.length)strG.remove(strG.children[0]);
+  clearGroup(strG);
   (ss||[]).forEach(s=>{const p=P(s.x,s.y),sz=Math.max(0.8,(s.size||2)*0.6);let geo,vh;
    if(s.shape=='elevator'){vh=Math.max(1,(s.height||20)/9);geo=new T.CylinderGeometry(0.6,0.95,vh,8);}
    else{vh=Math.max(0.8,Math.min(16,(s.height||3)/4));
@@ -1302,19 +1363,27 @@ function initWorld3D(){
     else if(s.shape=='cone')geo=new T.ConeGeometry(sz/2,vh,16);
     else if(s.shape=='pyramid')geo=new T.ConeGeometry(sz/1.4,vh,4);
     else geo=new T.BoxGeometry(sz,vh,sz);}
+   const ruin=s.ruined===true;
    let col=0x9aa4b2; if(s.color&&/^#?[0-9a-fA-F]{6}$/.test(s.color))col=parseInt(s.color.replace('#',''),16);
    if(s.shape=='elevator')col=s.complete?0x58a6ff:0xa371f7;
-   const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col}));m.position.set(p[0],p[1]+vh/2+(s.alt||0)/9,p[2]);strG.add(m);});
+   if(ruin)col=0x5b6470;
+   // completed structures glow faintly (lit windows) so they read as inhabited; under-construction & ruined stay matte.
+   const lit=s.complete&&!ruin;
+   const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col,emissive:lit?col:0x000000,emissiveIntensity:lit?0.16:0,
+     transparent:ruin,opacity:ruin?0.55:1,flatShading:true}));
+   const by=p[1]+vh/2+(s.alt||0)/9;m.position.set(p[0],by,p[2]);strG.add(m);
+   if(s.shape!='elevator'&&!s.alt){const pad=new T.Mesh(new T.CylinderGeometry(sz*0.75,sz*0.85,0.25,12),new T.MeshLambertMaterial({color:0x3a4250}));
+    pad.position.set(p[0],p[1]+0.12,p[2]);strG.add(pad);}});                 // foundation pad so buildings sit cleanly on the terrain
  }
- const gAst=new T.IcosahedronGeometry(1.1,0), gArt=new T.OctahedronGeometry(1.0,0);
+ const gAst=mark(new T.IcosahedronGeometry(1.1,0)), gArt=mark(new T.OctahedronGeometry(1.0,0));
  function buildAsteroids(xs){
-  while(astG.children.length)astG.remove(astG.children[0]);
+  clearGroup(astG);
   (xs||[]).forEach(x=>{const p=P(x.x,x.y);                  // floating rocks high above the world (the orbital layer)
    const m=new T.Mesh(gAst,new T.MeshLambertMaterial({color:x.res==='iridium'?0xe8eef2:0x9fb0a8,emissive:0x161a1f}));
    m.position.set(p[0],p[1]+60,p[2]);astG.add(m);});
  }
  function buildArtifacts(xs){
-  while(artG.children.length)artG.remove(artG.children[0]);
+  clearGroup(artG);
   (xs||[]).forEach(x=>{const p=P(x.x,x.y);                  // ancient artifacts — glowing markers on the ground
    const m=new T.Mesh(gArt,new T.MeshLambertMaterial({color:0xa371f7,emissive:0x4b2b78}));
    m.position.set(p[0],p[1]+2.0,p[2]);artG.add(m);});
@@ -1332,6 +1401,9 @@ function initWorld3D(){
    if(host.offsetParent===null)return;                    // panel hidden — skip (mobile/desktop both)
    const w=host.clientWidth,h=host.clientHeight;
    if(w>10&&h>10&&(w!==lastW||h!==lastH)){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();lastW=w;lastH=h;}
+   const tm=performance.now()*0.001;                      // gentle idle motion so the world feels alive (cheap: just transforms)
+   astG.children.forEach((m,i)=>{m.rotation.y=tm*0.3+i;m.rotation.x=tm*0.18+i;});      // asteroids tumble slowly
+   artG.children.forEach((m,i)=>{m.rotation.y=tm*0.9+i;m.position.y=m.userData.by!==undefined?m.userData.by:(m.userData.by=m.position.y);m.position.y+=Math.sin(tm*1.5+i)*0.35;});  // artifacts spin + bob
    place();
    ren.render(sc,cam);
   }catch(err){clampCam();}                                 // never let a frame error stop the loop
