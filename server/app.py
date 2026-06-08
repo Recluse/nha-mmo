@@ -313,8 +313,7 @@ def _scene():
     cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
     cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'altitude')::int alt, "
                 "(attrs->>'in_space')::boolean space, (attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, "
-                "(attrs->>'downed_until')::int downed FROM entities e WHERE type='agent' AND EXISTS "
-                "(SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) ORDER BY id", (t - 90,))
+                "(attrs->>'downed_until')::int downed FROM entities e WHERE type='agent' ORDER BY id")   # show the whole roster (idle agents included) so the map never looks empty between actions
     agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
                "alt": r["alt"] or 0, "space": bool(r["space"]),
                "hp": r["hp"], "hp_max": r["hp_max"], "downed": bool((r["downed"] or 0) > t)} for r in cur.fetchall()]
