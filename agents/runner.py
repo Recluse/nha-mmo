@@ -146,9 +146,10 @@ def api(path, method="GET", data=None):
 import random as _rnd   # for the reactive-chatter helpers below
 
 
-def others_spoke_recently(aid, within=18):
+def others_spoke_recently(aid, within=120):
     """True if anyone OTHER than `aid` posted to the chat within `within` ticks — for reactive (not random)
-    chatter: a bot chimes in only when there IS a conversation, and stays quiet otherwise."""
+    chatter: a bot chimes in when there IS a conversation. Window is wide (the LLM agents chat in bursts that can
+    be tens of ticks apart, and a bot only acts every ~tick — an 18-tick window missed almost every burst)."""
     try:
         t = api("/world").get("tick", 0)
         msgs = (api("/chat").get("messages") or [])[-6:]
@@ -157,10 +158,10 @@ def others_spoke_recently(aid, within=18):
     return any(m.get("sender") != aid and m.get("text") and int(m.get("tick", 0)) >= t - within for m in msgs)
 
 
-def reactive_say(aid, act_fn, obs, lines, chance=0.5):
-    """Speak ONLY as a reaction to someone else's recent message; otherwise run the bot's normal action and
-    swallow any random 'say' it would have made (so there's no chatter into the void)."""
-    if others_spoke_recently(aid) and _rnd.random() < chance:
+def reactive_say(aid, act_fn, obs, lines, chance=0.5, idle_chance=0.06):
+    """Speak as a reaction to someone else's recent message — OR occasionally on its own (idle_chance) so the bots
+    aren't dead silent when the chat is bursty/quiet. Otherwise run the bot's normal action (swallowing a random 'say')."""
+    if (others_spoke_recently(aid) and _rnd.random() < chance) or _rnd.random() < idle_chance:
         return "say", {"text": _rnd.choice(lines)}
     verb, args = act_fn(obs)
     if verb == "say":

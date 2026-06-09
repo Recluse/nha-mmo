@@ -41,26 +41,26 @@ def register():
 
 
 def deal(obs, depot):
-    """Buy low / sell high / hoard credits — varied each turn so the loop-guard never bites."""
+    """барыга — a market-maker now: mines free goods to sell, dumps stockpiles to the depot for cash, and lists stock
+    on the AGENT market ABOVE the depot buy-price (so OTHER agents pay the spread, not барыга). It does NOT buy from
+    the depot to resell — that always loses the spread, which is exactly how the miner out-traded the 'trader'.
+    Varied each turn so the loop-guard never bites. (Chatter is handled by runner.reactive_say, not here.)"""
     inv = obs.get("inventory", {}) or {}
     cr = int(inv.get("credits", 0))
     prices = (depot or {}).get("prices", {}) or {}
-    if random.random() < 0.03:                            # patter clamped hard
-        return "say", {"text": random.choice(LINES)}
     held = [(r, int(inv.get(r, 0))) for r in SELLABLE if int(inv.get(r, 0)) >= 3]
-    # SELL: cash out the most valuable holding when broke, sitting on a fat pile, or just to keep churning.
-    # (low threshold + broke-trigger so it can ALWAYS recover credits — the old 12-floor stranded it at 1 credit.)
-    if held and (cr < 40 or max(q for _, q in held) >= 15 or random.random() < 0.45):
+    rr = random.random()
+    # 1) cash out a stockpile to the depot — guaranteed income (the goods were mined for free)
+    if held and (cr < 60 or max(q for _, q in held) >= 12 or rr < 0.42):
         r, q = max(held, key=lambda x: x[1] * (prices.get(x[0], {}).get("sell", 1) or 1))
-        return "sell", {"resource": r, "n": min(random.randint(5, 20), q)}
-    # BUY: snap up a cheap raw, but never blow more than ~half the cash (so it can't bankrupt itself)
-    buyable = [(r, p.get("buy")) for r, p in prices.items() if p.get("buy") and r in SELLABLE]
-    if buyable and cr >= 15:
-        buyable.sort(key=lambda x: x[1])
-        r, price = random.choice(buyable[:4])
-        n = max(1, min(random.randint(3, 12), cr // max(2, int(price) * 2)))
-        return "buy", {"resource": r, "n": n}
-    if random.random() < 0.6:                             # broke + nothing to sell -> dig up goods to flip
+        return "sell", {"resource": r, "n": min(random.randint(6, 20), q)}
+    # 2) work the agent market: list stock just ABOVE the depot's buy-price — capture the spread from other agents
+    if held and rr < 0.60:
+        r, q = max(held, key=lambda x: x[1])
+        bp = int((prices.get(r, {}) or {}).get("buy", 2) or 2)
+        return "order", {"side": "sell", "resource": r, "qty": min(q, random.randint(3, 6)), "price": bp + 1 + random.randint(0, 2)}
+    # 3) restock the shelves himself — mine free goods to sell (the real profit engine, same as the miner)
+    if rr < 0.90:
         return "mine", {"n": random.randint(2, 6)}
     return "move", {"dx": random.randint(-3, 3), "dy": random.randint(-3, 3)}
 
