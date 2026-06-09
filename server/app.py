@@ -444,7 +444,6 @@ class AgentIn(BaseModel):
 _NAME_OK_RX = re.compile(r"^[0-9A-Za-z .,!?'\"()\-]{1,24}$")   # letters+digits+spaces+basic punctuation, 1..24 chars
 # Short, case-insensitive substring blocklist (matched against a lowercased, punctuation-normalized name).
 BLOCKED_NAME_SUBSTR = [
-    "jewish tricks", "jewish trick",
     "nigger", "nigga", "faggot", "retard", "kike", "spic", "chink", "tranny", "rape",
 ]
 # In-process only (resets on server restart — acceptable; no DB table). Maps a browser cookie id to the count
