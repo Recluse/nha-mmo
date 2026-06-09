@@ -152,8 +152,11 @@ def aggregate(ings):
 # (rule_key, predicate) — first match wins; ordered specific (composite) -> primitive
 RULES = [
     ("battery",       lambda a: a["n_metals"] >= 2 and a["react_spread"] >= 1 and a["electrolyte"]),
-    ("motor",         lambda a: a["has"]("magnetic") and a["has"]("conductivity") and a["has"]("stores_power")),
-    ("electromagnet", lambda a: a["mx"]("magnetic") >= 6 and a["has"]("conductivity") and a["has"]("stores_power")),
+    # electromagnet BEFORE motor (was shadowed: motor's broader `has(magnetic)` matched first -> electromagnet
+    # was UNREACHABLE). A SOFT magnetic-metal core (iron, magnetic 8) + conductor + power = electromagnet. A finished
+    # permanent magnet (the crafted `magnet`, magnetic 9) is excluded by `< 9` so it falls through to motor below.
+    ("electromagnet", lambda a: 6 <= a["mx"]("magnetic") < 9 and a["has"]("conductivity") and a["has"]("stores_power")),
+    ("motor",         lambda a: a["has"]("magnetic") and a["has"]("conductivity") and a["has"]("stores_power")),  # a permanent magnet (9) or weaker magnetic + conductor + power
     ("solar_cell",    lambda a: a["has"]("semiconductor") and a["has"]("insulator") and a["has"]("conductivity")),
     ("chip",          lambda a: a["has"]("semiconductor") and a["has"]("conductivity")),
     # --- season 3 combat + tech (finished items win; each predicate tightened to NOT shadow a season-2 recipe) ---
