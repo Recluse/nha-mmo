@@ -1679,6 +1679,7 @@ function initWorld3D(){
  stormMesh.visible=false; sc.add(stormMesh);                                  // drifting storm — mining/chopping under it is halved
  const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(), astG=new T.Group(), artG=new T.Group();
  sc.add(depG); sc.add(agG); sc.add(vehG); sc.add(strG); sc.add(astG); sc.add(artG);
+ const zigFX=[];   // ziggurat shimmer targets (glow/capstone/sparkle motes) — pulsed every frame in the render loop
  let yaw=0.7,pitch=0.85,dist=170;
  // numeric guard: any handler that feeds yaw/pitch/dist a NaN (e.g. a wheel event with deltaY=NaN, or a
  // wild devicePixelRatio) would otherwise propagate to the camera position and PERMANENTLY blank the canvas
@@ -1749,23 +1750,29 @@ function initWorld3D(){
  function makeZiggurat(s,idx){
   const grp=new T.Group();
   const frac=Math.max(0,Math.min(1,(s.height||15)/120));     // 0 (foundation) .. 1 (capped monument)
-  const tall=0.6+frac*3.4;                                    // total monument height on the Moon's scale
-  const base=1.6+frac*1.4;                                    // footprint widens a little as it completes
+  const tall=1.4+frac*5.2;                                    // BIG enough to read on the distant Moon sphere
+  const base=2.6+frac*2.2;                                    // footprint widens as it completes
   const done=!!s.complete;
-  const tone=done?0xe8c98c:0xc9b28a;                          // sandstone-gold when crowned, regolith-tan while building
+  const tone=done?0xffc24a:0xe0934e;                          // amber-gold (done) / warm terracotta — high contrast vs the grey Moon
   const tiers=Math.max(3,Math.min(6,3+Math.round(frac*3)));   // 3 tiers early -> up to 6 when near-complete
   for(let i=0;i<tiers;i++){
    const f=i/tiers, w=base*(1-f*0.78), hgt=tall/tiers*0.92;
-   const m=new T.Mesh(gZigTier,new T.MeshLambertMaterial({color:tone,emissive:done?0x4a3411:0x161310,flatShading:true}));
+   const m=new T.Mesh(gZigTier,new T.MeshLambertMaterial({color:tone,emissive:done?0x6b3d06:0x301f08,flatShading:true}));
    m.scale.set(w,hgt,w); m.position.y=tall*f+hgt/2; grp.add(m);
   }
-  if(done){                                                   // a small luminous shrine + glow crowns the finished ziggurat
-   const cap=new T.Mesh(new T.BoxGeometry(0.34,0.34,0.34),new T.MeshLambertMaterial({color:0xfff0c0,emissive:0xffcf66}));
-   cap.position.y=tall+0.18; grp.add(cap);
-   const glow=new T.Mesh(new T.SphereGeometry(0.9,12,10),new T.MeshBasicMaterial({color:0xffd866,transparent:true,opacity:0.18}));
-   glow.position.y=tall*0.5; grp.add(glow);
-   const lb=label('\\u{1F3DB} '+(s.name||'ziggurat'));lb.scale.set(7,1.7,1);lb.position.y=tall+2.4;grp.add(lb);  // 🏛 monument label
+  // a luminous capstone + halo crown the ziggurat (building OR done) and SHIMMER via the render loop (zigFX) so
+  // it sparkles and catches the eye even before completion
+  const cap=new T.Mesh(new T.BoxGeometry(0.7,0.7,0.7),new T.MeshBasicMaterial({color:done?0xfff1c0:0xffd9a0}));
+  cap.position.y=tall+0.36; grp.add(cap); zigFX.push({m:cap,base:1,kind:'cap',ph:idx*1.3});
+  const glow=new T.Mesh(new T.SphereGeometry(done?2.0:1.3,14,12),new T.MeshBasicMaterial({color:done?0xffd24a:0xffb060,transparent:true,opacity:0.24}));
+  glow.position.y=tall*0.6; grp.add(glow); zigFX.push({m:glow,base:done?0.30:0.18,kind:'glow',ph:idx*0.7});
+  for(let k=0;k<(done?6:3);k++){                              // twinkling sparkle motes around the crown
+   const a=k*2.39, rr=base*0.62;
+   const sp=new T.Mesh(new T.SphereGeometry(0.18,6,6),new T.MeshBasicMaterial({color:0xfff6d0,transparent:true,opacity:0.9}));
+   sp.position.set(Math.cos(a)*rr, tall*0.72+Math.sin(a*1.7)*0.7, Math.sin(a)*rr); grp.add(sp);
+   zigFX.push({m:sp,base:0.9,kind:'spark',ph:k*1.1+idx});
   }
+  if(done){const lb=label('\\u{1F3DB} '+(s.name||'ziggurat'));lb.scale.set(9,2.2,1);lb.position.y=tall+3;grp.add(lb);}  // 🏛 monument label
   // seat it on the Moon's surface (sphere radius 9 at moon.position), fanned around the crown by index, and
   // orient the tiers' +Y axis along the outward surface normal so the monument stands up off the sphere
   const mp=moon.position, R=9, ang=idx*1.1, lean=0.42;
@@ -1776,6 +1783,7 @@ function initWorld3D(){
  }
  function buildStructures(ss){
   while(strG.children.length)strG.remove(strG.children[0]);
+  zigFX.length=0;                                             // drop last frame's shimmer refs before rebuilding
   let zigN=0;
   (ss||[]).forEach(s=>{
    if(s.shape=='ziggurat'){strG.add(makeZiggurat(s,zigN++));return;}   // Moon-only monument — placed on the Moon, not the terrain
@@ -1818,6 +1826,10 @@ function initWorld3D(){
    const w=host.clientWidth,h=host.clientHeight;
    if(w>10&&h>10&&(w!==lastW||h!==lastH)){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();lastW=w;lastH=h;}
    place();
+   try{const tt=performance.now()*0.001;for(const fx of zigFX){       // ziggurat shimmer — pulse glow, throb capstone, twinkle motes
+    if(fx.kind=='glow')fx.m.material.opacity=fx.base*(0.55+0.55*Math.sin(tt*2.2+fx.ph));
+    else if(fx.kind=='cap')fx.m.scale.setScalar(1+0.3*Math.sin(tt*3.1+fx.ph));
+    else fx.m.material.opacity=Math.max(0,Math.sin(tt*4.5+fx.ph));}}catch(e){}   // isolated so a shimmer slip can't blank the canvas
    ren.render(sc,cam);
   }catch(err){clampCam();}                                 // never let a frame error stop the loop
  })();
