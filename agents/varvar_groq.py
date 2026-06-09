@@ -168,7 +168,7 @@ def main():
                 verb, args = arm_up(inv); tag = "(arming) "; idle = 0
             elif inrange:                                  # (2) SCRIPTED attack — weakest/closest in kinetic range
                 tgt = min(inrange, key=lambda x: (x.get("hp", 100), x.get("dist", 99)))
-                if random.random() < 0.08:                 # a barbarian ROARS at his prey — taunt mid-hunt so he isn't a
+                if random.random() < 0.03:                 # a barbarian ROARS at his prey — taunt mid-hunt so he isn't a
                     verb, args = "say", {"text": random.choice(TAUNTS)}; tag = "(roar) "   # silent killer (also breaks attack-stacking)
                 else:
                     verb, args = "attack", {"weapon": "kinetic_gun", "target": tgt["id"]}; tag = "(hunt) "
