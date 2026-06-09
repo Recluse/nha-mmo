@@ -24,6 +24,7 @@ ATMOSPHERE_TOP = 100     # altitude that counts as "escaped the atmosphere" — 
 CLIMB = 10               # altitude gained per fueled launch
 SPACE_TIERS = [(100, "space"), (300, "orbit"), (600, "the Moon")]   # altitude → milestone (escalating goals beyond escape)
 SKY_TOP = 600            # max altitude — reaching the Moon
+ZIG_TOP = 120            # ziggurat completion height — a Moon-only collaborative megastructure
 DESCEND = 40             # altitude shed per `land` (controlled descent back home)
 
 # ===================== SEASON 3 CONSTANTS (all integers) =====================
@@ -399,7 +400,7 @@ def apply_intent(it, ents, cur, t, events):
             ast["attrs"]["amount"] = have - took
             addb(a, r, took)
             return "applied", f"mined {took} {r} from asteroid #{ast['id']}; {have - took} left" + (" (yield buff)" if yb else "")
-        if verb == "mine" and int(a["attrs"].get("altitude", 0)) >= 600:   # standing on the Moon → mine helium-3 + regolith
+        if verb == "mine" and a["attrs"].get("on_moon"):   # standing on the Moon → mine helium-3 + regolith
             took = max(1, min(int(n), 6))
             if yb:
                 took = took + took // 2
@@ -583,6 +584,7 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", "no controllable vehicle to land with"
         new = max(0, alt - DESCEND)
         a["attrs"]["altitude"] = new
+        a["attrs"].pop("on_moon", None)                  # once you start descending you've left the lunar surface
         if new > 0:
             return "applied", f"descending -> altitude {new}"
         was_space = bool(a["attrs"].get("in_space"))
@@ -610,8 +612,8 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own"
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
-        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator"):
-            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator"
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "ziggurat"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/ziggurat"
         if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
             cost = {"metal": 15, "composite": 8}; seg = 20
             if any(get(a, r) < q for r, q in cost.items()):
@@ -636,7 +638,33 @@ def apply_intent(it, ents, cur, t, events):
                                                         "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
                                                         "name": str(args.get("name", "orbital elevator"))[:32]})))
             return "applied", f"laid an orbital-elevator base #{cur.fetchone()['id']} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
-        on_moon = int(a["attrs"].get("altitude", 0)) >= 600   # build with local regolith when up on the Moon
+        if shape == "ziggurat":                          # Moon-only collaborative monument: stack regolith tiers on one cell
+            if not a["attrs"].get("on_moon"):
+                return "rejected", "a ziggurat can only be raised on the Moon — land there first"
+            cost = {"regolith": 12}; seg = 15
+            if any(get(a, r) < q for r, q in cost.items()):
+                return "rejected", f"a ziggurat tier needs {cost} (mine regolith on the Moon)"
+            zig = next((e for e in ents.values() if e["type"] == "structure"
+                        and e["attrs"].get("shape") == "ziggurat"
+                        and abs(e["x"] - a["x"]) + abs(e["y"] - a["y"]) <= 1), None)
+            for r, q in cost.items():
+                addb(a, r, -q)
+            if zig:
+                newh = int(zig["attrs"].get("height", 0)) + seg
+                zig["attrs"]["height"] = newh
+                if newh >= ZIG_TOP and not zig["attrs"].get("complete"):
+                    zig["attrs"]["complete"] = True
+                    a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + 250
+                    cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                                (t, a["id"], Json({"ziggurat": True, "complete": True, "height": newh, "points": 250})))
+                    return "applied", f"GREAT ZIGGURAT #{zig['id']} COMPLETE at height {newh} — a monument crowns the Moon! +250 pts"
+                return "applied", f"raised the ziggurat #{zig['id']} -> {newh}/{ZIG_TOP}"
+            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
+                        (a["x"], a["y"], a["id"], Json({"shape": "ziggurat", "height": seg, "size": 3,
+                                                        "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
+                                                        "name": str(args.get("name", "ziggurat"))[:32]})))
+            return "applied", f"laid a ziggurat foundation #{cur.fetchone()['id']} ({seg}/{ZIG_TOP}) on the Moon — stack regolith tiers to complete it"
+        on_moon = bool(a["attrs"].get("on_moon"))   # regolith builds only when actually landed (post-rework: altitude 600 alone = orbit, not the Moon)
         size = max(1, min(20, _ai(args, "size", 3)))
         height = max(1, min(60, _ai(args, "height", size)))
         cost = {"regolith": size + max(1, height // 12)} if on_moon else {"metal": size, "composite": max(1, height // 12)}
@@ -661,6 +689,23 @@ def apply_intent(it, ents, cur, t, events):
         a["attrs"]["in_space"] = True
         a["attrs"]["space_level"] = max(int(a["attrs"].get("space_level", 0)), 1)
         return "applied", f"rode the orbital elevator to space (altitude {a['attrs']['altitude']}) — no rocket needed!"
+    if verb == "land_moon":                              # descend from high lunar orbit onto the Moon surface
+        if int(a["attrs"].get("altitude", 0)) < SKY_TOP:
+            return "rejected", "climb to lunar orbit (altitude 600) first — the Moon is reached from the top of the sky"
+        cur.execute("SELECT 1 FROM entities WHERE type='vehicle' AND owner=%s AND (attrs->>'controllable')::boolean LIMIT 1", (a["id"],))
+        if not cur.fetchone():
+            return "rejected", "need a controllable vehicle (a rocket/lander) to set down on the Moon — the elevator only reaches orbit"
+        if a["attrs"].get("on_moon"):
+            return "rejected", "already on the Moon"
+        a["attrs"]["on_moon"] = True
+        cur.execute("SELECT 1 FROM events WHERE kind='moon_landing' LIMIT 1")
+        first = cur.fetchone() is None
+        pts = 300 if first else 80
+        a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
+        cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'moon_landing',%s)",
+                    (t, a["id"], Json({"first": first, "points": pts})))
+        return "applied", (("FIRST TO LAND ON THE MOON! " if first else "touched down on the Moon! ")
+                           + f"+{pts} pts — mine helium-3/regolith here and raise a ziggurat")
     if verb == "plant":                                  # plant a sapling -> a renewable wood deposit (regrows over time)
         if get(a, "wood") < 1:
             return "rejected", "need 1 wood (a sapling) to plant a tree"
