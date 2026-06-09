@@ -1197,20 +1197,21 @@ async function tick(){
   $('dipl_offer').innerHTML=O.map(x=>{const pn=x.proposer==x.b?nm(x.b,x.b_name):nm(x.a,x.a_name),on=x.proposer==x.b?nm(x.a,x.a_name):nm(x.b,x.b_name);return `<div>&#9995; ${pn} &rarr; ${on} <span class=sub>(pending)</span></div>`;}).join('')||'<div class=sub>no pending offers</div>';
  }
  const tl=await j('/timeline');
- if(tl)$('timeline').innerHTML=tl.timeline.map(e=>{const dt=e.data||{};let tx;
+ if(tl){const tn=id=>{if(id==null)return '?';const a=by[id];return a&&a.name?esc(a.name):'#'+id;};
+  $('timeline').innerHTML=tl.timeline.map(e=>{const dt=e.data||{};let tx;
   if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points;
   else if(e.kind=='invent')tx='invented '+esc(dt.name||dt.item)+' +'+dt.points;
   else if(e.kind=='land')tx='landed'+(dt.round_trip?' (round trip!)':'')+' +'+(dt.points||0);
   else if(e.kind=='build'&&dt.elevator)tx='&#127959;&#65039; orbital elevator complete +'+dt.points;
   else if(e.kind=='build')tx='&#127959;&#65039; built '+esc(dt.part||dt.structure||'a structure')+(dt.points?' +'+dt.points:'');
-  else if(e.kind=='destroyed')tx=(dt.type=='vehicle'?'&#128165; vehicle wrecked':dt.type=='structure'?'&#127959;&#65039; structure ruined':'&#128128; <span class=O>was defeated</span>')+(dt.by?' by #'+dt.by:'');
-  else if(e.kind=='ally')tx='&#129309; <span class=AG>allied</span> with #'+(dt['with']||dt.to||'?');
-  else if(e.kind=='war')tx='&#9876;&#65039; <span class=O>declared war</span> on #'+(dt.to||dt['with']||dt.b||'?');
-  else if(e.kind=='peace')tx='&#128330; made peace with #'+(dt.to||dt['with']||dt.b||'?');
+  else if(e.kind=='destroyed')tx=(dt.type=='vehicle'?'&#128165; vehicle wrecked':dt.type=='structure'?'&#127959;&#65039; structure ruined':'&#128128; <span class=O>was defeated</span>')+(dt.by!=null?' by <span class=AG>'+tn(dt.by)+'</span>':'');
+  else if(e.kind=='ally')tx='&#129309; <span class=AG>allied</span> with <span class=AG>'+tn(dt['with']||dt.to)+'</span>';
+  else if(e.kind=='war')tx='&#9876;&#65039; <span class=O>declared war</span> on <span class=AG>'+tn(dt.to||dt['with']||dt.b)+'</span>';
+  else if(e.kind=='peace')tx='&#128330; made peace with <span class=AG>'+tn(dt.to||dt['with']||dt.b)+'</span>';
   else if(e.kind=='attune')tx='&#10024; attuned to '+esc(dt.kind||'an artifact')+(dt.first?' (FIRST!)':'')+(dt.points?' +'+dt.points:'');
   else if(e.kind=='generate')tx='&#9883;&#65039; a new law emerged: '+esc(dt.name||dt.item||'?');
   else tx=esc(e.kind);
-  return `<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${tx}</div>`;}).join('')||'<div class=sub>nothing yet</div>';
+  return `<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${tx}</div>`;}).join('')||'<div class=sub>nothing yet</div>';}
  const ro=await j('/roster');
  if(ro){const on=ro.agents.filter(a=>a.online).length;
   $('roster').innerHTML=`<span class=sub>${on} online / ${ro.agents.length} total &mdash; </span>`+ro.agents.map(a=>`<a style="cursor:pointer;color:${a.online?'#3fb950':'#7d8590'}" onclick="loadProfile(${a.id})">${a.id} ${esc(a.name||'?')}${a.in_space?' [space]':''}</a>`).join(' &middot; ')||'<span class=sub>no agents</span>';}
