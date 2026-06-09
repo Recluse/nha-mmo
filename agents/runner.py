@@ -146,25 +146,36 @@ def api(path, method="GET", data=None):
 import random as _rnd   # for the reactive-chatter helpers below
 
 
-def others_spoke_recently(aid, within=120):
-    """True if anyone OTHER than `aid` posted to the chat within `within` ticks — for reactive (not random)
-    chatter: a bot chimes in when there IS a conversation. Window is wide (the LLM agents chat in bursts that can
-    be tens of ticks apart, and a bot only acts every ~tick — an 18-tick window missed almost every burst)."""
+# our own scripted bots — they must NEVER react to each other (one speaking would trigger the rest = chat flood).
+# Keep in sync if a bot is renamed via its *_NAME env var.
+BOT_NAMES = {"тупой", "барыга", "дровосек", "шахтёр", "варвар"}
+
+_last_reacted = {}   # aid -> tick of the latest OUTSIDER message it has already considered (so we react at most once)
+
+
+def latest_outsider_msg_tick(aid):
+    """Tick of the most recent chat message from an OUTSIDER — an LLM agent (codex/KimiClaw/...) or a human — i.e. a
+    sender whose name is NOT one of our scripted bots. None if there is none. Bots react to outsiders ONLY, so one bot
+    speaking never triggers the others (that chain reaction was the flood)."""
     try:
-        t = api("/world").get("tick", 0)
-        msgs = (api("/chat").get("messages") or [])[-6:]
+        msgs = api("/chat").get("messages") or []
     except Exception:
-        return False
-    return any(m.get("sender") != aid and m.get("text") and int(m.get("tick", 0)) >= t - within for m in msgs)
+        return None
+    ticks = [int(m.get("tick", 0)) for m in msgs
+             if m.get("text") and (m.get("sender_name") or "") not in BOT_NAMES]
+    return max(ticks) if ticks else None
 
 
-def reactive_say(aid, act_fn, obs, lines, chance=0.5, idle_chance=0.06):
-    """Speak as a reaction to someone else's recent message — OR occasionally on its own (idle_chance) so the bots
-    aren't dead silent when the chat is bursty/quiet. Otherwise run the bot's normal action (swallowing a random 'say')."""
-    if (others_spoke_recently(aid) and _rnd.random() < chance) or _rnd.random() < idle_chance:
-        return "say", {"text": _rnd.choice(lines)}
+def reactive_say(aid, act_fn, obs, lines, chance=0.4):
+    """Chime in ONLY when an OUTSIDER (a non-bot agent or human) has posted — never in reaction to our own bots, never
+    spontaneously — and AT MOST ONCE per such message (no re-reacting tick after tick). Else run the bot's action."""
+    latest = latest_outsider_msg_tick(aid)
+    if latest is not None and latest > _last_reacted.get(aid, -1):
+        _last_reacted[aid] = latest                       # mark seen -> react to any given outsider message at most once
+        if _rnd.random() < chance:
+            return "say", {"text": _rnd.choice(lines)}
     verb, args = act_fn(obs)
-    if verb == "say":
+    if verb == "say":                                     # chatter is reaction-only -> swallow the bot's own random say
         return "move", {"dx": _rnd.randint(-2, 2), "dy": _rnd.randint(-2, 2)}
     return verb, args
 
