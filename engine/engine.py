@@ -122,9 +122,12 @@ INSERT INTO world (id, tick) VALUES (1,0) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS entities (id bigserial PRIMARY KEY, type text NOT NULL,
   x int NOT NULL DEFAULT 0, y int NOT NULL DEFAULT 0, owner bigint,
   buffers jsonb NOT NULL DEFAULT '{}', attrs jsonb NOT NULL DEFAULT '{}');
+CREATE INDEX IF NOT EXISTS entities_type_idx ON entities(type);
+CREATE INDEX IF NOT EXISTS entities_owner_idx ON entities(owner) WHERE owner IS NOT NULL;
 CREATE TABLE IF NOT EXISTS intents (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   verb text NOT NULL, args jsonb NOT NULL DEFAULT '{}', status text NOT NULL DEFAULT 'pending',
   result text, created int);
+CREATE INDEX IF NOT EXISTS intents_agent_idx ON intents(agent, id);
 CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, tick int NOT NULL,
   entity bigint, kind text NOT NULL, data jsonb NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS events_kind_tick_idx ON events(kind, tick);
@@ -226,16 +229,15 @@ def apply_intent(it, ents, cur, t, events):
     # DEAD/DOWNED gate: a downed agent may ONLY talk until it respawns (whitelist EXACTLY say/tell)
     if int(a["attrs"].get("downed_until", 0)) > t and verb not in ("say", "tell"):
         return "rejected", "you are downed — you can only say/tell until you respawn"
-    if verb in ("grab", "deposit", "transfer"):
+    # NOTE: 'grab'/'transfer' removed — they moved resources between arbitrary agents on a bare
+    # balance check (no ownership/adjacency), letting any agent drain another and bypass the steal
+    # system. No containers exist in the live world, so they served no legitimate purpose.
+    if verb == "deposit":                                # self-scoped no-op stash (src==dst==self, conserved)
         r, n = args["resource"], _ai(args, "n", 1)
         if n < 1:
             return "rejected", "quantity must be positive"   # guard: negative n would reverse the flow (dupe/steal)
-        src = a if verb == "deposit" else ents.get(_aid(args, "from"))
-        dst = a if verb == "grab" else ents.get(_aid(args, "to"))
-        if verb == "transfer":
-            src, dst = ents.get(_aid(args, "from")), ents.get(_aid(args, "to"))
-        if src and dst and get(src, r) >= n:
-            addb(src, r, -n); addb(dst, r, n); return "applied", f"{verb} {n} {r}"
+        if get(a, r) >= n:
+            return "applied", f"deposit {n} {r}"
         return "rejected", "insufficient"
     if verb == "build":                                  # craft one part, optionally upgraded with crafted items
         part = args.get("part"); cost = vehicles.BUILD_COST.get(part)
@@ -507,6 +509,10 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", "no ingredients"
         if any(get(a, k) < q for k, q in ings.items()):
             return "rejected", "you don't hold those ingredients"
+        # The recipe match + the output (exactly 1 item) depend ONLY on WHICH resources are mixed,
+        # never on how many — so a supplied qty>1 would silently over-debit (overpay/burn) inputs for
+        # the same single result. Collapse every ingredient to 1 unit: spend exactly one of each.
+        ings = {k: 1 for k in ings}
         rule = crafting.combine(ings)
         if rule:                                         # matched a built-in physics pattern
             for k, q in ings.items():                    # consume the inputs
@@ -552,12 +558,14 @@ def apply_intent(it, ents, cur, t, events):
         if best < gate:
             return "rejected", (f"thrust-to-weight too low to lift off (need thrust >= {GRAVITY}x mass; "
                                 f"best you have = {best:.2f}) — add engines/jets/propellers, lighten with a composite frame")
-        he3 = get(a, "helium3") >= 1                     # lunar super-fuel → 5x climb
-        fuel = "helium3" if he3 else next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1), None)
+        # fuel tiers (best first): helium3 super-fuel (5x) > crafted cryo_fuel (3x) > plain fuels (1x).
+        FUEL_CLIMB = (("helium3", 5), ("cryo_fuel", 3), ("oil", 1), ("coal", 1), ("wood", 1), ("carbon", 1))
+        fuel, mult = next(((f, m) for f, m in FUEL_CLIMB if get(a, f) >= 1), (None, 1))
         if not fuel:
-            return "rejected", "no fuel to burn (carry oil/coal/wood/carbon — or mine helium-3 on the Moon for a 5x boost)"
+            return "rejected", ("no fuel to burn (carry oil/coal/wood/carbon, craft cryo_fuel for a 3x boost "
+                                "— or mine helium-3 on the Moon for a 5x boost)")
         addb(a, fuel, -1)
-        alt = min(SKY_TOP, int(a["attrs"].get("altitude", 0)) + (CLIMB * 5 if he3 else CLIMB))
+        alt = min(SKY_TOP, int(a["attrs"].get("altitude", 0)) + CLIMB * mult)
         a["attrs"]["altitude"] = alt
         level = max(int(a["attrs"].get("space_level", 0)), 1 if a["attrs"].get("in_space") else 0)
         msg = f"launched on {fuel} -> altitude {alt}/{SKY_TOP} (twr {best:.1f})"
@@ -987,11 +995,12 @@ def _at_war(ents, i, j):
     return bool(r and r["attrs"].get("state") == "war")
 
 def _protected(e, t):
-    """A young, poor agent is shielded from attack/steal (newbie protection; uses attrs.born, not events)."""
+    """A young agent is shielded from attack/steal (newbie protection; uses attrs.born, not events).
+    Age-only: starter kits already exceed PROTECT_WEALTH, so AND-gating on wealth never fired."""
     if e["type"] != "agent":
         return False
     born = int(e["attrs"].get("born", 0))
-    return (t - born) < PROTECT_AGE and get(e, "credits") < PROTECT_WEALTH
+    return (t - born) < PROTECT_AGE
 
 def _can_harm(attacker, target, ents, t):
     """Gating shared by attack + steal: returns (ok, why)."""
@@ -1138,7 +1147,8 @@ def _node_fortune(a, cur, t, dep, r):
     """Deposit-richness variance: a tiny hash-derived swing in a node's effective yield (0 or 1 extra).
     Reads breadth of the agent's recent value-bearing market activity from the prune-surviving events table."""
     cur.execute("SELECT count(DISTINCT CASE WHEN data->>'seller'=%s THEN data->>'buyer' ELSE data->>'seller' END) c "
-                "FROM events WHERE kind='market' AND tick>=%s AND (data->>'seller'=%s OR data->>'buyer'=%s)",
+                "FROM events WHERE kind='market' AND tick>=%s AND (data->>'seller'=%s OR data->>'buyer'=%s) "
+                "AND data->>'seller' <> data->>'buyer'",
                 (str(a["id"]), t - KARMA_WINDOW, str(a["id"]), str(a["id"])))
     row = cur.fetchone()
     coop = int((row["c"] if row else 0) or 0)
@@ -1163,6 +1173,27 @@ def match_market(ents, cur, t, events):
             buy = cur.fetchone()
             if not sell or not buy or sell["price"] > buy["price"]:
                 break
+            if sell["agent"] == buy["agent"]:
+                # self-cross (wash trade): both top-of-book orders belong to one agent. Don't cross
+                # self (it would print a fake public last-price). Advance past the blocking pair by
+                # finding the best crossable order on EITHER side from a DIFFERENT agent; both of the
+                # agent's own orders stay open to match a genuine counterparty later. If neither side
+                # has a different-agent crossing order, the book can't clear → stop. No infinite loop:
+                # each branch matches against a strictly different-agent order (or we break).
+                cur.execute("SELECT id,agent,qty,price FROM market_orders WHERE status='open' "
+                            "AND side='sell' AND resource=%s AND agent<>%s ORDER BY price ASC, id ASC LIMIT 1",
+                            (res, buy["agent"]))
+                alt_sell = cur.fetchone()
+                cur.execute("SELECT id,agent,qty,price FROM market_orders WHERE status='open' "
+                            "AND side='buy' AND resource=%s AND agent<>%s ORDER BY price DESC, id ASC LIMIT 1",
+                            (res, sell["agent"]))
+                alt_buy = cur.fetchone()
+                if alt_sell and alt_sell["price"] <= buy["price"]:
+                    sell = alt_sell                          # buy crosses a real seller
+                elif alt_buy and sell["price"] <= alt_buy["price"]:
+                    buy = alt_buy                            # sell crosses a real buyer
+                else:
+                    break                                    # only self-cross available → leave book untouched
             clearing = sell["price"] if sell["id"] < buy["id"] else buy["price"]
             qty = min(sell["qty"], buy["qty"])
             seller, buyer = ents.get(sell["agent"]), ents.get(buy["agent"])
@@ -1316,7 +1347,8 @@ def tick_bombs(ents, cur, t, events):
             del_entity(ents, cur, b["id"])
 
 def respawn_agents(ents, cur, t, events):
-    """Downed agents whose cooldown has elapsed respawn at full HP near their death cell (hash-jittered ±2)."""
+    """Downed agents whose cooldown has elapsed respawn at full HP at a deterministic cell FAR from the
+    death cell (anti-spawn-camp): a hash-derived point across the whole map, replay-safe (no RNG)."""
     mkt = next((x for x in ents.values() if x["type"] == "market"), None)
     w = int(mkt["attrs"].get("w", 156)) if mkt else 156
     h = int(mkt["attrs"].get("h", 156)) if mkt else 156
@@ -1328,10 +1360,10 @@ def respawn_agents(ents, cur, t, events):
             mx = int(a["attrs"].get("hp_max", HP_MAX))
             a["attrs"]["hp"] = mx
             a["attrs"]["downed_until"] = 0
-            dx = int(a["attrs"].get("death_x", a["x"]))
-            dy = int(a["attrs"].get("death_y", a["y"]))
-            a["x"] = max(0, min(w - 1, dx + (_h(t, a["id"], "rx") % 5 - 2)))
-            a["y"] = max(0, min(h - 1, dy + (_h(t, a["id"], "ry") % 5 - 2)))
+            # Land anywhere on the map, derived only from tick:id → far from the killer's chosen cell,
+            # deterministic for the replay/hash chain. No proximity to death_x/death_y → no spawn-camp.
+            a["x"] = _h(t, a["id"], "rx") % w
+            a["y"] = _h(t, a["id"], "ry") % h
             a["attrs"]["respawned_at"] = t                # RESPAWN_GRACE untargetability
             events.append((t, a["id"], "respawn", {"x": a["x"], "y": a["y"]}))
 
@@ -1417,13 +1449,28 @@ def decay_loot(ents, cur, t):
 def prune_tables(cur, t):
     """Keep the DB bounded: drop old high-frequency log rows, preserve milestone events, recipe caches,
     and recent history (loop-guard + spectator feeds). Entity state is untouched, so the hash chain holds."""
-    cur.execute("DELETE FROM events WHERE kind = 'act' AND tick < %s", (t - 1000,))   # milestones (escape/invent/land/build) kept
+    # Drop ALL old high-frequency log rows, keeping only milestone kinds (the spectator/achievement feed).
+    cur.execute("DELETE FROM events WHERE tick < %s AND kind NOT IN "
+                "('escape','invent','land','build','war','peace','attune','destroyed','generate')",
+                (t - 1000,))
     cur.execute("DELETE FROM tick_hashes WHERE tick < %s", (t - 20000,))
     cur.execute("DELETE FROM intents WHERE status <> 'pending' AND id < (SELECT COALESCE(MAX(id),0) FROM intents) - 5000")
     cur.execute("DELETE FROM messages WHERE id < (SELECT COALESCE(MAX(id),0) FROM messages) - 2000")
     cur.execute("DELETE FROM market_orders WHERE status <> 'open' AND id < (SELECT COALESCE(MAX(id),0) FROM market_orders) - 2000")
     cur.execute("DELETE FROM trades WHERE status <> 'open' AND id < (SELECT COALESCE(MAX(id),0) FROM trades) - 2000")
     cur.execute("DELETE FROM proposals WHERE status <> 'pending' AND id < (SELECT COALESCE(MAX(id),0) FROM proposals) - 1000")
+
+
+# rejection reasons that describe a not-yet-ready WORLD (the same action may succeed once conditions
+# change), so they must NOT count toward the loop-guard's all-failing test.
+_TRANSIENT_REASONS = ("cooldown", "out of range", "no deposit", "regrow", "too recently", "drifted")
+
+def _transient_reason(result):
+    """True if a rejection's result text names a transient, world-state reason (vs a permanent error)."""
+    if not result:
+        return False
+    s = str(result).lower()
+    return any(m in s for m in _TRANSIENT_REASONS)
 
 
 def tick(conn):
@@ -1436,11 +1483,15 @@ def tick(conn):
     for it in cur.fetchall():
         # loop guard (engine-enforced): an agent repeating the SAME action that keeps FAILING is stuck
         # → block it. Successful repetition (e.g. building 4 wheels) is progress and is never guarded.
-        cur.execute("SELECT verb, args, status FROM intents WHERE agent=%s AND status IN ('applied','rejected') "
+        # Transient rejections (cooldown / out of range / no deposit yet / regrow / too recently /
+        # drifted) reflect a not-yet-ready world, not a permanently-stuck agent — they don't count
+        # toward the loop trip, so retrying-until-ready is never frozen.
+        cur.execute("SELECT verb, args, status, result FROM intents WHERE agent=%s AND status IN ('applied','rejected') "
                     "ORDER BY id DESC LIMIT %s", (it["agent"], LOOP_N))
         recent = cur.fetchall()
         if (len(recent) >= LOOP_N and all(
                 r["verb"] == it["verb"] and r["args"] == it["args"] and r["status"] == "rejected"
+                and not _transient_reason(r["result"])
                 for r in recent)):
             cur.execute("UPDATE intents SET status='rejected', result='loop detected (repeated failing action)' "
                         "WHERE id=%s", (it["id"],))

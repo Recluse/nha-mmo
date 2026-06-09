@@ -24,7 +24,7 @@ PROPS = {
     "ore":      {"ore": 8, "hardness": 3},                            # raw ore — smelt with fuel to get metal
     "brine":    {"solvent": 6, "soluble": 8},                         # sea water — boil off with heat to get salt
     "helium3":  {"flammable": 10, "energy": 10, "fusion": 1, "light": 9},  # lunar super-fuel — mined on the Moon, supercharges launch
-    "regolith": {"hardness": 5, "moldable": 4, "dusty": 1},               # lunar soil — building material for Moon bases
+    "regolith": {"hardness": 5, "lunar_moldable": 4, "dusty": 1},         # lunar soil — Moon-base material; UNIQUE lunar_moldable tag (NOT generic moldable) so it can't substitute for plastic/casing in Earth recipes (casing/insulated_wire/rubber/medkit)
     # --- season 3 frontier + orbital raws (dense = heavy-metal tag that splits slugs from magnets) ---
     "titanium": {"metal": 1, "hardness": 9, "light": 7, "dense": 5},      # tundra-frontier light-yet-hard metal — feeds superalloy
     "ice":      {"coolant": 9, "solvent": 4, "frozen": 1},                # tundra-frontier frozen volatile — feeds cryo_fuel
@@ -152,11 +152,13 @@ def aggregate(ings):
 # (rule_key, predicate) — first match wins; ordered specific (composite) -> primitive
 RULES = [
     ("battery",       lambda a: a["n_metals"] >= 2 and a["react_spread"] >= 1 and a["electrolyte"]),
-    # electromagnet BEFORE motor (was shadowed: motor's broader `has(magnetic)` matched first -> electromagnet
-    # was UNREACHABLE). A SOFT magnetic-metal core (iron, magnetic 8) + conductor + power = electromagnet. A finished
-    # permanent magnet (the crafted `magnet`, magnetic 9) is excluded by `< 9` so it falls through to motor below.
-    ("electromagnet", lambda a: 6 <= a["mx"]("magnetic") < 9 and a["has"]("conductivity") and a["has"]("stores_power")),
-    ("motor",         lambda a: a["has"]("magnetic") and a["has"]("conductivity") and a["has"]("stores_power")),  # a permanent magnet (9) or weaker magnetic + conductor + power
+    # electromagnet BEFORE motor. REGRESSION FIX: the old `6 <= mx(magnetic) < 9` window caught plain
+    # iron (magnetic 8) so {iron,copper,battery} wrongly made an electromagnet instead of a motor. An
+    # electromagnet needs a FINISHED electromagnet-grade core (mx magnetic >= 10 — only the crafted
+    # `electromagnet` item, magnetic 10, reaches it). Raw iron (8) AND a finished permanent `magnet` (9)
+    # both fall through to the motor rule below, restoring the season-2 behavior the tests assert.
+    ("electromagnet", lambda a: a["mx"]("magnetic") >= 10 and a["has"]("conductivity") and a["has"]("stores_power")),
+    ("motor",         lambda a: a["has"]("magnetic") and a["has"]("conductivity") and a["has"]("stores_power")),  # raw iron (8) or a permanent magnet (9) + conductor + power
     ("solar_cell",    lambda a: a["has"]("semiconductor") and a["has"]("insulator") and a["has"]("conductivity")),
     ("chip",          lambda a: a["has"]("semiconductor") and a["has"]("conductivity")),
     # --- season 3 combat + tech (finished items win; each predicate tightened to NOT shadow a season-2 recipe) ---

@@ -33,13 +33,13 @@ BUILD_COST = {
 # crafted items that UPGRADE a part (consumed 1 each, on top of the base cost) → flat stat bonuses.
 # This is what ties the physics-crafting tree to vehicles: steel/alloy/motor/chip/glass/bearing matter.
 PART_UPGRADES = {
-    "frame":     {"steel": {"strength": 150}, "alloy": {"strength": 80, "mass": -30}, "composite": {"strength": 120, "mass": -40}},
+    "frame":     {"steel": {"strength": 150}, "alloy": {"strength": 80, "mass": -30}, "composite": {"strength": 120, "mass": -40}, "superalloy": {"strength": 180, "mass": -50}},
     "wheel":     {"alloy": {"traction": 60, "mass": -8}, "bearing": {"traction": 40}, "rubber": {"traction": 70}},
     "engine":    {"engine": {"power": 150}, "motor": {"power": 100}, "steel": {"power": 60}},
     "wing":      {"alloy": {"wing_area": 6, "mass": -15}, "composite": {"wing_area": 5, "mass": -25}},
     "tail":      {"alloy": {"maneuver": 4, "mass": -8}},
     "propeller": {"bearing": {"thrust_pp": 1}, "alloy": {"mass": -12}},
-    "jet":       {"steel": {"thrust": 150, "mass": 20}},
+    "jet":       {"steel": {"thrust": 150, "mass": 20}, "ion_thruster": {"thrust": 300, "mass": -40}},
     "cockpit":   {"chip": {"maneuver": 5, "control": 1}, "glass": {"maneuver": 2}, "lens": {"control": 1}, "casing": {"mass": -10}},
     "fuel_tank": {"steel": {"fuel_cap": 120}, "casing": {"fuel_cap": 100, "mass": -8}},
     "panel":     {"plastic": {"mass": -12}, "casing": {"strength": 30, "mass": -15}},

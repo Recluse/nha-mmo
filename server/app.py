@@ -24,7 +24,7 @@ from play import observe  # noqa: E402  — curated per-agent observation
 
 import psycopg2                                       # noqa: E402
 from psycopg2.extras import RealDictCursor, Json      # noqa: E402
-from fastapi import FastAPI, HTTPException, Request, Response   # noqa: E402
+from fastapi import FastAPI, HTTPException, Request, Response, Query   # noqa: E402
 from fastapi.responses import HTMLResponse, FileResponse   # noqa: E402
 from pydantic import BaseModel                        # noqa: E402
 import uuid                                            # noqa: E402  — per-browser registration cookie id
@@ -89,6 +89,51 @@ def _connect(retries=30):
         except psycopg2.OperationalError as e:
             last = e; time.sleep(2)
     raise last
+
+
+# ---------- shared read-endpoint guards (limit clamp + connection-leak guard) ----------
+from contextlib import closing as _closing   # noqa: E402  — `with _closing(_connect()) as conn:` never leaks on raise
+
+LIMIT_MIN, LIMIT_MAX = 1, 200
+
+
+def _clamp_limit(n):
+    """Clamp a caller-supplied `limit` into [LIMIT_MIN, LIMIT_MAX] so ?limit=1e8 can't OOM the 384Mi pod.
+    Tolerates None / non-ints (Query already coerces, but be defensive about hand-built calls)."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return LIMIT_MAX
+    return min(max(n, LIMIT_MIN), LIMIT_MAX)
+
+
+# ---------- /agents register-materials cap (anti infinite-credit/resource mint) ----------
+# AgentIn.materials used to be inserted verbatim into the new agent's buffers — letting a caller mint
+# arbitrary credits or rare goods (superalloy, iridium, weapons, medicines…) just by POSTing them. Now the
+# materials are clamped to a small ALLOWLIST of cheap STARTER RAWS, each hard-capped; credits are IGNORED
+# from the caller and set from a fixed server constant; everything else (crafted/rare/unknown keys) is dropped.
+STARTER_CREDITS   = 100                                     # fixed server grant — caller-supplied credits are ignored
+# raw resource key -> hard per-key cap at registration. Only cheap gatherable raws; NO crafted/rare/fuel-refined.
+STARTER_MATERIALS_CAP = {
+    "metal": 60, "crystal": 4, "ore": 20, "water": 10, "wood": 20, "coal": 5, "stone": 20,
+}
+
+
+def _sanitize_starter_materials(materials):
+    """Clamp caller-supplied registration materials to the starter allowlist with per-key hard caps, and force
+    credits to the fixed server grant. Rejects (silently drops) any non-allowlisted / crafted / rare key and any
+    non-numeric or negative value. Enforced on EVERY new-agent path (cookieless, reuse-miss, and direct)."""
+    out = {}
+    for k, cap in STARTER_MATERIALS_CAP.items():
+        v = (materials or {}).get(k)
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            out[k] = min(v, cap)                            # clamp to the per-key cap; ignore <=0
+    out["credits"] = STARTER_CREDITS                        # NEVER trust caller credits — fixed server constant
+    return out
 
 
 def _place_asteroids(cur):
@@ -258,9 +303,10 @@ async def _count_visitor(request, call_next):
             h = hashlib.sha256(ip.encode()).hexdigest()[:16] if ip else ""
             if h and h not in _seen_ips:
                 _seen_ips.add(h)
-                conn = _connect(); cur = conn.cursor()
-                cur.execute("INSERT INTO visitors(ip_hash) VALUES(%s) ON CONFLICT DO NOTHING", (h,))
-                conn.commit(); conn.close()
+                with _closing(_connect()) as conn:        # Fix #4: don't leak the conn if the INSERT raises
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO visitors(ip_hash) VALUES(%s) ON CONFLICT DO NOTHING", (h,))
+                    conn.commit()
         except Exception:
             pass
     return await call_next(request)
@@ -272,14 +318,14 @@ def healthz():
 
 
 def _world():
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
-    cur.execute("SELECT type, count(*) c FROM entities GROUP BY type ORDER BY type")
-    counts = {r["type"]: r["c"] for r in cur.fetchall()}
-    cur.execute("SELECT tick, hash FROM tick_hashes ORDER BY tick DESC LIMIT 1")
-    h = cur.fetchone()
-    cur.execute("SELECT count(*) c FROM visitors"); vc = cur.fetchone()["c"]
-    conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
+        cur.execute("SELECT type, count(*) c FROM entities GROUP BY type ORDER BY type")
+        counts = {r["type"]: r["c"] for r in cur.fetchall()}
+        cur.execute("SELECT tick, hash FROM tick_hashes ORDER BY tick DESC LIMIT 1")
+        h = cur.fetchone()
+        cur.execute("SELECT count(*) c FROM visitors"); vc = cur.fetchone()["c"]
     return {"tick": t, "tick_seconds": TICK_SECONDS, "entities": counts,
             "last_state_hash": h["hash"] if h else None, "visitors": vc}
 
@@ -292,27 +338,29 @@ def world():
 @app.get("/depot")
 def depot():
     """Current depot prices per resource (buy = depot pays you, sell = you pay depot)."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT attrs->'prices' prices FROM entities WHERE type='depot' LIMIT 1")
-    row = cur.fetchone(); conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT attrs->'prices' prices FROM entities WHERE type='depot' LIMIT 1")
+        row = cur.fetchone()
     return {"prices": row["prices"] if row else None}
 
 
 def _map():
     """The generated biome map with deposits + artifacts overlaid (deterministic from the world seed)."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT x, y, attrs->>'resource' res FROM entities "
-                "WHERE type='deposit' AND attrs->>'gen_seed'=%s", (str(WORLD_SEED),))
-    deps = [(r["x"], r["y"], r["res"], 0, "") for r in cur.fetchall()]
-    cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
-    cur.execute("SELECT id, attrs->>'name' name, x, y FROM entities e WHERE type='agent' ORDER BY id")   # whole roster on the map (idle agents included)
-    arows = cur.fetchall()
-    cur.execute("SELECT x, y FROM entities WHERE type='artifact'")
-    artrows = cur.fetchall()
-    cur.execute("SELECT x, y FROM entities WHERE type='vehicle'")     # all vehicles (built or roaming) sit on a cell
-    vehrows = cur.fetchall()
-    cur.execute("SELECT x, y, attrs->>'shape' shape FROM entities WHERE type='structure'")
-    strrows = cur.fetchall(); conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT x, y, attrs->>'resource' res FROM entities "
+                    "WHERE type='deposit' AND attrs->>'gen_seed'=%s", (str(WORLD_SEED),))
+        deps = [(r["x"], r["y"], r["res"], 0, "") for r in cur.fetchall()]
+        cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
+        cur.execute("SELECT id, attrs->>'name' name, x, y FROM entities e WHERE type='agent' ORDER BY id")   # whole roster on the map (idle agents included)
+        arows = cur.fetchall()
+        cur.execute("SELECT x, y FROM entities WHERE type='artifact'")
+        artrows = cur.fetchall()
+        cur.execute("SELECT x, y FROM entities WHERE type='vehicle'")     # all vehicles (built or roaming) sit on a cell
+        vehrows = cur.fetchall()
+        cur.execute("SELECT x, y, attrs->>'shape' shape FROM entities WHERE type='structure'")
+        strrows = cur.fetchall()
     glyphs = "123456789ABDEGHJKLMNPQRSTUVXYZ"          # single chars, skipping O/C/F/W (deposit letters)
     markers, legend = [], []
     # precedence (built last → wins in ascii_map's amap): deposits < artifacts < structures/vehicles < agents
@@ -343,42 +391,42 @@ def _scene():
     season-3 hp / bombs / asteroids / artifacts."""
     grid = _grid()
     rows = ["".join(_BIOME_CODE.get(c, ".") for c in row) for row in grid]
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT x, y, attrs->>'resource' res FROM entities WHERE type='deposit' "
-                "AND attrs->>'gen_seed'=%s AND (attrs->>'amount')::int > 0", (str(WORLD_SEED),))
-    deposits = [{"x": r["x"], "y": r["y"], "res": r["res"]} for r in cur.fetchall()]
-    cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
-    cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'altitude')::int alt, "
-                "(attrs->>'in_space')::boolean space, (attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, "
-                "(attrs->>'downed_until')::int downed, "
-                "(EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) "
-                " OR COALESCE((attrs->>'born')::int,-1) >= %s) online "
-                "FROM entities e WHERE type='agent' ORDER BY id", (t - ONLINE_TICKS, t - ONLINE_TICKS))   # whole roster + online flag so the map can dim offline
-    agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
-               "alt": r["alt"] or 0, "space": bool(r["space"]),
-               "hp": r["hp"], "hp_max": r["hp_max"], "downed": bool((r["downed"] or 0) > t),
-               "online": bool(r["online"])} for r in cur.fetchall()]
-    cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'alt')::int alt, (attrs->>'flies')::boolean fly, "
-                "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'wrecked')::boolean wrecked "
-                "FROM entities WHERE type='vehicle' AND (attrs->>'autonomous')::boolean")
-    vehicles = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
-                 "alt": r["alt"] or 0, "fly": bool(r["fly"]),
-                 "hp": r["hp"], "hp_max": r["hp_max"], "wrecked": bool(r["wrecked"])} for r in cur.fetchall()]
-    cur.execute("SELECT id, attrs->>'shape' shape, x, y, (attrs->>'size')::int size, (attrs->>'height')::int height, "
-                "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt, "
-                "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'ruined')::boolean ruined "
-                "FROM entities WHERE type='structure'")
-    structures = [{"id": r["id"], "shape": r["shape"], "x": r["x"], "y": r["y"], "size": r["size"] or 2,
-                   "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"]),
-                   "alt": r["alt"] or 0, "hp": r["hp"], "hp_max": r["hp_max"], "ruined": bool(r["ruined"])}
-                  for r in cur.fetchall()]
-    cur.execute("SELECT x, y, (attrs->>'fuse')::int fuse FROM entities WHERE type='bomb'")
-    bombs = [{"x": r["x"], "y": r["y"], "fuse": r["fuse"] or 0} for r in cur.fetchall()]
-    cur.execute("SELECT x, y, attrs->>'resource' res, (attrs->>'amount')::int amount FROM entities WHERE type='asteroid'")
-    asteroids = [{"x": r["x"], "y": r["y"], "res": r["res"], "amount": r["amount"] or 0} for r in cur.fetchall()]
-    cur.execute("SELECT x, y, attrs->>'kind' kind FROM entities WHERE type='artifact'")
-    artifacts = [{"x": r["x"], "y": r["y"], "kind": r["kind"], "loc": "ground"} for r in cur.fetchall()]
-    conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT x, y, attrs->>'resource' res FROM entities WHERE type='deposit' "
+                    "AND attrs->>'gen_seed'=%s AND (attrs->>'amount')::int > 0", (str(WORLD_SEED),))
+        deposits = [{"x": r["x"], "y": r["y"], "res": r["res"]} for r in cur.fetchall()]
+        cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
+        cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'altitude')::int alt, "
+                    "(attrs->>'in_space')::boolean space, (attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, "
+                    "(attrs->>'downed_until')::int downed, "
+                    "(EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s) "
+                    " OR COALESCE((attrs->>'born')::int,-1) >= %s) online "
+                    "FROM entities e WHERE type='agent' ORDER BY id", (t - ONLINE_TICKS, t - ONLINE_TICKS))   # whole roster + online flag so the map can dim offline
+        agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
+                   "alt": r["alt"] or 0, "space": bool(r["space"]),
+                   "hp": r["hp"], "hp_max": r["hp_max"], "downed": bool((r["downed"] or 0) > t),
+                   "online": bool(r["online"])} for r in cur.fetchall()]
+        cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'alt')::int alt, (attrs->>'flies')::boolean fly, "
+                    "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'wrecked')::boolean wrecked "
+                    "FROM entities WHERE type='vehicle' AND (attrs->>'autonomous')::boolean")
+        vehicles = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
+                     "alt": r["alt"] or 0, "fly": bool(r["fly"]),
+                     "hp": r["hp"], "hp_max": r["hp_max"], "wrecked": bool(r["wrecked"])} for r in cur.fetchall()]
+        cur.execute("SELECT id, attrs->>'shape' shape, x, y, (attrs->>'size')::int size, (attrs->>'height')::int height, "
+                    "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt, "
+                    "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'ruined')::boolean ruined "
+                    "FROM entities WHERE type='structure'")
+        structures = [{"id": r["id"], "shape": r["shape"], "x": r["x"], "y": r["y"], "size": r["size"] or 2,
+                       "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"]),
+                       "alt": r["alt"] or 0, "hp": r["hp"], "hp_max": r["hp_max"], "ruined": bool(r["ruined"])}
+                      for r in cur.fetchall()]
+        cur.execute("SELECT x, y, (attrs->>'fuse')::int fuse FROM entities WHERE type='bomb'")
+        bombs = [{"x": r["x"], "y": r["y"], "fuse": r["fuse"] or 0} for r in cur.fetchall()]
+        cur.execute("SELECT x, y, attrs->>'resource' res, (attrs->>'amount')::int amount FROM entities WHERE type='asteroid'")
+        asteroids = [{"x": r["x"], "y": r["y"], "res": r["res"], "amount": r["amount"] or 0} for r in cur.fetchall()]
+        cur.execute("SELECT x, y, attrs->>'kind' kind FROM entities WHERE type='artifact'")
+        artifacts = [{"x": r["x"], "y": r["y"], "kind": r["kind"], "loc": "ground"} for r in cur.fetchall()]
     sx, sy, sr = engine.storm_center(t, WORLD_W, WORLD_H)
     return {"w": WORLD_W, "h": WORLD_H, "biomes": rows, "deposits": deposits, "agents": agents,
             "vehicles": vehicles, "structures": structures, "bombs": bombs, "asteroids": asteroids,
@@ -393,15 +441,16 @@ def scene():
 def _relations():
     """Diplomacy graph — alliances / wars / pending offers between agents (season-3 'relation' entities;
     'peace' rows are just re-declare cooldowns, so they're skipped)."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT r.attrs->>'state' state, (r.attrs->>'a')::int a, (r.attrs->>'b')::int b, "
-                "(r.attrs->>'since')::int since, (r.attrs->>'proposer')::int proposer, "
-                "na.attrs->>'name' a_name, nb.attrs->>'name' b_name "
-                "FROM entities r LEFT JOIN entities na ON na.id=(r.attrs->>'a')::int "
-                "LEFT JOIN entities nb ON nb.id=(r.attrs->>'b')::int "
-                "WHERE r.type='relation' AND r.attrs->>'state' IN ('ally','war','offer') "
-                "ORDER BY (r.attrs->>'since')::int DESC")
-    rels = [dict(r) for r in cur.fetchall()]; conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT r.attrs->>'state' state, (r.attrs->>'a')::int a, (r.attrs->>'b')::int b, "
+                    "(r.attrs->>'since')::int since, (r.attrs->>'proposer')::int proposer, "
+                    "na.attrs->>'name' a_name, nb.attrs->>'name' b_name "
+                    "FROM entities r LEFT JOIN entities na ON na.id=(r.attrs->>'a')::int "
+                    "LEFT JOIN entities nb ON nb.id=(r.attrs->>'b')::int "
+                    "WHERE r.type='relation' AND r.attrs->>'state' IN ('ally','war','offer') "
+                    "ORDER BY (r.attrs->>'since')::int DESC")
+        rels = [dict(r) for r in cur.fetchall()]
     return {"relations": rels}
 
 
@@ -412,15 +461,15 @@ def relations():
 
 @app.get("/observe/{agent_id}")
 def observe_ep(agent_id: int):
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT 1 FROM entities WHERE id=%s AND type='agent'", (agent_id,))
-    if not cur.fetchone():
-        conn.close(); raise HTTPException(404, "no such agent")
-    obs = observe(cur, agent_id)
-    cur.execute("SELECT notices FROM world WHERE id=1")   # official announcements — world.notices, which the tick never overwrites
-    nrow = cur.fetchone()
-    obs["system_notices"] = (nrow["notices"] if nrow and nrow["notices"] else [])
-    conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT 1 FROM entities WHERE id=%s AND type='agent'", (agent_id,))
+        if not cur.fetchone():
+            raise HTTPException(404, "no such agent")
+        obs = observe(cur, agent_id)
+        cur.execute("SELECT notices FROM world WHERE id=1")   # official announcements — world.notices, which the tick never overwrites
+        nrow = cur.fetchone()
+        obs["system_notices"] = (nrow["notices"] if nrow and nrow["notices"] else [])
     return obs
 
 
@@ -478,53 +527,69 @@ def _reg_rate_exceeded(cid):
 @app.post("/agents")
 def register_agent(a: AgentIn, request: Request, response: Response):
     """Spawn a fresh agent with starting materials → returns its id (use it for observe/intent)."""
-    conn = _connect(); cur = conn.cursor()
-    tok = (a.token or "").strip()[:64]
-    if a.reuse:                                           # idempotent: keep one agent per name across restarts
-        cur.execute("SELECT id, attrs->>'token' t FROM entities WHERE type='agent' AND attrs->>'name'=%s ORDER BY id LIMIT 1", (a.name,))
-        row = cur.fetchone()
-        if row:
-            # IDEMPOTENT RE-REGISTER — creates nothing, so it bypasses ALL abuse guards (no name re-validation,
-            # no cookie required, no rate-limit count, no ban check). This is the legit-bot fast path.
-            if tok and not row[1]:                        # opt-in: bind the caller's token to a still-unprotected agent
-                cur.execute("UPDATE entities SET attrs = attrs || %s WHERE id=%s", (Json({"token": tok}), row[0])); conn.commit()
-            conn.close(); return {"agent_id": row[0], "reused": True, "token": (row[1] or tok)}
-        # reuse:True but NO existing agent with this name → falls through to NEW creation below (validated like any new).
+    with _closing(_connect()) as conn:                    # Fix #4: never leak the connection on any raise/return path
+        cur = conn.cursor()
+        tok = (a.token or "").strip()[:64]
+        if a.reuse:                                       # idempotent: keep one agent per name across restarts
+            cur.execute("SELECT id, attrs->>'token' t FROM entities WHERE type='agent' AND attrs->>'name'=%s ORDER BY id LIMIT 1", (a.name,))
+            row = cur.fetchone()
+            if row:
+                # IDEMPOTENT RE-REGISTER — creates nothing, so it bypasses the creation abuse guards (no name
+                # re-validation, no cookie required, no rate-limit count). This is the legit-bot fast path: a bot
+                # always re-sends its own token, which we verify below.
+                existing = row[1]
+                if existing:
+                    # Fix #3c: an already-protected agent can only be reused by a caller that PROVES the existing
+                    # token — no name-only claim, and no rebinding to a new secret (token is returned, never changed).
+                    if tok != existing:
+                        raise HTTPException(403, "bad or missing agent token")
+                    return {"agent_id": row[0], "reused": True, "token": existing}
+                # Legacy tokenless agent (pre-fix). Adopt-on-reuse ONLY if the caller opts in by sending a token —
+                # bind THAT. Do NOT auto-mint here: external BYO agents (codex/KimiClaw) re-register without a token
+                # and must STAY tokenless, else they'd be locked out of /intent (which is soft for tokenless — below).
+                if tok:
+                    cur.execute("UPDATE entities SET attrs = attrs || %s WHERE id=%s", (Json({"token": tok}), row[0])); conn.commit()
+                return {"agent_id": row[0], "reused": True, "token": tok or None}
+            # reuse:True but NO existing agent with this name → falls through to NEW creation below (validated like any new).
 
-    # ----- below here a NEW agent will be created → apply the three abuse guards -----
-    # Layer 3a: identify the caller's browser by cookie; mint one if absent (a missing cookie is NOT a ban reason).
-    cid = request.cookies.get("nha_cid", "")
-    if not cid:
-        cid = uuid.uuid4().hex
-        response.set_cookie("nha_cid", cid, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
-    if cid in banned_cids:
-        conn.close()
-        raise HTTPException(403, "registration blocked")
-    # Layer 1+2: validate the requested name (format) and screen it against the blocklist. A blocked name
-    # both rejects this request AND bans the cookie (the abuser tried 7× with the same slur).
-    name = (a.name or "")
-    if _name_blocked(name):
-        banned_cids.add(cid); conn.close()
-        raise HTTPException(400, "name not allowed")
-    if not _NAME_OK_RX.match(name):
-        conn.close()
-        raise HTTPException(400, "name must be 1-24 chars of letters, digits, spaces and basic punctuation")
-    # Layer 3b: count this NEW creation against the per-cookie rate limit; ban if it blows past the window cap.
-    if _reg_rate_exceeded(cid):
-        banned_cids.add(cid); conn.close()
-        raise HTTPException(403, "too many registrations")
+        # ----- below here a NEW agent will be created → apply the three abuse guards -----
+        # Layer 3a: identify the caller's browser by cookie; mint one if absent (a missing cookie is NOT a ban reason).
+        cid = request.cookies.get("nha_cid", "")
+        if not cid:
+            cid = uuid.uuid4().hex
+            response.set_cookie("nha_cid", cid, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
+        if cid in banned_cids:
+            raise HTTPException(403, "registration blocked")
+        # Layer 1+2: validate the requested name (format) and screen it against the blocklist. A blocked name
+        # both rejects this request AND bans the cookie (the abuser tried 7× with the same slur).
+        name = (a.name or "")
+        if _name_blocked(name):
+            banned_cids.add(cid)
+            raise HTTPException(400, "name not allowed")
+        if not _NAME_OK_RX.match(name):
+            raise HTTPException(400, "name must be 1-24 chars of letters, digits, spaces and basic punctuation")
+        # Layer 3b: count this NEW creation against the per-cookie rate limit; ban if it blows past the window cap.
+        if _reg_rate_exceeded(cid):
+            banned_cids.add(cid)
+            raise HTTPException(403, "too many registrations")
 
-    cur.execute("SELECT tick FROM world WHERE id=1"); born = cur.fetchone()[0]
-    # materialize hp/hp_max + stamp the born tick at creation (NOT lazily) so serialized attrs are uniform and
-    # path-independent for the state-hash chain (P3). The x/y RNG is a one-time pre-tick INSERT never read by a
-    # hashed tick before commit, so it does not perturb the deterministic replay chain.
-    attrs = {"name": a.name, "hp": engine.HP_MAX, "hp_max": engine.HP_MAX, "born": born}
-    if tok:
+        cur.execute("SELECT tick FROM world WHERE id=1"); born = cur.fetchone()[0]
+        # materialize hp/hp_max + stamp the born tick at creation (NOT lazily) so serialized attrs are uniform and
+        # path-independent for the state-hash chain (P3). The x/y RNG is a one-time pre-tick INSERT never read by a
+        # hashed tick before commit, so it does not perturb the deterministic replay chain.
+        attrs = {"name": a.name, "hp": engine.HP_MAX, "hp_max": engine.HP_MAX, "born": born}
+        # Fix #3a: every NEW agent is born WITH a token (auto-minted if the caller didn't send one) — no tokenless
+        # agents, so /intent always has a secret to enforce. The token is returned exactly once, here.
+        if not tok:
+            tok = uuid.uuid4().hex
         attrs["token"] = tok
-    cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('agent',%s,%s,%s,%s) RETURNING id",
-                (random.randint(0, WORLD_W - 1), random.randint(0, WORLD_H - 1), Json(a.materials), Json(attrs)))
-    aid = cur.fetchone()[0]; conn.commit(); conn.close()
-    return {"agent_id": aid, "materials": a.materials, "token": tok}
+        # Fix #1: clamp registration materials to the starter allowlist (per-key caps) + force fixed-credits;
+        # the caller can NO LONGER mint arbitrary credits/rare goods by stuffing AgentIn.materials.
+        materials = _sanitize_starter_materials(a.materials)
+        cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('agent',%s,%s,%s,%s) RETURNING id",
+                    (random.randint(0, WORLD_W - 1), random.randint(0, WORLD_H - 1), Json(materials), Json(attrs)))
+        aid = cur.fetchone()[0]; conn.commit()
+    return {"agent_id": aid, "materials": materials, "token": tok}
 
 
 class IntentIn(BaseModel):
@@ -538,37 +603,42 @@ class IntentIn(BaseModel):
 @app.post("/intent")
 def submit_intent(it: IntentIn):
     """Enqueue an agent action. Applied (or loop-guarded) on the next tick — the world is authoritative."""
-    conn = _connect(); cur = conn.cursor()
-    cur.execute("SELECT attrs->>'token' t FROM entities WHERE id=%s AND type='agent'", (it.agent,))
-    row = cur.fetchone()
-    if not row:
-        conn.close(); raise HTTPException(404, "no such agent")
-    if row[0] and it.token != row[0]:                 # token enforced only for agents that opted in (back-compat for the rest)
-        conn.close(); raise HTTPException(403, "bad or missing agent token")
-    cur.execute("INSERT INTO intents(agent, verb, args) VALUES(%s,%s,%s) RETURNING id",
-                (it.agent, it.verb, Json(it.args)))
-    iid = cur.fetchone()[0]; conn.commit(); conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT attrs->>'token' t FROM entities WHERE id=%s AND type='agent'", (it.agent,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "no such agent")
+        # Soft token: enforce ONLY if the agent has one. New agents are born with a token (Fix #3a) and the reuse
+        # path won't rebind a protected one (Fix #3c), so impersonation of token-holders is closed; pre-fix tokenless
+        # external agents (codex/KimiClaw) keep working rather than getting locked out of /intent.
+        if row[0] and it.token != row[0]:
+            raise HTTPException(403, "bad or missing agent token")
+        cur.execute("INSERT INTO intents(agent, verb, args) VALUES(%s,%s,%s) RETURNING id",
+                    (it.agent, it.verb, Json(it.args)))
+        iid = cur.fetchone()[0]; conn.commit()
     return {"queued_intent": iid, "note": "applied on next tick"}
 
 
 # ---------- spectator surface (watch the agents play) ----------
 def _list_agents():
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
-    cur.execute("""
-        SELECT e.id, e.attrs->>'name' name, e.buffers,
-          (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
-          (e.attrs->>'hp')::int hp, (e.attrs->>'hp_max')::int hp_max,
-          (e.attrs->>'kills')::int kills, (e.attrs->>'deaths')::int deaths,
-          (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='escape')) reached_space,
-          (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
-          (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles,
-          (SELECT max(tick) FROM events ev WHERE ev.entity=e.id AND ev.kind='act') last_act,
-          (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s)
-                          OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
-        FROM entities e WHERE e.type='agent'                 -- whole roster; offline shown greyed, online first
-        ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS, t - ONLINE_TICKS))
-    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
+        cur.execute("""
+            SELECT e.id, e.attrs->>'name' name, e.buffers,
+              (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
+              (e.attrs->>'hp')::int hp, (e.attrs->>'hp_max')::int hp_max,
+              (e.attrs->>'kills')::int kills, (e.attrs->>'deaths')::int deaths,
+              (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='escape')) reached_space,
+              (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
+              (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles,
+              (SELECT max(tick) FROM events ev WHERE ev.entity=e.id AND ev.kind='act') last_act,
+              (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s)
+                              OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
+            FROM entities e WHERE e.type='agent'                 -- whole roster; offline shown greyed, online first
+            ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS, t - ONLINE_TICKS))
+        rows = [dict(r) for r in cur.fetchall()]
     return {"agents": rows, "tick": t}
 
 
@@ -578,37 +648,42 @@ def list_agents():
 
 
 @app.get("/feed")
-def feed(limit: int = 30):
+def feed(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
     """Recent agent actions (newest first) — the spectator activity stream."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("""
-        SELECT i.id, i.agent, a.attrs->>'name' agent_name, i.verb, i.args, i.status, i.result
-        FROM intents i LEFT JOIN entities a ON a.id = i.agent
-        WHERE i.status <> 'pending' ORDER BY i.id DESC LIMIT %s""", (limit,))
-    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    limit = _clamp_limit(limit)
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT i.id, i.agent, a.attrs->>'name' agent_name, i.verb, i.args, i.status, i.result
+            FROM intents i LEFT JOIN entities a ON a.id = i.agent
+            WHERE i.status <> 'pending' ORDER BY i.id DESC LIMIT %s""", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
     return {"actions": rows}
 
 
 @app.get("/market")
 def market():
     """Open order book + last clearing price per resource."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT id,agent,side,resource,qty,price FROM market_orders "
-                "WHERE status='open' ORDER BY resource, side, price DESC, id")
-    orders = [dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT attrs->'last' last FROM entities WHERE type='market' LIMIT 1")
-    row = cur.fetchone(); conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id,agent,side,resource,qty,price FROM market_orders "
+                    "WHERE status='open' ORDER BY resource, side, price DESC, id")
+        orders = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT attrs->'last' last FROM entities WHERE type='market' LIMIT 1")
+        row = cur.fetchone()
     return {"orders": orders, "last_prices": (row["last"] if row and row["last"] else {})}
 
 
 @app.get("/chat")
-def chat(limit: int = 30):
+def chat(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
     """Recent messages (agent broadcasts + DMs + human advisers) — the social feed."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
-                "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
-                "ORDER BY m.id DESC LIMIT %s", (limit,))
-    msgs = [dict(r) for r in cur.fetchall()]; conn.close()
+    limit = _clamp_limit(limit)
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
+                    "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
+                    "ORDER BY m.id DESC LIMIT %s", (limit,))
+        msgs = [dict(r) for r in cur.fetchall()]
     return {"messages": msgs}
 
 
@@ -647,32 +722,35 @@ def human_say(s: HumanSay):
     text = clean_text(s.text)
     if not nick or not text:
         raise HTTPException(400, "nick must be letters/digits and text must be non-empty")
-    conn = _connect(); cur = conn.cursor()
-    cur.execute("SELECT id FROM entities WHERE type='human' AND attrs->>'name'=%s LIMIT 1", (nick,))
-    row = cur.fetchone()
-    if row:
-        hid = row[0]
-    else:
-        cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('human',0,0,%s) RETURNING id",
-                    (Json({"name": nick}),))
-        hid = cur.fetchone()[0]
-    cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()[0]
-    cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, hid, text))
-    conn.commit(); conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM entities WHERE type='human' AND attrs->>'name'=%s LIMIT 1", (nick,))
+        row = cur.fetchone()
+        if row:
+            hid = row[0]
+        else:
+            cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('human',0,0,%s) RETURNING id",
+                        (Json({"name": nick}),))
+            hid = cur.fetchone()[0]
+        cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()[0]
+        cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, hid, text))
+        conn.commit()
     return {"ok": True}
 
 
 @app.get("/log")
-def server_log(limit: int = 60, kind: str = ""):
+def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = ""):
     """Full server log — every world event + agent action, newest first.
     Optional ?kind=escape,invent (comma-separated) to filter to specific event kinds."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    if kind:
-        kinds = [k.strip() for k in kind.split(",") if k.strip()]
-        cur.execute("SELECT tick, entity, kind, data FROM events WHERE kind = ANY(%s) ORDER BY id DESC LIMIT %s", (kinds, limit))
-    else:
-        cur.execute("SELECT tick, entity, kind, data FROM events ORDER BY id DESC LIMIT %s", (limit,))
-    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    limit = _clamp_limit(limit)
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        if kind:
+            kinds = [k.strip() for k in kind.split(",") if k.strip()]
+            cur.execute("SELECT tick, entity, kind, data FROM events WHERE kind = ANY(%s) ORDER BY id DESC LIMIT %s", (kinds, limit))
+        else:
+            cur.execute("SELECT tick, entity, kind, data FROM events ORDER BY id DESC LIMIT %s", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
     return {"log": rows}
 
 
@@ -681,50 +759,53 @@ def _milestones(limit):
     matter aren't buried under the move/mine/finalize firehose the way they are in /log. Season 3 adds the
     milestone-worthy war/peace/attune/destroyed events (the high-frequency damage/theft/attack/dock/mine
     firehose stays in /log only)."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name', "
-                "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
-                "  (SELECT discoverer_name FROM dynamic_rules WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1)) name, e.kind, e.data "
-                "FROM events e LEFT JOIN entities a ON a.id = e.entity "
-                "WHERE e.kind IN ('escape','invent','reject','generate','war','peace','attune','destroyed') "
-                "ORDER BY e.id DESC LIMIT %s", (limit,))
-    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    limit = _clamp_limit(limit)
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name', "
+                    "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
+                    "  (SELECT discoverer_name FROM dynamic_rules WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1)) name, e.kind, e.data "
+                    "FROM events e LEFT JOIN entities a ON a.id = e.entity "
+                    "WHERE e.kind IN ('escape','invent','reject','generate','war','peace','attune','destroyed') "
+                    "ORDER BY e.id DESC LIMIT %s", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
     return {"milestones": rows}
 
 
 @app.get("/milestones")
-def milestones(limit: int = 40):
+def milestones(limit: int = Query(40, ge=LIMIT_MIN, le=LIMIT_MAX)):
+    limit = _clamp_limit(limit)
     return _cached(("milestones", limit), lambda: _milestones(limit))
 
 
 def _records():
     """Hall of fame — firsts and bests across the world (cheap aggregate snapshot)."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
     out = {}
-    cur.execute("SELECT e.tick, a.attrs->>'name' name, (e.data->>'twr')::float twr "
-                "FROM events e LEFT JOIN entities a ON a.id = e.entity "
-                "WHERE e.kind='escape' ORDER BY e.tick")
-    esc = [dict(r) for r in cur.fetchall()]
-    out["space"] = {"count": len(esc), "first": (esc[0] if esc else None), "all": esc}
-    cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle' AND (attrs->>'flies')='true'")
-    out["flying_vehicles"] = cur.fetchone()["c"]
-    cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle'")
-    out["total_vehicles"] = cur.fetchone()["c"]
-    cur.execute("SELECT o.attrs->>'name' owner, v.attrs->>'name' name, (v.attrs->>'v_air')::int v_air, "
-                "(v.attrs->>'mass')::int mass FROM entities v LEFT JOIN entities o ON o.id = v.owner "
-                "WHERE v.type='vehicle' AND (v.attrs->>'flies')='true' "
-                "ORDER BY (v.attrs->>'v_air')::int DESC NULLS LAST LIMIT 1")
-    out["fastest_aircraft"] = cur.fetchone()
-    cur.execute("SELECT attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
-                "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC LIMIT 1")
-    out["top_inventor"] = cur.fetchone()
-    cur.execute("SELECT a.attrs->>'name' name, count(*) n FROM entities v JOIN entities a ON a.id = v.owner "
-                "WHERE v.type='vehicle' GROUP BY 1 ORDER BY n DESC LIMIT 1")
-    out["most_vehicles"] = cur.fetchone()
-    cur.execute("SELECT attrs->>'name' name, (buffers->>'credits')::int cr FROM entities "
-                "WHERE type='agent' ORDER BY (buffers->>'credits')::int DESC NULLS LAST LIMIT 1")
-    out["richest"] = cur.fetchone()
-    conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT e.tick, a.attrs->>'name' name, (e.data->>'twr')::float twr "
+                    "FROM events e LEFT JOIN entities a ON a.id = e.entity "
+                    "WHERE e.kind='escape' ORDER BY e.tick")
+        esc = [dict(r) for r in cur.fetchall()]
+        out["space"] = {"count": len(esc), "first": (esc[0] if esc else None), "all": esc}
+        cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle' AND (attrs->>'flies')='true'")
+        out["flying_vehicles"] = cur.fetchone()["c"]
+        cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle'")
+        out["total_vehicles"] = cur.fetchone()["c"]
+        cur.execute("SELECT o.attrs->>'name' owner, v.attrs->>'name' name, (v.attrs->>'v_air')::int v_air, "
+                    "(v.attrs->>'mass')::int mass FROM entities v LEFT JOIN entities o ON o.id = v.owner "
+                    "WHERE v.type='vehicle' AND (v.attrs->>'flies')='true' "
+                    "ORDER BY (v.attrs->>'v_air')::int DESC NULLS LAST LIMIT 1")
+        out["fastest_aircraft"] = cur.fetchone()
+        cur.execute("SELECT attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
+                    "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC LIMIT 1")
+        out["top_inventor"] = cur.fetchone()
+        cur.execute("SELECT a.attrs->>'name' name, count(*) n FROM entities v JOIN entities a ON a.id = v.owner "
+                    "WHERE v.type='vehicle' GROUP BY 1 ORDER BY n DESC LIMIT 1")
+        out["most_vehicles"] = cur.fetchone()
+        cur.execute("SELECT attrs->>'name' name, (buffers->>'credits')::int cr FROM entities "
+                    "WHERE type='agent' ORDER BY (buffers->>'credits')::int DESC NULLS LAST LIMIT 1")
+        out["richest"] = cur.fetchone()
     return out
 
 
@@ -736,24 +817,24 @@ def records():
 @app.get("/agent/{agent_id}")
 def agent_profile(agent_id: int):
     """One agent's full story — stats, inventory, vehicles, discoveries and its milestone timeline."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT id, x, y, buffers, attrs FROM entities WHERE id=%s AND type='agent'", (agent_id,))
-    a = cur.fetchone()
-    if not a:
-        conn.close(); raise HTTPException(404, "no such agent")
-    cur.execute("SELECT attrs->>'name' name, (attrs->>'flies')::boolean flies, (attrs->>'drives')::boolean drives, "
-                "(attrs->>'v_air')::int v_air, (attrs->>'mass')::int mass, (attrs->>'autonomous')::boolean autonomous "
-                "FROM entities WHERE type='vehicle' AND owner=%s ORDER BY id DESC LIMIT 60", (agent_id,))
-    vehicles = [dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT name, points, tick FROM discoveries WHERE discoverer=%s "
-                "UNION ALL SELECT name, points, tick FROM dynamic_rules WHERE discoverer=%s ORDER BY tick", (agent_id, agent_id))
-    discoveries = [dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT tick, kind, data FROM events WHERE entity=%s AND kind IN ('escape','invent','reject','build') "
-                "ORDER BY id DESC LIMIT 40", (agent_id,))
-    milestones = [dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle' AND owner=%s", (agent_id,))
-    nveh = cur.fetchone()["c"]
-    conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, x, y, buffers, attrs FROM entities WHERE id=%s AND type='agent'", (agent_id,))
+        a = cur.fetchone()
+        if not a:
+            raise HTTPException(404, "no such agent")
+        cur.execute("SELECT attrs->>'name' name, (attrs->>'flies')::boolean flies, (attrs->>'drives')::boolean drives, "
+                    "(attrs->>'v_air')::int v_air, (attrs->>'mass')::int mass, (attrs->>'autonomous')::boolean autonomous "
+                    "FROM entities WHERE type='vehicle' AND owner=%s ORDER BY id DESC LIMIT 60", (agent_id,))
+        vehicles = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT name, points, tick FROM discoveries WHERE discoverer=%s "
+                    "UNION ALL SELECT name, points, tick FROM dynamic_rules WHERE discoverer=%s ORDER BY tick", (agent_id, agent_id))
+        discoveries = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT tick, kind, data FROM events WHERE entity=%s AND kind IN ('escape','invent','reject','build') "
+                    "ORDER BY id DESC LIMIT 40", (agent_id,))
+        milestones = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle' AND owner=%s", (agent_id,))
+        nveh = cur.fetchone()["c"]
     return {"agent": dict(a), "vehicles": vehicles, "vehicle_count": nveh,
             "discoveries": discoveries, "milestones": milestones}
 
@@ -761,33 +842,37 @@ def agent_profile(agent_id: int):
 def _timeline(limit):
     """Chronological milestone history — discoveries, escapes, landings, elevator completions, attunements
     (oldest first)."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT e.tick, e.kind, COALESCE(a.attrs->>'name', "
-                "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
-                "  (SELECT discoverer_name FROM dynamic_rules WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1)) name, e.data "
-                "FROM events e LEFT JOIN entities a ON a.id = e.entity "
-                "WHERE e.kind IN ('escape','invent','land','build','attune','destroyed','ally','war','peace','generate') "
-                "ORDER BY e.id DESC LIMIT %s", (limit,))
-    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    limit = _clamp_limit(limit)
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT e.tick, e.kind, COALESCE(a.attrs->>'name', "
+                    "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
+                    "  (SELECT discoverer_name FROM dynamic_rules WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1)) name, e.data "
+                    "FROM events e LEFT JOIN entities a ON a.id = e.entity "
+                    "WHERE e.kind IN ('escape','invent','land','build','attune','destroyed','ally','war','peace','generate') "
+                    "ORDER BY e.id DESC LIMIT %s", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
     return {"timeline": rows}
 
 
 @app.get("/timeline")
-def timeline(limit: int = 150):
+def timeline(limit: int = Query(150, ge=LIMIT_MIN, le=LIMIT_MAX)):
+    limit = _clamp_limit(limit)
     return _cached(("timeline", limit), lambda: _timeline(limit))
 
 
 def _roster():
     """Every agent (online + offline) for the Profile browser — id, name, points, in_space, online flag."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
-    cur.execute("""SELECT e.id, e.attrs->>'name' name, (e.attrs->>'inventor_points')::int pts,
-                     (e.attrs->>'in_space')::boolean in_space,
-                     (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s)
-                          OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
-                   FROM entities e WHERE e.type='agent'
-                   ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS, t - ONLINE_TICKS))
-    rows = [dict(r) for r in cur.fetchall()]; conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
+        cur.execute("""SELECT e.id, e.attrs->>'name' name, (e.attrs->>'inventor_points')::int pts,
+                         (e.attrs->>'in_space')::boolean in_space,
+                         (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s)
+                              OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
+                       FROM entities e WHERE e.type='agent'
+                       ORDER BY online DESC, (e.attrs->>'inventor_points')::int DESC NULLS LAST, e.id""", (t - ONLINE_TICKS, t - ONLINE_TICKS))
+        rows = [dict(r) for r in cur.fetchall()]
     return {"agents": rows}
 
 
@@ -799,15 +884,16 @@ def roster():
 @app.get("/rules")
 def rules():
     """Crafting Codex — resources + properties, the formation patterns, and who discovered each."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT d.rule_key, d.name, COALESCE(a.attrs->>'name', d.discoverer_name) discoverer, d.points "
-                "FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer")
-    disc = {r["rule_key"]: dict(r) for r in cur.fetchall()}
-    cur.execute("SELECT r.sig, r.item_key, r.name, r.props, r.points, COALESCE(a.attrs->>'name', r.discoverer_name) by "
-                "FROM dynamic_rules r LEFT JOIN entities a ON a.id = r.discoverer ORDER BY r.tick")
-    dynamic = [dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT count(*) c FROM proposals WHERE status='pending'")
-    pending = cur.fetchone()["c"]; conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT d.rule_key, d.name, COALESCE(a.attrs->>'name', d.discoverer_name) discoverer, d.points "
+                    "FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer")
+        disc = {r["rule_key"]: dict(r) for r in cur.fetchall()}
+        cur.execute("SELECT r.sig, r.item_key, r.name, r.props, r.points, COALESCE(a.attrs->>'name', r.discoverer_name) by "
+                    "FROM dynamic_rules r LEFT JOIN entities a ON a.id = r.discoverer ORDER BY r.tick")
+        dynamic = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT count(*) c FROM proposals WHERE status='pending'")
+        pending = cur.fetchone()["c"]
     return {"resources": crafting.PROPS, "pending": pending, "dynamic": dynamic,
             "recipes": [{"item": k, "needs": crafting.RULE_NOTE.get(k, ""),
                          "props": (crafting.ITEM_PROPS.get(k) or crafting.PROPS.get(k, {})), "discovered": disc.get(k)}
@@ -817,35 +903,37 @@ def rules():
 @app.get("/inventors")
 def inventors():
     """Inventor leaderboard + the discovery timeline."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT id, attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
-                "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC")
-    board = [dict(r) for r in cur.fetchall()]
-    cur.execute("""SELECT d.name, d.points, COALESCE(a.attrs->>'name', d.discoverer_name) by, d.tick, d.rule_key key, false guild
-                     FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer
-                   UNION ALL
-                   SELECT r.name, r.points, COALESCE(a.attrs->>'name', r.discoverer_name) by, r.tick, r.item_key key, true guild
-                     FROM dynamic_rules r LEFT JOIN entities a ON a.id = r.discoverer
-                   ORDER BY tick""")
-    discs = [dict(r) for r in cur.fetchall()]; conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
+                    "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC")
+        board = [dict(r) for r in cur.fetchall()]
+        cur.execute("""SELECT d.name, d.points, COALESCE(a.attrs->>'name', d.discoverer_name) by, d.tick, d.rule_key key, false guild
+                         FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer
+                       UNION ALL
+                       SELECT r.name, r.points, COALESCE(a.attrs->>'name', r.discoverer_name) by, r.tick, r.item_key key, true guild
+                         FROM dynamic_rules r LEFT JOIN entities a ON a.id = r.discoverer
+                       ORDER BY tick""")
+        discs = [dict(r) for r in cur.fetchall()]
     return {"leaderboard": board, "discoveries": discs}
 
 
 # ---------- Inventors' Guild — async LLM referee for novel (non-deterministic) inventions ----------
 @app.get("/guild/pending")
-def guild_pending(limit: int = 15):
+def guild_pending(limit: int = Query(15, ge=LIMIT_MIN, le=LIMIT_MAX)):
     """Open invention proposals awaiting a ruling, each with its ingredients' physics for the referee."""
-    conn = _connect(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT p.id, p.agent, a.attrs->>'name' agent_name, p.ings, p.proposed_name, p.sig "
-                "FROM proposals p LEFT JOIN entities a ON a.id = p.agent "
-                "WHERE p.status='pending' ORDER BY p.id LIMIT %s", (limit,))
-    rows = []
-    for r in cur.fetchall():
-        d = dict(r)
-        d["ingredient_props"] = {k: (crafting.PROPS.get(k) or crafting.ITEM_PROPS.get(k) or {})
-                                 for k in (r["ings"] or {})}
-        rows.append(d)
-    conn.close()
+    limit = _clamp_limit(limit)
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT p.id, p.agent, a.attrs->>'name' agent_name, p.ings, p.proposed_name, p.sig "
+                    "FROM proposals p LEFT JOIN entities a ON a.id = p.agent "
+                    "WHERE p.status='pending' ORDER BY p.id LIMIT %s", (limit,))
+        rows = []
+        for r in cur.fetchall():
+            d = dict(r)
+            d["ingredient_props"] = {k: (crafting.PROPS.get(k) or crafting.ITEM_PROPS.get(k) or {})
+                                     for k in (r["ings"] or {})}
+            rows.append(d)
     return {"pending": rows}
 
 
@@ -862,27 +950,28 @@ class Verdict(BaseModel):
 @app.post("/guild/verdict")
 def guild_verdict(v: Verdict):
     """The Guild referee records its ruling here; the tick loop applies it (mint rule / grant / refund)."""
-    conn = _connect(); cur = conn.cursor()
-    cur.execute("SELECT status, ings FROM proposals WHERE id=%s", (v.proposal_id,))
-    row = cur.fetchone()
-    if not row:
-        conn.close(); raise HTTPException(404, "no such proposal")
-    if row[0] != "pending":
-        conn.close(); return {"ok": False, "note": f"already {row[0]}"}
-    if v.approved:
-        item_key = (v.item_key or v.name).strip().lower().replace(" ", "_")[:32]
-        if not item_key:
-            conn.close(); raise HTTPException(400, "approved verdict needs item_key or name")
-        pts = min(v.points if v.points > 0 else 8 + 2 * len(row[1] or {}), 30)   # cap invention points
-        props = {str(k)[:24]: max(0, min(10, int(val))) for k, val in (v.props or {}).items()
-                 if isinstance(val, (int, float))}                                # clamp props 0..10 (anti prompt-injection)
-        cur.execute("UPDATE proposals SET status='approved', item_key=%s, item_name=%s, props=%s, points=%s, "
-                    "reason=%s WHERE id=%s",
-                    (item_key, (v.name or item_key)[:32], Json(props), pts, v.reason[:200], v.proposal_id))
-    else:
-        cur.execute("UPDATE proposals SET status='rejected', reason=%s WHERE id=%s",
-                    (v.reason[:200], v.proposal_id))
-    conn.commit(); conn.close()
+    with _closing(_connect()) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT status, ings FROM proposals WHERE id=%s", (v.proposal_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "no such proposal")
+        if row[0] != "pending":
+            return {"ok": False, "note": f"already {row[0]}"}
+        if v.approved:
+            item_key = (v.item_key or v.name).strip().lower().replace(" ", "_")[:32]
+            if not item_key:
+                raise HTTPException(400, "approved verdict needs item_key or name")
+            pts = min(v.points if v.points > 0 else 8 + 2 * len(row[1] or {}), 30)   # cap invention points
+            props = {str(k)[:24]: max(0, min(10, int(val))) for k, val in (v.props or {}).items()
+                     if isinstance(val, (int, float))}                                # clamp props 0..10 (anti prompt-injection)
+            cur.execute("UPDATE proposals SET status='approved', item_key=%s, item_name=%s, props=%s, points=%s, "
+                        "reason=%s WHERE id=%s",
+                        (item_key, (v.name or item_key)[:32], Json(props), pts, v.reason[:200], v.proposal_id))
+        else:
+            cur.execute("UPDATE proposals SET status='rejected', reason=%s WHERE id=%s",
+                        (v.reason[:200], v.proposal_id))
+        conn.commit()
     return {"ok": True, "applied_on": "next tick"}
 
 
