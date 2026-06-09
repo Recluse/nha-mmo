@@ -415,11 +415,13 @@ def _scene():
                      "hp": r["hp"], "hp_max": r["hp_max"], "wrecked": bool(r["wrecked"])} for r in cur.fetchall()]
         cur.execute("SELECT id, attrs->>'shape' shape, x, y, (attrs->>'size')::int size, (attrs->>'height')::int height, "
                     "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt, "
-                    "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'ruined')::boolean ruined "
+                    "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'ruined')::boolean ruined, "
+                    "attrs->>'kind' kind, (attrs->>'w')::int mw, (attrs->>'h')::int mh, attrs->>'name' name "   # monument footprint + kind (NULL for ordinary structures)
                     "FROM entities WHERE type='structure'")
         structures = [{"id": r["id"], "shape": r["shape"], "x": r["x"], "y": r["y"], "size": r["size"] or 2,
                        "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"]),
-                       "alt": r["alt"] or 0, "hp": r["hp"], "hp_max": r["hp_max"], "ruined": bool(r["ruined"])}
+                       "alt": r["alt"] or 0, "hp": r["hp"], "hp_max": r["hp_max"], "ruined": bool(r["ruined"]),
+                       "kind": r["kind"], "w": r["mw"], "h": r["mh"], "name": r["name"]}   # kind/w/h only meaningful when shape=='monument'
                       for r in cur.fetchall()]
         cur.execute("SELECT x, y, (attrs->>'fuse')::int fuse FROM entities WHERE type='bomb'")
         bombs = [{"x": r["x"], "y": r["y"], "fuse": r["fuse"] or 0} for r in cur.fetchall()]
@@ -627,7 +629,7 @@ def _list_agents():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
         cur.execute("""
-            SELECT e.id, e.attrs->>'name' name, e.buffers,
+            SELECT e.id, e.attrs->>'name' name, e.attrs->>'title' title, e.buffers,
               (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
               (e.attrs->>'hp')::int hp, (e.attrs->>'hp_max')::int hp_max,
               (e.attrs->>'kills')::int kills, (e.attrs->>'deaths')::int deaths,
@@ -867,7 +869,7 @@ def _roster():
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
-        cur.execute("""SELECT e.id, e.attrs->>'name' name, (e.attrs->>'inventor_points')::int pts,
+        cur.execute("""SELECT e.id, e.attrs->>'name' name, e.attrs->>'title' title, (e.attrs->>'inventor_points')::int pts,
                          (e.attrs->>'in_space')::boolean in_space,
                          (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='act' AND ev.tick >= %s)
                               OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
@@ -1535,7 +1537,8 @@ async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)re
  const disc=(d.discoveries||[]).map(x=>`<div><b>${esc(x.name)}</b> <span class=sub>t${x.tick}</span> +${x.points}</div>`).reverse().join('')||`<div class=sub>${t('lbl_none')}</div>`;
  const ms=(d.milestones||[]).map(e=>{const dt=e.data||{};let tx;if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points+' pts';else if(e.kind=='invent')tx='invented '+esc(dt.name||dt.item)+' +'+dt.points;else if(e.kind=='build'&&dt.elevator)tx='orbital elevator complete +'+dt.points;else tx=esc(e.kind);return `<div><span class=sub>t${e.tick}</span> ${tx}</div>`;}).join('')||`<div class=sub>${t('lbl_none')}</div>`;
  $('profile').removeAttribute('data-i18n');
- $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span></h2><div>pos (${a.x},${a.y}) &middot; <span class=O>&#10084; ${at.hp||0}/${at.hp_max||100} hp</span> &middot; <span class=AG>&#9876; ${at.kills||0} kills / ${at.deaths||0} deaths</span> &middot; alt ${at.altitude||0}${at.in_space?` <span class=AG>${t('lbl_space_tag')}</span>`:''} &middot; ${at.inventor_points||0} pts</div><h2>${t('hdr_inventory')}</h2><div class=sub>${inv}</div><h2>${t('hdr_vehicles')} (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>${t('hdr_discoveries')}</h2><div class=feed>${disc}</div><h2>${t('hdr_milestones')}</h2><div class=feed>${ms}</div>`;}
+ const ptitle=at.title?` <span title="prestige title" style="background:#3a2d6b;color:#d9c6ff;border-radius:5px;padding:1px 7px;font-size:13px;font-weight:bold">&#127894; ${esc(at.title)}</span>`:'';   // 🏆 prestige title (monument builder)
+ $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span>${ptitle}</h2><div>pos (${a.x},${a.y}) &middot; <span class=O>&#10084; ${at.hp||0}/${at.hp_max||100} hp</span> &middot; <span class=AG>&#9876; ${at.kills||0} kills / ${at.deaths||0} deaths</span> &middot; alt ${at.altitude||0}${at.in_space?` <span class=AG>${t('lbl_space_tag')}</span>`:''} &middot; ${at.inventor_points||0} pts</div><h2>${t('hdr_inventory')}</h2><div class=sub>${inv}</div><h2>${t('hdr_vehicles')} (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>${t('hdr_discoveries')}</h2><div class=feed>${disc}</div><h2>${t('hdr_milestones')}</h2><div class=feed>${ms}</div>`;}
 $('pload').onclick=()=>loadProfile($('pid').value);
 function colorize(s){let o='';for(const ch of s){
  if(ch==='*')o+='<span class=O>*</span>';               // generic ore
@@ -1584,7 +1587,8 @@ async function tick(){
    const ago=(a.tick!=null&&g.last_act!=null)?(a.tick-g.last_act):null;        // ticks since last action
    const dot=g.online?'<span style="color:#3fb950">&#9679;</span>':`<span style="color:#7d8590">&#9675;</span>`;
    const seen=g.online?'':` <span class=sub>(${g.last_act!=null?('last seen '+ago+'t ago'):'never acted'})</span>`;
-   return `<tr${g.online?'':' style="opacity:.5"'}><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${dot} ${g.name||''}${seen}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td><span class=AG>${g.kills||0}</span>/${g.deaths||0}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
+   const ttl=g.title?` <span title="prestige title" style="background:#3a2d6b;color:#d9c6ff;border-radius:4px;padding:0 5px;font-size:11px;font-weight:bold;white-space:nowrap">&#127894; ${esc(g.title)}</span>`:'';   // 🏆 monument-builder prestige title badge
+   return `<tr${g.online?'':' style="opacity:.5"'}><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${dot} ${g.name||''}${ttl}${seen}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td><span class=AG>${g.kills||0}</span>/${g.deaths||0}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
   }).join('')||`<tr><td colspan=10 class=sub>${t('ph_no_agents')}</td></tr>`;
  }
  const d=await j('/depot');
@@ -1653,7 +1657,7 @@ async function tick(){
   return `<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${tx}</div>`;}).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}
  const ro=await j('/roster');
  if(ro){const on=ro.agents.filter(a=>a.online).length;
-  $('roster').innerHTML=`<span class=sub>${on} ${t('lbl_online_of')} / ${ro.agents.length} ${t('lbl_total')} &mdash; </span>`+ro.agents.map(a=>`<a style="cursor:pointer;color:${a.online?'#3fb950':'#7d8590'}" onclick="loadProfile(${a.id})">${a.id} ${esc(a.name||'?')}${a.in_space?' ['+t('lbl_space_tag')+']':''}</a>`).join(' &middot; ')||`<span class=sub>${t('ph_no_agents_short')}</span>`;}
+  $('roster').innerHTML=`<span class=sub>${on} ${t('lbl_online_of')} / ${ro.agents.length} ${t('lbl_total')} &mdash; </span>`+ro.agents.map(a=>`<a style="cursor:pointer;color:${a.online?'#3fb950':'#7d8590'}" onclick="loadProfile(${a.id})">${a.id} ${esc(a.name||'?')}${a.title?' <span style="color:#b9a3ff" title="prestige title">&#127894;'+esc(a.title)+'</span>':''}${a.in_space?' ['+t('lbl_space_tag')+']':''}</a>`).join(' &middot; ')||`<span class=sub>${t('ph_no_agents_short')}</span>`;}
  const rl=await j('/rules');
  if(rl){
   $('codex_rec').innerHTML=`<table><tr><th>${t('col_item')}<th>${t('col_recipe_phys')}<th>${t('col_inventor')}</tr>`+rl.recipes.map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:`<span class=sub>${t('lbl_undiscovered')}</span>`}</tr>`).join('')+'</table>';
@@ -1673,8 +1677,15 @@ function initWorld3D(){
  const cam=new T.PerspectiveCamera(55, host.clientWidth/host.clientHeight, 0.5, 3000);
  sc.add(new T.AmbientLight(0xffffff,0.75));
  const sun=new T.DirectionalLight(0xfff0d0,0.9); sun.position.set(80,160,50); sc.add(sun);
- const moon=new T.Mesh(new T.SphereGeometry(9,24,18),new T.MeshLambertMaterial({color:0xd0d4db,emissive:0x20232a}));
- moon.position.set(0,72,-28); sc.add(moon);                                  // the Moon — the altitude-600 goal floats above the world
+ function moonTex(){const c=document.createElement('canvas');c.width=512;c.height=256;const g=c.getContext('2d');
+  g.fillStyle='#b8bcc4';g.fillRect(0,0,512,256);                                                  // base regolith grey
+  for(let i=0;i<7;i++){const x=(i*97+40)%512,y=(i*53+30)%256,r=24+(i*13)%40;g.fillStyle='rgba(122,126,136,0.5)';g.beginPath();g.arc(x,y,r,0,7);g.fill();}   // dark maria seas
+  for(let i=0;i<95;i++){const x=(i*131+17)%512,y=(i*71+29)%256,r=2+(i*7)%9;                        // craters: bright rim + dark floor
+   g.fillStyle='rgba(158,162,170,0.85)';g.beginPath();g.arc(x,y,r,0,7);g.fill();
+   g.fillStyle='rgba(92,96,106,0.85)';g.beginPath();g.arc(x,y,r*0.66,0,7);g.fill();}
+  const tx=new T.CanvasTexture(c);return tx;}
+ const moon=new T.Mesh(new T.SphereGeometry(9,32,24),new T.MeshLambertMaterial({map:moonTex(),emissive:0x20232a}));
+ moon.position.set(0,72,-28); sc.add(moon);                                  // the Moon — procedural craters+maria texture; the altitude-600 goal floats above the world
  const stormMesh=new T.Mesh(new T.SphereGeometry(14,16,12),new T.MeshBasicMaterial({color:0x8aa0b8,transparent:true,opacity:0.16}));
  stormMesh.visible=false; sc.add(stormMesh);                                  // drifting storm — mining/chopping under it is halved
  const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(), astG=new T.Group(), artG=new T.Group();
@@ -1789,12 +1800,94 @@ function initWorld3D(){
   grp.quaternion.setFromUnitVectors(new T.Vector3(0,1,0),n);
   return grp;
  }
+ // ---------- terrain MONUMENTS (megastructures) ----------
+ // A monument is a structure with shape=='monument' that spans a w x h footprint of terrain cells whose SW
+ // corner is (s.x,s.y). Each `kind` gets a distinct, recognizable silhouette built from primitives in
+ // stone/marble/bronze tones — clearly different from each other and from the ordinary box/cylinder buildings.
+ // We center the group over the footprint (cell center cx,cy -> P()) and size the geometry to fill it.
+ const MONTONE={stone:0x9b958a, marble:0xe6e2d8, dark:0x6f6a62, water:0x3a6ea5, bronze:0xb87333, bronzeDk:0x7a4a1e};
+ function monMat(col,emi){return new T.MeshLambertMaterial({color:col,emissive:emi||0x141210,flatShading:true});}
+ function makeMonument(s){
+  const grp=new T.Group();
+  const w=Math.max(1,s.w||3), h=Math.max(1,s.h||3);          // footprint in cells (engine guarantees w*h>=10)
+  const cx=s.x+(w-1)/2, cy=s.y+(h-1)/2;                       // footprint center in cell coords (SW corner is s.x,s.y)
+  const gp=P(cx,cy);                                          // ground at the footprint center -> world position
+  const longX=w>=h;                                           // arches/dam run along the LONGER axis
+  const span=Math.max(w,h), shortS=Math.min(w,h);            // long/short footprint extents (world units = cells)
+  const kind=s.kind||'castle', done=s.complete!==false;
+  const emi=done?0x1c1a16:0x0c0b0a;                           // subtle emissive (no animated sparkle — that's the Moon's thing)
+  if(kind=='aqueduct'){                                       // long row of repeated ARCHES along the long axis
+   const n=Math.max(3,Math.min(12,Math.round(span/2)));       // arch count scales with length
+   const pitch=span/n, pierW=Math.min(0.9,pitch*0.34), ah=Math.min(11,2.2+span*0.32), pierD=Math.min(2.2,shortS*0.8);
+   for(let i=0;i<n;i++){
+    const ox=-span/2+pitch*(i+0.5);                           // along the long axis
+    [-1,1].forEach(side=>{const m=new T.Mesh(new T.BoxGeometry(pierW,ah,pierW),monMat(MONTONE.stone,emi));   // a pair of piers
+     m.position.set(longX?ox:side*pierD*0.5, ah/2, longX?side*pierD*0.5:ox); grp.add(m);});
+    const lint=new T.Mesh(new T.BoxGeometry(longX?pitch*0.96:pierD+pierW,0.6,longX?pierD+pierW:pitch*0.96),monMat(MONTONE.marble,emi));   // spanning lintel
+    lint.position.set(longX?ox:0,ah+0.3,longX?0:ox); grp.add(lint);
+   }
+   const channel=new T.Mesh(new T.BoxGeometry(longX?span:pierD*0.4,0.5,longX?pierD*0.4:span),monMat(MONTONE.marble,emi));   // top water channel
+   channel.position.set(0,ah+0.85,0); grp.add(channel);
+  }else if(kind=='theater'){                                  // semicircular tiered AMPHITHEATER (concentric stepped arcs)
+   const tiers=Math.max(4,Math.min(9,Math.round(span/1.5))), Rmax=span/2;
+   for(let i=0;i<tiers;i++){const r=Rmax*(1-i/(tiers+1)), step=0.55+i*0.42;
+    const ring=new T.Mesh(new T.CylinderGeometry(r,r,step,28,1,true,Math.PI,Math.PI),monMat(i%2?MONTONE.stone:MONTONE.marble,emi));   // a half-ring (theta 0..pi)
+    ring.position.y=step/2; grp.add(ring);
+    const seat=new T.Mesh(new T.TorusGeometry(r*0.96,0.16,6,24,Math.PI),monMat(MONTONE.dark,emi));   // seat lip on each tier
+    seat.rotation.x=Math.PI/2; seat.position.y=step; grp.add(seat);
+   }
+   const stage=new T.Mesh(new T.CylinderGeometry(Rmax*0.34,Rmax*0.34,0.4,20,1,false,Math.PI,Math.PI),monMat(MONTONE.marble,emi));   // flat stage at the focus
+   stage.position.y=0.2; grp.add(stage);
+   if(longX===false)grp.rotation.y=Math.PI/2;                 // face the bowl along the short axis
+  }else if(kind=='temple'){                                   // grid of COLUMNS + flat roof slab + triangular pediment
+   const ch=Math.min(9,2.4+span*0.34);                        // column height
+   const cols=Math.max(3,Math.min(7,Math.round(w/1.4))), rows=Math.max(2,Math.min(5,Math.round(h/1.6)));
+   const gx=(w-1.2)/(cols-1||1), gz=(h-1.2)/(rows-1||1);
+   for(let i=0;i<cols;i++)for(let k=0;k<rows;k++){if(i>0&&i<cols-1&&k>0&&k<rows-1)continue;   // peristyle: outer ring of columns only
+    const m=new T.Mesh(new T.CylinderGeometry(0.34,0.4,ch,12),monMat(MONTONE.marble,emi));
+    m.position.set(-w/2+0.6+i*gx, ch/2, -h/2+0.6+k*gz); grp.add(m);}
+   const roof=new T.Mesh(new T.BoxGeometry(w,0.6,h),monMat(MONTONE.stone,emi)); roof.position.y=ch+0.3; grp.add(roof);
+   const ped=new T.Mesh(new T.CylinderGeometry(0.01,Math.min(w,3)/1.4,1.4,3),monMat(MONTONE.marble,emi));   // triangular pediment (3-sided prism)
+   ped.rotation.y=Math.PI/2; ped.scale.z=w/(Math.min(w,3)/0.7); ped.position.set(0,ch+1.3,-h/2+0.2); grp.add(ped);
+  }else if(kind=='dam'){                                      // long angled wall slab across the footprint, blue upstream face
+   const wallH=Math.min(13,3+span*0.42), len=span*1.02, thick=Math.max(1.2,shortS*0.7);
+   const wall=new T.Mesh(new T.BoxGeometry(longX?len:thick,wallH,longX?thick:len),monMat(MONTONE.stone,emi));
+   wall.position.y=wallH/2; grp.add(wall);
+   const face=new T.Mesh(new T.BoxGeometry(longX?len:0.25,wallH*0.92,longX?0.25:len),monMat(MONTONE.water,0x0a1830));   // water-blue upstream face
+   face.position.set(longX?0:-thick/2-0.13,wallH*0.46,longX?-thick/2-0.13:0); grp.add(face);
+   grp.rotation.y=(longX?1:-1)*0.16;                          // subtle angle across the valley
+  }else if(kind=='statue'){                                   // tall PEDESTAL + humanoid FIGURE on top, bronze tone
+   const base=Math.min(shortS,4), ph=Math.min(8,2.2+span*0.3);
+   const ped=new T.Mesh(new T.BoxGeometry(base,ph,base),monMat(MONTONE.stone,emi)); ped.position.y=ph/2; grp.add(ped);
+   const fh=ph*0.85, fig=new T.Group();                       // simple humanoid: torso + head + arms + legs
+   const torso=new T.Mesh(new T.BoxGeometry(base*0.34,fh*0.5,base*0.22),monMat(MONTONE.bronze,0x2a1606)); torso.position.y=fh*0.55; fig.add(torso);
+   const head=new T.Mesh(new T.SphereGeometry(base*0.16,12,10),monMat(MONTONE.bronze,0x2a1606)); head.position.y=fh*0.9; fig.add(head);
+   [-1,1].forEach(sd=>{const arm=new T.Mesh(new T.BoxGeometry(base*0.1,fh*0.42,base*0.1),monMat(MONTONE.bronzeDk,0x2a1606));
+    arm.position.set(sd*base*0.26,fh*0.58,0); arm.rotation.z=sd*0.5; fig.add(arm);
+    const leg=new T.Mesh(new T.BoxGeometry(base*0.12,fh*0.4,base*0.12),monMat(MONTONE.bronzeDk,0x2a1606));
+    leg.position.set(sd*base*0.1,fh*0.2,0); fig.add(leg);});
+   fig.position.y=ph; grp.add(fig);
+  }else{                                                      // castle (default): WALL ring + corner TOWERS + crenellation feel
+   const wallH=Math.min(10,2.8+span*0.3), tw=Math.max(1.0,shortS*0.4), th=wallH*1.4;
+   const hw=w/2, hh=h/2;
+   [[0,-hh,w,tw],[0,hh,w,tw],[-hw,0,tw,h],[hw,0,tw,h]].forEach(([ox,oz,bw,bd])=>{   // four wall segments forming a ring
+    const m=new T.Mesh(new T.BoxGeometry(bw,wallH,bd),monMat(MONTONE.stone,emi)); m.position.set(ox,wallH/2,oz); grp.add(m);});
+   [[-hw,-hh],[hw,-hh],[-hw,hh],[hw,hh]].forEach(([ox,oz])=>{   // taller corner towers + a cap (crenellation feel)
+    const tor=new T.Mesh(new T.BoxGeometry(tw*1.4,th,tw*1.4),monMat(MONTONE.dark,emi)); tor.position.set(ox,th/2,oz); grp.add(tor);
+    const cap=new T.Mesh(new T.ConeGeometry(tw,tw*1.3,4),monMat(MONTONE.marble,emi)); cap.position.set(ox,th+tw*0.65,oz); cap.rotation.y=Math.PI/4; grp.add(cap);});
+   const keep=new T.Mesh(new T.BoxGeometry(Math.min(w,3),wallH*1.2,Math.min(h,3)),monMat(MONTONE.stone,emi)); keep.position.y=wallH*0.6; grp.add(keep);
+  }
+  if(done){const lb=label('\\u{1F3DB} '+(s.name||kind));lb.scale.set(11,2.6,1);lb.position.y=(span*0.5)+5;grp.add(lb);}   // 🏛 monument label once complete
+  grp.position.set(gp[0],gp[1]+(s.alt||0)/9,gp[2]);           // seat the whole group on the terrain at the footprint center
+  return grp;
+ }
  function buildStructures(ss){
   while(strG.children.length)strG.remove(strG.children[0]);
   zigFX.length=0;                                             // drop last frame's shimmer refs before rebuilding
   let zigN=0;
   (ss||[]).forEach(s=>{
    if(s.shape=='ziggurat'){strG.add(makeZiggurat(s,zigN++));return;}   // Moon-only monument — placed on the Moon, not the terrain
+   if(s.shape=='monument'){strG.add(makeMonument(s));return;}          // terrain megastructure spanning a w x h footprint
    const p=P(s.x,s.y),sz=Math.max(0.8,(s.size||2)*0.6);let geo,vh;
    if(s.shape=='elevator'){vh=Math.max(1,(s.height||20)/9);geo=new T.CylinderGeometry(0.6,0.95,vh,8);}
    else{vh=Math.max(0.8,Math.min(16,(s.height||3)/4));

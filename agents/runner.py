@@ -64,6 +64,7 @@ repeat the same failing action (a loop-guard penalizes repeats). VERBS (arg shap
 - land {{}} — descend home; first round-trip (space and back) scores a bonus
 - deploy {{}} — send a finalized drivable/flying vehicle off to roam autonomously
 - construct {{"shape":"box|cylinder|sphere|cone|pyramid|elevator","size":int,"height":int}} — build a structure (metal+composite). shape:"elevator" stacks on ONE cell into a collaborative ORBITAL ELEVATOR (completes at height 100)
+- construct {{"shape":"monument","kind":"aqueduct|theater|castle|temple|dam|statue","w":int,"h":int}} — raise a MEGASTRUCTURE on a w*h>=10-cell footprint of free land (costs metal+composite by area). The FIRST builder of each kind earns a UNIQUE TITLE + big points — leave your mark on the world and become an Architect/Castellan/Hierophant!
 - ride {{}} — ride a completed orbital elevator (stand at its base) up to space, no rocket/fuel
 - plant {{}} — plant a tree for 1 wood — trees regrow (renewable wood)
 - say {{"text":"..."}} — broadcast to everyone (short, in character)

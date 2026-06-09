@@ -620,8 +620,8 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own"
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
-        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "ziggurat"):
-            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/ziggurat"
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "ziggurat", "monument"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/ziggurat/monument"
         if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
             cost = {"metal": 15, "composite": 8}; seg = 20
             if any(get(a, r) < q for r, q in cost.items()):
@@ -672,6 +672,64 @@ def apply_intent(it, ents, cur, t, events):
                                                         "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
                                                         "name": str(args.get("name", "ziggurat"))[:32]})))
             return "applied", f"laid a ziggurat foundation #{cur.fetchone()['id']} ({seg}/{ZIG_TOP}) on the Moon — stack regolith tiers to complete it"
+        if shape == "monument":                          # a sprawling EARTH megastructure: one agent raises a w×h footprint in one act
+            kind = str(args.get("kind", "")).lower()
+            KINDS = ("aqueduct", "theater", "castle", "temple", "dam", "statue")
+            if kind not in KINDS:
+                return "rejected", "monument kind must be " + "/".join(KINDS)
+            # footprint must be honest ints (junk -> rejected, never a silent default that picks a different size)
+            try:
+                w, h = int(args["w"]), int(args["h"])
+            except (KeyError, TypeError, ValueError):
+                return "rejected", "monument needs integer w and h (footprint cells)"
+            if w < 1 or h < 1:
+                return "rejected", "monument w and h must each be >= 1"
+            if w * h < 10:
+                return "rejected", "a monument must cover at least 10 cells"
+            if w > 12 or h > 12 or w * h > 64:
+                return "rejected", "a monument footprint is capped at 12x12 and 64 cells"
+            # these are LAND megastructures — only buildable while standing on Earth (not in space / not on the Moon / alt 0)
+            if a["attrs"].get("in_space") or a["attrs"].get("on_moon") or int(a["attrs"].get("altitude", 0)) > 0:
+                return "rejected", "a monument is an earthbound megastructure — return to the ground first"
+            x0, y0 = a["x"], a["y"]                       # the agent's CURRENT cell is the SW corner of the footprint
+            if x0 < 0 or y0 < 0 or x0 + w > W or y0 + h > H:
+                return "rejected", f"the {w}x{h} footprint runs off the world edge — move so it fits in-bounds"
+            # footprint must be clear of every existing structure (DB query sees prior ticks + structures raised earlier this tick)
+            cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x>=%s AND x<%s AND y>=%s AND y<%s LIMIT 1",
+                        (x0, x0 + w, y0, y0 + h))
+            if cur.fetchone():
+                return "rejected", "another structure already stands inside that footprint — pick clear ground"
+            area = w * h
+            cost = {"metal": 3 * area, "composite": area}    # scales the per-cell construct cost by footprint → genuinely expensive
+            if any(get(a, r) < q for r, q in cost.items()):
+                return "rejected", f"the GREAT {kind} ({w}x{h}, {area} cells) needs {cost} — gather more metal/composite"
+            # FIRST builder of this kind earns a unique title + a big bonus; later builders get a modest award, no title
+            cur.execute("SELECT 1 FROM entities WHERE type='structure' AND attrs->>'shape'='monument' "
+                        "AND attrs->>'kind'=%s LIMIT 1", (kind,))
+            first = cur.fetchone() is None
+            TITLES = {"aqueduct": "Aqueduct Architect", "theater": "Master of Theaters", "castle": "Castellan",
+                      "temple": "Hierophant", "dam": "Dam Warden", "statue": "Grand Sculptor"}
+            pts = (200 + 12 * area) if first else (40 + 3 * area)
+            for r, q in cost.items():
+                addb(a, r, -q)
+            name = str(args.get("name", kind))[:32]
+            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
+                        (x0, y0, a["id"], Json({"shape": "monument", "kind": kind, "w": w, "h": h, "name": name,
+                                                "builder": a["id"], "complete": True, "points": pts,
+                                                "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})))
+            mid = cur.fetchone()["id"]
+            a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
+            if first:
+                title = TITLES[kind]
+                a["attrs"]["title"] = title
+                cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                            (t, a["id"], Json({"monument": kind, "first": True, "title": title, "points": pts,
+                                               "builder_name": a["attrs"].get("name")})))
+                return "applied", f"raised the GREAT {kind} #{mid} — you are now the {title}! +{pts} pts"
+            cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                        (t, a["id"], Json({"monument": kind, "first": False, "points": pts,
+                                           "builder_name": a["attrs"].get("name")})))
+            return "applied", f"built a {kind} monument ({w}x{h}) #{mid} +{pts} pts"
         on_moon = bool(a["attrs"].get("on_moon"))   # regolith builds only when actually landed (post-rework: altitude 600 alone = orbit, not the Moon)
         size = max(1, min(20, _ai(args, "size", 3)))
         height = max(1, min(60, _ai(args, "height", size)))
