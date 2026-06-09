@@ -148,7 +148,7 @@ import random as _rnd   # for the reactive-chatter helpers below
 
 # our own scripted bots — they must NEVER react to each other (one speaking would trigger the rest = chat flood).
 # Keep in sync if a bot is renamed via its *_NAME env var.
-BOT_NAMES = {"тупой", "барыга", "дровосек", "шахтёр", "варвар"}
+BOT_NAMES = {"Dummy", "Trader", "Woodcutter", "Miner", "Barbarian"}
 
 _last_reacted = {}   # aid -> tick of the latest OUTSIDER message it has already considered (so we react at most once)
 

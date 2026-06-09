@@ -10,7 +10,7 @@ import os, sys, time, random, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import runner
 
-NAME = os.environ.get("MINER_NAME", "шахтёр")
+NAME = os.environ.get("MINER_NAME", "Miner")
 INTERVAL = float(os.environ.get("MINER_INTERVAL", "14"))
 
 LINES = [

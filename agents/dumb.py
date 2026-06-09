@@ -10,7 +10,7 @@ import os, sys, time, random, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # find runner.py regardless of cwd
 import runner   # reuse http/api/SERVER
 
-NAME = os.environ.get("DUMB_NAME", "тупой")
+NAME = os.environ.get("DUMB_NAME", "Dummy")
 INTERVAL = float(os.environ.get("DUMB_INTERVAL", "14"))
 
 LINES = [

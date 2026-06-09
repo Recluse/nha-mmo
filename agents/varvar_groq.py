@@ -19,7 +19,7 @@ import os, sys, json, time, random, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # find runner.py regardless of cwd
 import runner   # reuse http/api/llm/SERVER/PROVIDERS
 
-NAME      = os.environ.get("VARVAR_NAME", "варвар")
+NAME      = os.environ.get("VARVAR_NAME", "Barbarian")
 MODEL     = os.environ.get("VARVAR_MODEL", "llama-3.3-70b-versatile")
 INTERVAL  = float(os.environ.get("VARVAR_INTERVAL", "12"))
 LLM_EVERY = int(os.environ.get("VARVAR_LLM_EVERY", "3"))   # ask the brain at most once every N idle turns

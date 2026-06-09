@@ -13,7 +13,7 @@ import os, sys, json, time, random, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # find runner.py regardless of cwd
 import runner   # reuse http/api/llm/SERVER
 
-NAME     = os.environ.get("VARVAR_NAME", "варвар")
+NAME     = os.environ.get("VARVAR_NAME", "Barbarian")
 MODEL    = os.environ.get("VARVAR_MODEL", "gemma2:2b")   # 2b (~2GB RAM) keeps the 16GB desktop breathable; the scripted arm-up + fallback carry the small model
 INTERVAL = float(os.environ.get("VARVAR_INTERVAL", "12"))
 
