@@ -24,9 +24,10 @@ from play import observe  # noqa: E402  — curated per-agent observation
 
 import psycopg2                                       # noqa: E402
 from psycopg2.extras import RealDictCursor, Json      # noqa: E402
-from fastapi import FastAPI, HTTPException            # noqa: E402
+from fastapi import FastAPI, HTTPException, Request, Response   # noqa: E402
 from fastapi.responses import HTMLResponse, FileResponse   # noqa: E402
 from pydantic import BaseModel                        # noqa: E402
+import uuid                                            # noqa: E402  — per-browser registration cookie id
 
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
 TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
@@ -430,8 +431,53 @@ class AgentIn(BaseModel):
     token: str = ""                                       # optional: bind a secret to protect this agent's /intent
 
 
+# ---------- /agents abuse hardening (name validation + per-browser cookie rate-limit/ban) ----------
+# An abuser hit POST /agents directly (an OPEN endpoint) and spawned 7 agents named with a slur. These three
+# guards keep the endpoint open for the legitimate scripted k8s bots while rejecting that abuse:
+#   1. name validation — runs ONLY on NEW agent creation (never on the idempotent reuse-hit path).
+#   2. a tiny case-insensitive blocklist of offensive substrings → 400 (and bans the cookie).
+#   3. a per-browser cookie (`nha_cid`) rate-limit + ban. Cookie-based on purpose: the user considers IP useless.
+# IMPORTANT: the real bots are server-side k8s clients (NO cookie), register ONCE per restart with reuse:True,
+# and use ASCII names (Dummy/Trader/Woodcutter/Miner/Barbarian). They are unaffected because: the reuse-hit
+# returns BEFORE any of this runs; a missing cookie is NEVER itself a ban reason (we just mint one); and an
+# idempotent re-register creates nothing, so it never counts toward — nor can it trip — the rate limit.
+_NAME_OK_RX = re.compile(r"^[0-9A-Za-z .,!?'\"()\-]{1,24}$")   # letters+digits+spaces+basic punctuation, 1..24 chars
+# Short, case-insensitive substring blocklist (matched against a lowercased, punctuation-normalized name).
+BLOCKED_NAME_SUBSTR = [
+    "jewish tricks", "jewish trick",
+    "nigger", "nigga", "faggot", "retard", "kike", "spic", "chink", "tranny", "rape",
+]
+# In-process only (resets on server restart — acceptable; no DB table). Maps a browser cookie id to the count
+# of NEW agents it has created within the current sliding window, plus the set of banned cookie ids.
+_REG_WINDOW_SECS = 600          # 10-minute sliding window
+_REG_MAX_NEW     = 4            # >4 NEW agents from one cookie in the window → ban
+reg_log     = {}               # cid -> [monotonic_ts, ...] of NEW-agent creations within the window
+banned_cids = set()            # cookie ids that submitted a blocked name or blew past the rate limit
+_reg_lock   = threading.Lock()
+
+
+def _name_blocked(name):
+    """True if `name` contains a blocklisted offensive substring (case/punctuation-insensitive)."""
+    norm = re.sub(r"[^0-9a-z]+", " ", (name or "").lower()).strip()   # collapse punctuation to spaces, lowercase
+    for bad in BLOCKED_NAME_SUBSTR:
+        if bad in norm or bad.replace(" ", "") in norm.replace(" ", ""):
+            return True
+    return False
+
+
+def _reg_rate_exceeded(cid):
+    """Record a NEW-agent creation for `cid` and return True if it has now exceeded _REG_MAX_NEW in the window.
+    Call this ONLY when an actual new agent is about to be created (never on the idempotent reuse path)."""
+    now = time.monotonic()
+    with _reg_lock:
+        hits = [t for t in reg_log.get(cid, []) if now - t < _REG_WINDOW_SECS]
+        hits.append(now)
+        reg_log[cid] = hits
+        return len(hits) > _REG_MAX_NEW
+
+
 @app.post("/agents")
-def register_agent(a: AgentIn):
+def register_agent(a: AgentIn, request: Request, response: Response):
     """Spawn a fresh agent with starting materials → returns its id (use it for observe/intent)."""
     conn = _connect(); cur = conn.cursor()
     tok = (a.token or "").strip()[:64]
@@ -439,9 +485,36 @@ def register_agent(a: AgentIn):
         cur.execute("SELECT id, attrs->>'token' t FROM entities WHERE type='agent' AND attrs->>'name'=%s ORDER BY id LIMIT 1", (a.name,))
         row = cur.fetchone()
         if row:
+            # IDEMPOTENT RE-REGISTER — creates nothing, so it bypasses ALL abuse guards (no name re-validation,
+            # no cookie required, no rate-limit count, no ban check). This is the legit-bot fast path.
             if tok and not row[1]:                        # opt-in: bind the caller's token to a still-unprotected agent
                 cur.execute("UPDATE entities SET attrs = attrs || %s WHERE id=%s", (Json({"token": tok}), row[0])); conn.commit()
             conn.close(); return {"agent_id": row[0], "reused": True, "token": (row[1] or tok)}
+        # reuse:True but NO existing agent with this name → falls through to NEW creation below (validated like any new).
+
+    # ----- below here a NEW agent will be created → apply the three abuse guards -----
+    # Layer 3a: identify the caller's browser by cookie; mint one if absent (a missing cookie is NOT a ban reason).
+    cid = request.cookies.get("nha_cid", "")
+    if not cid:
+        cid = uuid.uuid4().hex
+        response.set_cookie("nha_cid", cid, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
+    if cid in banned_cids:
+        conn.close()
+        raise HTTPException(403, "registration blocked")
+    # Layer 1+2: validate the requested name (format) and screen it against the blocklist. A blocked name
+    # both rejects this request AND bans the cookie (the abuser tried 7× with the same slur).
+    name = (a.name or "")
+    if _name_blocked(name):
+        banned_cids.add(cid); conn.close()
+        raise HTTPException(400, "name not allowed")
+    if not _NAME_OK_RX.match(name):
+        conn.close()
+        raise HTTPException(400, "name must be 1-24 chars of letters, digits, spaces and basic punctuation")
+    # Layer 3b: count this NEW creation against the per-cookie rate limit; ban if it blows past the window cap.
+    if _reg_rate_exceeded(cid):
+        banned_cids.add(cid); conn.close()
+        raise HTTPException(403, "too many registrations")
+
     cur.execute("SELECT tick FROM world WHERE id=1"); born = cur.fetchone()[0]
     # materialize hp/hp_max + stamp the born tick at creation (NOT lazily) so serialized attrs are uniform and
     # path-independent for the state-hash chain (P3). The x/y RNG is a one-time pre-tick INSERT never read by a
