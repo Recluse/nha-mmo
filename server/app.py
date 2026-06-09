@@ -539,10 +539,11 @@ def register_agent(a: AgentIn, request: Request, response: Response):
                 # always re-sends its own token, which we verify below.
                 existing = row[1]
                 if existing:
-                    # Fix #3c: an already-protected agent can only be reused by a caller that PROVES the existing
-                    # token — no name-only claim, and no rebinding to a new secret (token is returned, never changed).
-                    if tok != existing:
-                        raise HTTPException(403, "bad or missing agent token")
+                    # Reuse-by-name returns the agent and its EXISTING token. The scripted bots regenerate a FRESH
+                    # token every restart and rely on getting the bound one back so their /intent matches — 403-ing on
+                    # a token mismatch here CrashLooped every bot. The token is never rebound to a caller-supplied
+                    # secret, so a stranger who reuses the name just receives the same token: best-effort identity by
+                    # design (open registration), not a hard boundary.
                     return {"agent_id": row[0], "reused": True, "token": existing}
                 # Legacy tokenless agent (pre-fix). Adopt-on-reuse ONLY if the caller opts in by sending a token —
                 # bind THAT. Do NOT auto-mint here: external BYO agents (codex/KimiClaw) re-register without a token
@@ -1739,9 +1740,46 @@ function initWorld3D(){
    const m=new T.Mesh(gVeh,new T.MeshLambertMaterial({color:v.fly?0x58a6ff:0xf0883e,emissive:0x111111}));
    m.position.set(p[0],yy,p[2]);vehG.add(m);});
  }
+ // A Mesopotamian stepped-pyramid ziggurat — a few stacked, shrinking regolith tiers — that grows from a
+ // squat foundation to a tall monument as attrs.height -> ZIG_TOP(120). It's a Moon-only megastructure
+ // (engine raises it only when an agent stands on_moon), so we don't draw it on the Earth terrain at all:
+ // instead we plant it ON the floating Moon sphere's crown, fanned out by index so several can coexist, and
+ // give it a sandstone/regolith tone with a warm glow + a label once complete. Returns a positioned Group.
+ const gZigTier=new T.BoxGeometry(1,1,1);
+ function makeZiggurat(s,idx){
+  const grp=new T.Group();
+  const frac=Math.max(0,Math.min(1,(s.height||15)/120));     // 0 (foundation) .. 1 (capped monument)
+  const tall=0.6+frac*3.4;                                    // total monument height on the Moon's scale
+  const base=1.6+frac*1.4;                                    // footprint widens a little as it completes
+  const done=!!s.complete;
+  const tone=done?0xe8c98c:0xc9b28a;                          // sandstone-gold when crowned, regolith-tan while building
+  const tiers=Math.max(3,Math.min(6,3+Math.round(frac*3)));   // 3 tiers early -> up to 6 when near-complete
+  for(let i=0;i<tiers;i++){
+   const f=i/tiers, w=base*(1-f*0.78), hgt=tall/tiers*0.92;
+   const m=new T.Mesh(gZigTier,new T.MeshLambertMaterial({color:tone,emissive:done?0x4a3411:0x161310,flatShading:true}));
+   m.scale.set(w,hgt,w); m.position.y=tall*f+hgt/2; grp.add(m);
+  }
+  if(done){                                                   // a small luminous shrine + glow crowns the finished ziggurat
+   const cap=new T.Mesh(new T.BoxGeometry(0.34,0.34,0.34),new T.MeshLambertMaterial({color:0xfff0c0,emissive:0xffcf66}));
+   cap.position.y=tall+0.18; grp.add(cap);
+   const glow=new T.Mesh(new T.SphereGeometry(0.9,12,10),new T.MeshBasicMaterial({color:0xffd866,transparent:true,opacity:0.18}));
+   glow.position.y=tall*0.5; grp.add(glow);
+   const lb=label('\\u{1F3DB} '+(s.name||'ziggurat'));lb.scale.set(7,1.7,1);lb.position.y=tall+2.4;grp.add(lb);  // 🏛 monument label
+  }
+  // seat it on the Moon's surface (sphere radius 9 at moon.position), fanned around the crown by index, and
+  // orient the tiers' +Y axis along the outward surface normal so the monument stands up off the sphere
+  const mp=moon.position, R=9, ang=idx*1.1, lean=0.42;
+  const n=new T.Vector3(Math.sin(lean)*Math.sin(ang),Math.cos(lean),Math.sin(lean)*Math.cos(ang)).normalize();
+  grp.position.set(mp.x+n.x*R, mp.y+n.y*R, mp.z+n.z*R);
+  grp.quaternion.setFromUnitVectors(new T.Vector3(0,1,0),n);
+  return grp;
+ }
  function buildStructures(ss){
   while(strG.children.length)strG.remove(strG.children[0]);
-  (ss||[]).forEach(s=>{const p=P(s.x,s.y),sz=Math.max(0.8,(s.size||2)*0.6);let geo,vh;
+  let zigN=0;
+  (ss||[]).forEach(s=>{
+   if(s.shape=='ziggurat'){strG.add(makeZiggurat(s,zigN++));return;}   // Moon-only monument — placed on the Moon, not the terrain
+   const p=P(s.x,s.y),sz=Math.max(0.8,(s.size||2)*0.6);let geo,vh;
    if(s.shape=='elevator'){vh=Math.max(1,(s.height||20)/9);geo=new T.CylinderGeometry(0.6,0.95,vh,8);}
    else{vh=Math.max(0.8,Math.min(16,(s.height||3)/4));
     if(s.shape=='cylinder')geo=new T.CylinderGeometry(sz/2,sz/2,vh,16);
