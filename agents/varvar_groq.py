@@ -168,7 +168,11 @@ def main():
                 verb, args = arm_up(inv); tag = "(arming) "; idle = 0
             elif inrange:                                  # (2) SCRIPTED attack — weakest/closest in kinetic range
                 tgt = min(inrange, key=lambda x: (x.get("hp", 100), x.get("dist", 99)))
-                verb, args = "attack", {"weapon": "kinetic_gun", "target": tgt["id"]}; tag = "(hunt) "; idle = 0
+                if random.random() < 0.18:                 # a barbarian ROARS at his prey — taunt mid-hunt so he isn't a
+                    verb, args = "say", {"text": random.choice(TAUNTS)}; tag = "(roar) "   # silent killer (also breaks attack-stacking)
+                else:
+                    verb, args = "attack", {"weapon": "kinetic_gun", "target": tgt["id"]}; tag = "(hunt) "
+                idle = 0
             else:                                          # (3) armed, nobody shootable -> GROQ BRAIN (throttled) or seek
                 idle += 1
                 decision = brain_decide(aid, obs) if idle % LLM_EVERY == 0 else None
