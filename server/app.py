@@ -694,13 +694,14 @@ def _timeline(limit):
                 "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
                 "  (SELECT discoverer_name FROM dynamic_rules WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1)) name, e.data "
                 "FROM events e LEFT JOIN entities a ON a.id = e.entity "
-                "WHERE e.kind IN ('escape','invent','land','build','attune') ORDER BY e.id ASC LIMIT %s", (limit,))
+                "WHERE e.kind IN ('escape','invent','land','build','attune','destroyed','ally','war','peace','generate') "
+                "ORDER BY e.id DESC LIMIT %s", (limit,))
     rows = [dict(r) for r in cur.fetchall()]; conn.close()
     return {"timeline": rows}
 
 
 @app.get("/timeline")
-def timeline(limit: int = 80):
+def timeline(limit: int = 150):
     return _cached(("timeline", limit), lambda: _timeline(limit))
 
 
@@ -1200,7 +1201,14 @@ async function tick(){
   if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points;
   else if(e.kind=='invent')tx='invented '+esc(dt.name||dt.item)+' +'+dt.points;
   else if(e.kind=='land')tx='landed'+(dt.round_trip?' (round trip!)':'')+' +'+(dt.points||0);
-  else if(e.kind=='build'&&dt.elevator)tx='orbital elevator complete +'+dt.points;
+  else if(e.kind=='build'&&dt.elevator)tx='&#127959;&#65039; orbital elevator complete +'+dt.points;
+  else if(e.kind=='build')tx='&#127959;&#65039; built '+esc(dt.part||dt.structure||'a structure')+(dt.points?' +'+dt.points:'');
+  else if(e.kind=='destroyed')tx=(dt.type=='vehicle'?'&#128165; vehicle wrecked':dt.type=='structure'?'&#127959;&#65039; structure ruined':'&#128128; <span class=O>was defeated</span>')+(dt.by?' by #'+dt.by:'');
+  else if(e.kind=='ally')tx='&#129309; <span class=AG>allied</span> with #'+(dt['with']||dt.to||'?');
+  else if(e.kind=='war')tx='&#9876;&#65039; <span class=O>declared war</span> on #'+(dt.to||dt['with']||dt.b||'?');
+  else if(e.kind=='peace')tx='&#128330; made peace with #'+(dt.to||dt['with']||dt.b||'?');
+  else if(e.kind=='attune')tx='&#10024; attuned to '+esc(dt.kind||'an artifact')+(dt.first?' (FIRST!)':'')+(dt.points?' +'+dt.points:'');
+  else if(e.kind=='generate')tx='&#9883;&#65039; a new law emerged: '+esc(dt.name||dt.item||'?');
   else tx=esc(e.kind);
   return `<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${tx}</div>`;}).join('')||'<div class=sub>nothing yet</div>';
  const ro=await j('/roster');
