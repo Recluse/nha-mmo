@@ -1686,19 +1686,27 @@ function initWorld3D(){
  // (the camera matrix becomes non-finite and three.js renders nothing forever). fin() snaps any non-finite
  // value back to a safe default so the camera can never get stuck off-screen.
  const fin=(v,d)=>(Number.isFinite(v)?v:d);
- function clampCam(){yaw=fin(yaw,0.7);pitch=Math.max(0.16,Math.min(1.45,fin(pitch,0.85)));dist=Math.max(50,Math.min(600,fin(dist,170)));}
+ let tx=0,ty=0,tz=0;                                  // camera TARGET offset — slid by panning (free movement)
+ function clampCam(){yaw=fin(yaw,0.7);pitch=Math.max(0.16,Math.min(1.45,fin(pitch,0.85)));dist=Math.max(50,Math.min(600,fin(dist,170)));
+  tx=Math.max(-400,Math.min(400,fin(tx,0)));ty=Math.max(-50,Math.min(160,fin(ty,0)));tz=Math.max(-400,Math.min(400,fin(tz,0)));}
  function place(){clampCam();const cy=pitch;const px=dist*Math.sin(yaw)*Math.cos(cy),py=dist*Math.sin(cy)+18,pz=dist*Math.cos(yaw)*Math.cos(cy);
-  if(Number.isFinite(px)&&Number.isFinite(py)&&Number.isFinite(pz)){cam.position.set(px,py,pz);cam.lookAt(0,0,0);}}
- let drag=false,lx=0,ly=0;
- ren.domElement.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY;});
- window.addEventListener('mouseup',()=>{drag=false;});
- window.addEventListener('mousemove',e=>{if(!drag)return;yaw-=(e.clientX-lx)*0.006;pitch=Math.max(0.16,Math.min(1.45,pitch-(e.clientY-ly)*0.006));lx=e.clientX;ly=e.clientY;clampCam();});
+  if(Number.isFinite(px)&&Number.isFinite(py)&&Number.isFinite(pz)){cam.position.set(px+tx,py+ty,pz+tz);cam.lookAt(tx,ty,tz);}}
+ // pan: slide the camera TARGET in its own screen plane (right + up basis derived from yaw/pitch), scaled by dist
+ // so it feels consistent at any zoom; the scene follows the cursor/finger. dx/dy = screen-pixel deltas.
+ function pan(dx,dy){const sy=Math.sin(yaw),cy=Math.cos(yaw),sp=Math.sin(pitch),cp=Math.cos(pitch),k=dist*0.0016;
+  const rx=cy,rz=-sy, ux=-sy*sp,uy=cp,uz=-cy*sp;     // camera right (horizontal) + up vectors
+  tx+=(-rx*dx+ux*dy)*k; ty+=uy*dy*k; tz+=(-rz*dx+uz*dy)*k; clampCam();}
+ let drag=false,lx=0,ly=0,panM=false,pmx=0,pmy=0;
+ ren.domElement.addEventListener('mousedown',e=>{drag=true;panM=e.ctrlKey||e.shiftKey||e.button===1||e.button===2;lx=e.clientX;ly=e.clientY;});
+ ren.domElement.addEventListener('contextmenu',e=>e.preventDefault());   // let right-drag pan without popping the menu
+ window.addEventListener('mouseup',()=>{drag=false;panM=false;});
+ window.addEventListener('mousemove',e=>{if(!drag)return;const dx=e.clientX-lx,dy=e.clientY-ly;if(panM)pan(dx,dy);else{yaw-=dx*0.006;pitch=Math.max(0.16,Math.min(1.45,pitch-dy*0.006));}lx=e.clientX;ly=e.clientY;clampCam();});
  // wheel zoom — desktop. Wrapped in try/catch and deltaY sanitised so a thrown error or a non-finite delta
  // can never escape to kill the render loop or leave dist=NaN (the historical "scroll blanks the 3D world" bug).
  ren.domElement.addEventListener('wheel',e=>{try{e.preventDefault();const dy=fin(e.deltaY,0);dist=Math.max(50,Math.min(600,dist+dy*0.12));clampCam();}catch(err){clampCam();}},{passive:false});
  let pd=0;
- ren.domElement.addEventListener('touchstart',e=>{if(e.touches.length==1){drag=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){drag=false;pd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);}e.preventDefault();},{passive:false});
- ren.domElement.addEventListener('touchmove',e=>{if(e.touches.length==1&&drag){yaw-=(e.touches[0].clientX-lx)*0.006;pitch=Math.max(0.16,Math.min(1.45,pitch-(e.touches[0].clientY-ly)*0.006));lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){const nd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);dist=Math.max(50,Math.min(600,dist+(pd-nd)*0.6));pd=nd;}clampCam();e.preventDefault();},{passive:false});
+ ren.domElement.addEventListener('touchstart',e=>{if(e.touches.length==1){drag=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){drag=false;pd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);pmx=(e.touches[0].clientX+e.touches[1].clientX)/2;pmy=(e.touches[0].clientY+e.touches[1].clientY)/2;}e.preventDefault();},{passive:false});
+ ren.domElement.addEventListener('touchmove',e=>{if(e.touches.length==1&&drag){yaw-=(e.touches[0].clientX-lx)*0.006;pitch=Math.max(0.16,Math.min(1.45,pitch-(e.touches[0].clientY-ly)*0.006));lx=e.touches[0].clientX;ly=e.touches[0].clientY;}else if(e.touches.length==2){const nd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);dist=Math.max(50,Math.min(600,dist+(pd-nd)*0.6));pd=nd;const nmx=(e.touches[0].clientX+e.touches[1].clientX)/2,nmy=(e.touches[0].clientY+e.touches[1].clientY)/2;pan(nmx-pmx,nmy-pmy);pmx=nmx;pmy=nmy;}clampCam();e.preventDefault();},{passive:false});
  ren.domElement.addEventListener('touchend',()=>{drag=false;});
  function resize(){const w=host.clientWidth,h=host.clientHeight;if(w>10&&h>10){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();}}
  window.addEventListener('resize',resize);
