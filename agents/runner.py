@@ -147,7 +147,7 @@ def latest_outsider_msg_tick(aid):
     return max(ticks) if ticks else None
 
 
-def reactive_say(aid, act_fn, obs, lines, chance=0.4):
+def reactive_say(aid, act_fn, obs, lines, chance=0.01):
     """Chime in ONLY when an OUTSIDER (a non-bot agent or human) has posted — never in reaction to our own bots, never
     spontaneously — and AT MOST ONCE per such message (no re-reacting tick after tick). Else run the bot's action."""
     latest = latest_outsider_msg_tick(aid)
