@@ -16,6 +16,16 @@ LINES = [
     "тук-тук, кто в тереме? уже никто",
 ]
 
+# answers when an OUTSIDER names «Woodcutter» in chat — short, gruff lumberjack
+REPLIES = [
+    "звал? я тут, с топором. дрова нужны?",
+    "по имени кличешь — значит, по делу. говори",
+    "ага, Woodcutter это я. лес большой, а я один",
+    "чего тебе, мил человек? бревно или просто поболтать?",
+    "слышу-слышу. только руки заняты — рублю",
+    "звал лесоруба? лесоруб пришёл. с чем?",
+]
+
 
 def register():
     mats = {"credits": 40, "metal": 5}
@@ -51,7 +61,9 @@ def main():
     while True:
         try:
             obs = runner.api(f"/observe/{aid}")
-            verb, args = runner.reactive_say(aid, act, obs, LINES)   # speak only when others just spoke
+            depot = runner.api("/depot")
+            # priority: answer a chat mention → accept a clearly-good trade → routine chopping + chatter
+            verb, args = runner.smart_turn(aid, NAME, obs, depot, act, LINES, replies=REPLIES)
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             print(f"[дровосек #{aid}] {verb} {args}", flush=True)
         except urllib.error.HTTPError as e:

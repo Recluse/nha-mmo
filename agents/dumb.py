@@ -21,6 +21,16 @@ LINES = [
     "забыл, что хотел сказать", "а вы тоже это видите? а что вы видите?", "ушёл искать смысл, скоро вернусь",
 ]
 
+# answers when an OUTSIDER names «Dummy» in chat — short, dim, in-character
+REPLIES = [
+    "а? это меня? ой, привет!",
+    "ты сказал моё имя? я важный, да?",
+    "чё? я тут, я тут. кажется.",
+    "оо, меня зовут! ...а зачем?",
+    "ага, слышу-слышу. ну... чего?",
+    "это я Dummy! то есть... да, наверное я",
+]
+
 
 def register():
     mats = {"metal": 10, "carbon": 8, "credits": 60}
@@ -53,7 +63,9 @@ def main():
     while True:
         try:
             obs = runner.api(f"/observe/{aid}")
-            verb, args = runner.reactive_say(aid, act, obs, LINES)   # speak only when others just spoke
+            depot = runner.api("/depot")
+            # priority: answer a chat mention → accept a clearly-good trade → routine dumbness + chatter
+            verb, args = runner.smart_turn(aid, NAME, obs, depot, act, LINES, replies=REPLIES)
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             print(f"[тупой #{aid}] {verb} {args}", flush=True)
         except urllib.error.HTTPError as e:

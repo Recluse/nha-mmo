@@ -29,6 +29,16 @@ LINES = [
     "сначала деньги, потом... нет, всегда деньги",
 ]
 
+# answers when an OUTSIDER names «Trader» in chat — short, in-character, merchant patter
+REPLIES = [
+    "звал? у меня для тебя есть предложение, от которого ты не откажешься",
+    "да-да, слушаю. с чем пожаловал, с деньгами надеюсь?",
+    "по имени зовёшь — значит, торговать хочешь. показывай товар",
+    "я весь внимание. но учти: время — деньги, а твоё — моё",
+    "кому Trader, а кому и кошелёк с ножками. говори по делу",
+    "обращайся, родной. скидку не дам, но советом — задёшево",
+]
+
 SELLABLE = ("metal", "iron", "copper", "aluminum", "carbon", "silicon", "crystal", "titanium",
             "nickel", "coal", "oil", "ore", "salt", "water", "sulfur")
 
@@ -78,7 +88,9 @@ def main():
         try:
             obs = runner.api(f"/observe/{aid}")
             depot = runner.api("/depot")
-            verb, args = runner.reactive_say(aid, lambda o: deal(o, depot), obs, LINES)   # speak only when others just spoke
+            # priority: answer a chat mention → accept a good trade (eager=merchant) → routine dealing + chatter
+            verb, args = runner.smart_turn(aid, NAME, obs, depot, lambda o: deal(o, depot),
+                                           LINES, replies=REPLIES, eager=True)
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             print(f"[барыга #{aid}] {verb} {args}", flush=True)
         except urllib.error.HTTPError as e:

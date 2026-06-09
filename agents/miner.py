@@ -22,6 +22,16 @@ LINES = [
     "на орбите руда жирнее, чую нутром", "пристыкуюсь к камню и выгребу его досуха",
 ]
 
+# answers when an OUTSIDER names «Miner» in chat — short, gruff pickaxe-talk
+REPLIES = [
+    "звал? я по уши в породе, но слушаю",
+    "ага, Miner это я. руда нужна? есть, наковырял",
+    "по имени кличешь — дело есть? а то я копаю",
+    "чего тебе? золото не обещаю, а руду — задёшево",
+    "слышу из забоя. говори, пока кирка отдыхает",
+    "звал шахтёра? вылез на поверхность. ну?",
+]
+
 ORES = ("iron", "copper", "nickel", "titanium", "aluminum", "silicon", "ore", "coal", "metal", "crystal")
 # the priciest haul to bring home from orbit — sell these first when we land
 SPACE_LOOT = ("iridium", "nickel")
@@ -269,7 +279,13 @@ def main():
     while True:
         try:
             obs = runner.api(f"/observe/{aid}")
-            verb, args = runner.reactive_say(aid, act, obs, LINES)   # speak only when others just spoke
+            # on the GROUND, layer in mention-replies + trade-accepts; aloft (mid-ascent/orbit) stay heads-down on
+            # the phase machine and only do reaction-chatter, so a trade/chat never derails a launch or a dock.
+            if int(obs.get("altitude", 0) or 0) == 0:
+                depot = runner.api("/depot")
+                verb, args = runner.smart_turn(aid, NAME, obs, depot, act, LINES, replies=REPLIES)
+            else:
+                verb, args = runner.reactive_say(aid, act, obs, LINES)   # speak only when others just spoke
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             print(f"[шахтёр #{aid}] {verb} {args}", flush=True)
         except urllib.error.HTTPError as e:

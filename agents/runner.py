@@ -180,6 +180,187 @@ def reactive_say(aid, act_fn, obs, lines, chance=0.4):
     return verb, args
 
 
+# ============================================================================
+# Feature 1 — hear my NAME in chat and answer (scripted, outsider-only, once)
+# ============================================================================
+_last_mentioned = {}   # aid -> tick of the latest OUTSIDER message that named us and we already answered
+
+
+def mentioned_by(aid, name, obs=None):
+    """Return the latest OUTSIDER chat message that mentions `name` (case-insensitive substring, with or without a
+    leading '@'), as {"tick","sender","sender_name","text"} — or None. An outsider = a sender whose name is NOT one
+    of our own scripted bots (so bots never answer each other → no flood). Prefers the agent's own observe inbox
+    (obs["messages"], which also carries DMs to us) and falls back to the global /chat feed."""
+    msgs = None
+    if obs is not None:
+        msgs = obs.get("messages")                        # observe inbox: broadcasts + DMs addressed to me
+    if not msgs:
+        try:
+            msgs = api("/chat").get("messages") or []
+        except Exception:
+            return None
+    nm = (name or "").lower()
+    if not nm:
+        return None
+    best = None
+    for m in (msgs or []):
+        text = (m.get("text") or "")
+        sender = (m.get("sender_name") or "")
+        if sender in BOT_NAMES:                            # never answer one of our own bots
+            continue
+        low = text.lower()
+        if nm in low or ("@" + nm) in low:                # "Dummy" / "@Dummy", case-insensitive substring
+            tick = int(m.get("tick", 0) or 0)
+            if best is None or tick > int(best.get("tick", 0) or 0):
+                best = m
+    return best
+
+
+def reply_to_mention(aid, name, replies, obs=None, addressee=True):
+    """If an OUTSIDER just named this bot in chat (and we haven't already answered THAT message), return a
+    ("tell"/"say", args) intent with a short in-character canned line — else None. Dedup mirrors _last_reacted:
+    we answer each naming message at most once (keyed by its tick). DMs the sender when we know their id,
+    otherwise broadcasts. Keep the reply rare-by-construction: it only fires on an explicit mention."""
+    m = mentioned_by(aid, name, obs)
+    if not m:
+        return None
+    tick = int(m.get("tick", 0) or 0)
+    if tick <= _last_mentioned.get(aid, -1):              # already answered this mention → don't repeat
+        return None
+    _last_mentioned[aid] = tick                           # mark this naming message handled (answer once)
+    line = _rnd.choice(replies) if replies else "?"
+    who = m.get("sender_name") or "друг"
+    text = (f"@{who} {line}" if addressee and who else line)[:200]
+    to = m.get("sender")
+    if to is not None:                                    # address the asker directly when we have their id
+        try:
+            return "tell", {"to": int(to), "text": text}
+        except (TypeError, ValueError):
+            pass
+    return "say", {"text": text}
+
+
+# ============================================================================
+# Feature 2 — respond to incoming TRADE offers (scripted heuristic, no LLM)
+# ============================================================================
+# A trade offer (from observe -> obs["trade_offers"]) is {id, proposer, give, want}:
+#   give = the bundle the PROPOSER escrowed and WE RECEIVE if we accept,
+#   want = the bundle WE PAY out of our own inventory (the engine rejects accept if we can't afford it).
+# So a deal is favourable when value(give) >= value(want). "credits" are worth 1 each; every other resource is
+# valued at its depot BUY price (what the depot would actually pay us for it), so the heuristic tracks real income.
+_last_traded = {}   # aid -> highest trade_id we've already decided on (so we don't re-evaluate the same offer forever)
+_DEFAULT_VALUE = 3  # fallback per-unit value for a resource with no depot price (still counts, never zero)
+
+
+def _depot_buy_prices(depot):
+    """{resource: depot-buy-price} from a /depot payload ({'prices': {res: {'buy':..,'sell':..}}})."""
+    out = {}
+    for r, p in ((depot or {}).get("prices") or {}).items():
+        try:
+            out[r] = int((p or {}).get("buy", _DEFAULT_VALUE) or _DEFAULT_VALUE)
+        except (TypeError, ValueError):
+            out[r] = _DEFAULT_VALUE
+    return out
+
+
+def bundle_value(bundle, prices):
+    """Total worth of a {res: qty} bundle. credits = 1 each; other resources = their depot buy price
+    (fallback _DEFAULT_VALUE). prices = {res: buy_price} from _depot_buy_prices()."""
+    total = 0.0
+    for res, qty in (bundle or {}).items():
+        try:
+            q = float(qty)
+        except (TypeError, ValueError):
+            continue
+        if res == "credits":
+            total += q
+        else:
+            total += q * float(prices.get(res, _DEFAULT_VALUE))
+    return total
+
+
+def _can_afford(inv, want):
+    """We hold at least everything the offer's `want` bundle would make us pay."""
+    for res, qty in (want or {}).items():
+        try:
+            if int(inv.get(res, 0)) < int(qty):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def evaluate_offers(obs, depot, eager=False):
+    """Scan incoming trade offers and pick ONE worth accepting → its trade_id, else None.
+    A deal is favourable when value(received give) >= ratio * value(paid want), using depot buy-prices.
+    - eager=False (default): only clearly-good deals (we must net at least `1.15x` value), PLUS we never spend our
+      last credits, PLUS a 'free gift' (want empty / we pay nothing) is always taken.
+    - eager=True (Trader): accepts break-even-or-better (ratio 1.0), and also any deal that nets us a resource we
+      hold ZERO of (a merchant restocking its shelves). Trader is the trade-eager one.
+    Only considers offers we can actually afford, and never re-decides an offer id once seen (loop-guard safe)."""
+    offers = obs.get("trade_offers") or []
+    if not offers:
+        return None
+    inv = obs.get("inventory", {}) or {}
+    cr = int(inv.get("credits", 0))
+    prices = _depot_buy_prices(depot)
+    ratio = 1.0 if eager else 1.15
+    seen_hi = _last_traded.get(obs_aid(obs), -1)
+    best = None                                           # (trade_id, surplus) — take the most favourable affordable one
+    chosen_id = None
+    for o in offers:
+        try:
+            tid = int(o.get("id"))
+        except (TypeError, ValueError):
+            continue
+        give = o.get("give") or {}                        # we RECEIVE this
+        want = o.get("want") or {}                        # we PAY this
+        if not _can_afford(inv, want):
+            continue
+        pay_credits = int(want.get("credits", 0) or 0)
+        if pay_credits >= cr and cr > 0 and not eager:    # cautious bots never blow their whole purse
+            continue
+        gv = bundle_value(give, prices)
+        wv = bundle_value(want, prices)
+        gift = (wv == 0)                                  # they ask nothing → pure gift, always good
+        restock = eager and any(int(inv.get(r, 0)) == 0 and int(q) > 0 for r, q in give.items())
+        good = gift or restock or (gv >= ratio * wv and gv > 0)
+        if not good:
+            continue
+        surplus = gv - wv
+        if best is None or surplus > best[1]:
+            best = (tid, surplus); chosen_id = tid
+    if chosen_id is None:
+        return None
+    if chosen_id <= seen_hi:                              # already decided this one earlier → don't loop on it
+        return None
+    _last_traded[obs_aid(obs)] = max(seen_hi, chosen_id)
+    return chosen_id
+
+
+def obs_aid(obs):
+    """Per-agent key for the dedup maps. observe() carries no agent id, so smart_turn() stamps the bot's real id
+    onto obs['_aid'] before evaluate_offers runs; fall back to slot 0 if a caller skipped the stamp."""
+    aid = obs.get("_aid")
+    return aid if aid is not None else 0
+
+
+def smart_turn(aid, name, obs, depot, act_fn, lines, replies=None, eager=False):
+    """One-call orchestration for the scripted bots. Priority each tick:
+       1) answer an OUTSIDER who just named us in chat (rare, once per mention),
+       2) accept a favourable incoming trade offer,
+       3) otherwise the bot's routine action, with reactive_say chatter layered on (unchanged behaviour).
+    `replies` defaults to `lines` if not given. Returns (verb, args)."""
+    obs["_aid"] = aid                                     # stamp id so the dedup maps key per-agent
+    hit = reply_to_mention(aid, name, replies or lines, obs)
+    if hit:
+        return hit
+    tid = evaluate_offers(obs, depot, eager=eager)
+    if tid is not None:
+        return "accept", {"trade_id": tid}
+    return reactive_say(aid, act_fn, obs, lines)
+
+
 def llm(prov, model, system, user):
     p = PROVIDERS[prov]
     base = {"model": model, "temperature": 0.85, "max_tokens": 500,
