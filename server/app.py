@@ -1732,8 +1732,10 @@ function initWorld3D(){
   const pos=geo.attributes.position,col=[];
   for(let i=0;i<pos.count;i++){const vx=i%w,vy=Math.floor(i/w);const b=BIO[(bio[vy]||'')[vx]]||BIO['.'];pos.setY(i,b[1]);const c=new T.Color(b[0]);col.push(c.r,c.g,c.b);}
   geo.setAttribute('color',new T.Float32BufferAttribute(col,3)); geo.computeVertexNormals();
+  const groundTex=new T.TextureLoader().load('/ground.jpg'); groundTex.wrapS=groundTex.wrapT=T.RepeatWrapping; groundTex.anisotropy=4;   // seamless rocky detail map, tiled across the terrain in the shader
   const tmat=new T.MeshLambertMaterial({vertexColors:true,flatShading:true});
-  tmat.onBeforeCompile=function(sh){                          // procedural land texture: rock on slopes + snow on peaks + noise mottle, injected into Lambert so lighting is kept
+  tmat.onBeforeCompile=function(sh){                          // land texture: tiled photographic detail map + rock on slopes + snow on peaks, injected into Lambert so lighting is kept
+   sh.uniforms.uDetail={value:groundTex};
    sh.vertexShader=sh.vertexShader
     .replace('#include <common>',`#include <common>
 varying vec3 vWP; varying vec3 vWN;`)
@@ -1744,6 +1746,7 @@ vWN=normalize(mat3(modelMatrix)*objectNormal);`);
    sh.fragmentShader=sh.fragmentShader
     .replace('#include <common>',`#include <common>
 varying vec3 vWP; varying vec3 vWN;
+uniform sampler2D uDetail;
 float thash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
 float tnoise(vec2 p){vec2 i=floor(p),f=fract(p);float a=thash(i),b=thash(i+vec2(1.,0.)),c=thash(i+vec2(0.,1.)),d=thash(i+vec2(1.,1.));vec2 u=f*f*(3.-2.*f);return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);}`)
     .replace('#include <color_fragment>',`#include <color_fragment>
@@ -1753,7 +1756,11 @@ float tnoise(vec2 p){vec2 i=floor(p),f=fract(p);float a=thash(i),b=thash(i+vec2(
   vec3 rock=vec3(0.40,0.38,0.36)*(0.7+0.5*n2);
   diffuseColor.rgb=mix(diffuseColor.rgb,rock,smoothstep(0.30,0.62,slope));
   float snow=smoothstep(4.0,6.0,vWP.y)*(1.-smoothstep(0.5,0.78,slope));
-  diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.92,0.95,1.0),snow*0.92); }`);
+  diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.92,0.95,1.0),snow*0.92);
+  float dc=texture2D(uDetail,vWP.xz*0.13).r, df=texture2D(uDetail,vWP.xz*0.5).r;
+  diffuseColor.rgb*=(0.66+0.70*(dc*0.5+df*0.5));                            // tiled photographic surface detail (light/dark grain)
+  float relief=df-texture2D(uDetail,vWP.xz*0.5+vec2(0.02,0.0)).r;
+  diffuseColor.rgb*=(1.0+relief*1.8); }`);                                  // cheap bump: shade by the detail gradient -> looks 3D-rough
   };
   sc.add(new T.Mesh(geo,tmat));
   try{buildWater(w,h);}catch(e){}                             // water is best-effort — never let it break the terrain
@@ -1999,8 +2006,14 @@ def logo():
 
 
 MOON_PATH = os.path.join(os.path.dirname(__file__), "moon.jpg")
+GROUND_PATH = os.path.join(os.path.dirname(__file__), "ground.jpg")
 
 
 @app.get("/moon.jpg")
 def moon_texture():
     return FileResponse(MOON_PATH, media_type="image/jpeg")
+
+
+@app.get("/ground.jpg")
+def ground_texture():
+    return FileResponse(GROUND_PATH, media_type="image/jpeg")
