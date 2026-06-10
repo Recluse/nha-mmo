@@ -1723,7 +1723,7 @@ function initWorld3D(){
  const PLANTCOL={herb:0x7bd66a,lichen:0xa8c98f,fungus:0xc77fd6,algae:0x3fb6a0};  // gatherable flora (medicine branch)
  const PLANTRES={herb:1,lichen:1,fungus:1,algae:1};
  let W=156,Hh=57,hmap=null;
- function hAt(x,y){if(!hmap)return 0;return hmap[Math.max(0,Math.min(Hh-1,y))][Math.max(0,Math.min(W-1,x))];}
+ function hAt(x,y){if(!hmap)return 0;const r=hmap[Math.max(0,Math.min(Hh-1,Math.floor(y)))];return r?r[Math.max(0,Math.min(W-1,Math.floor(x)))]:0;}  // floor: monument footprint centers can be .5 -> a float index returns undefined and throws
  function P(x,y){return [x-W/2,hAt(x,y),y-Hh/2];}
  function buildTerrain(bio,w,h){
   W=w;Hh=h;hmap=[];for(let y=0;y<h;y++){hmap[y]=[];for(let x=0;x<w;x++)hmap[y][x]=(BIO[(bio[y]||'')[x]]||BIO['.'])[1];}
@@ -1882,7 +1882,7 @@ function initWorld3D(){
   while(strG.children.length)strG.remove(strG.children[0]);
   zigFX.length=0;                                             // drop last frame's shimmer refs before rebuilding
   let zigN=0;
-  (ss||[]).forEach(s=>{
+  (ss||[]).forEach(s=>{try{                                          // per-structure guard: one bad shape can't blank ALL structures
    if(s.shape=='ziggurat'){strG.add(makeZiggurat(s,zigN++));return;}   // Moon-only monument — placed on the Moon, not the terrain
    if(s.shape=='monument'){strG.add(makeMonument(s));return;}          // terrain megastructure spanning a w x h footprint
    const p=P(s.x,s.y),sz=Math.max(0.8,(s.size||2)*0.6);let geo,vh;
@@ -1895,7 +1895,7 @@ function initWorld3D(){
     else geo=new T.BoxGeometry(sz,vh,sz);}
    let col=0x9aa4b2; if(s.color&&/^#?[0-9a-fA-F]{6}$/.test(s.color))col=parseInt(s.color.replace('#',''),16);
    if(s.shape=='elevator')col=s.complete?0x58a6ff:0xa371f7;
-   const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col}));m.position.set(p[0],p[1]+vh/2+(s.alt||0)/9,p[2]);strG.add(m);});
+   const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col}));m.position.set(p[0],p[1]+vh/2+(s.alt||0)/9,p[2]);strG.add(m);}catch(e){}});
  }
  const gAst=new T.IcosahedronGeometry(1.1,0), gArt=new T.OctahedronGeometry(1.0,0);
  function buildAsteroids(xs){
