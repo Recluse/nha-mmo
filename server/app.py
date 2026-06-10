@@ -809,6 +809,13 @@ def _records():
         cur.execute("SELECT attrs->>'name' name, (buffers->>'credits')::int cr FROM entities "
                     "WHERE type='agent' ORDER BY (buffers->>'credits')::int DESC NULLS LAST LIMIT 1")
         out["richest"] = cur.fetchone()
+        # Wonders — the megastructure title-holders (first builder of each kind) + how many distinct kinds stand
+        cur.execute("SELECT attrs->>'name' name, attrs->>'title' title FROM entities "
+                    "WHERE type='agent' AND attrs->>'title' IS NOT NULL ORDER BY title")
+        out["wonders"] = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT count(DISTINCT attrs->>'kind') c FROM entities "
+                    "WHERE type='structure' AND attrs->>'shape'='monument'")
+        out["wonder_kinds"] = cur.fetchone()["c"]
     return out
 
 
@@ -1325,7 +1332,10 @@ const I18N={
   hdr_inventory:"Inventory", hdr_vehicles:"Vehicles", hdr_milestones:"Milestones",
   rec_first_space:"&#128640; First to space", rec_reached_space:"&#128640; Reached space", rec_fastest_air:"&#9992; Fastest aircraft",
   rec_flying_veh:"&#128736; Flying vehicles", rec_top_inv:"&#127942; Top inventor", rec_most_veh:"&#128666; Most vehicles", rec_richest:"&#128176; Richest",
-  rec_nobody_yet:"nobody yet", rec_none_flying:"none flying yet", rec_agents_count:"agent(s)", rec_of_built:"built", rec_credits:"credits"
+  rec_nobody_yet:"nobody yet", rec_none_flying:"none flying yet", rec_agents_count:"agent(s)", rec_of_built:"built", rec_credits:"credits",
+  rec_wonders:"&#127894; Wonders raised", rec_of_kinds:"of 7 kinds", rec_none_yet:"none yet",
+  ev_reached:"reached", ev_first:"FIRST!", ev_invented:"invented", ev_landed:"landed", ev_round_trip:"round trip!", ev_elevator:"orbital elevator complete", ev_raised:"raised the GREAT", ev_now_the:"&mdash; now the", ev_built:"built", ev_a_structure:"a structure", ev_veh_wrecked:"vehicle wrecked", ev_str_ruined:"structure ruined", ev_defeated:"was defeated", ev_by:"by", ev_allied:"allied with", ev_declared_war:"declared war on", ev_made_peace:"made peace with", ev_attuned:"attuned to", ev_an_artifact:"an artifact", ev_law_emerged:"a new law emerged:",
+  k_aqueduct:"aqueduct", k_theater:"theater", k_castle:"castle", k_temple:"temple", k_dam:"dam", k_statue:"statue", k_colossus:"colossus"
  },
  uk:{
   lang_name:"Українська",
@@ -1408,7 +1418,10 @@ const I18N={
   hdr_inventory:"Інвентар", hdr_vehicles:"Транспорт", hdr_milestones:"Віхи",
   rec_first_space:"&#128640; Перший у космосі", rec_reached_space:"&#128640; Досягли космосу", rec_fastest_air:"&#9992; Найшвидший літак",
   rec_flying_veh:"&#128736; Літаючий транспорт", rec_top_inv:"&#127942; Топ винахідник", rec_most_veh:"&#128666; Найбільше транспорту", rec_richest:"&#128176; Найбагатший",
-  rec_nobody_yet:"поки що ніхто", rec_none_flying:"поки що ніхто не літає", rec_agents_count:"агент(ів)", rec_of_built:"збудовано", rec_credits:"кредитів"
+  rec_nobody_yet:"поки що ніхто", rec_none_flying:"поки що ніхто не літає", rec_agents_count:"агент(ів)", rec_of_built:"збудовано", rec_credits:"кредитів",
+  rec_wonders:"&#127894; Зведено Чудес", rec_of_kinds:"з 7 видів", rec_none_yet:"поки жодного",
+  ev_reached:"досяг", ev_first:"ПЕРШИЙ!", ev_invented:"винайшов", ev_landed:"приземлився", ev_round_trip:"туди-назад!", ev_elevator:"орбітальний ліфт збудовано", ev_raised:"звів ВЕЛИКИЙ", ev_now_the:"&mdash; тепер", ev_built:"збудував", ev_a_structure:"споруда", ev_veh_wrecked:"транспорт розбито", ev_str_ruined:"споруду зруйновано", ev_defeated:"повалений", ev_by:"від", ev_allied:"у союзі з", ev_declared_war:"оголосив війну", ev_made_peace:"уклав мир з", ev_attuned:"налаштувався на", ev_an_artifact:"артефакт", ev_law_emerged:"виник новий закон:",
+  k_aqueduct:"акведук", k_theater:"театр", k_castle:"замок", k_temple:"храм", k_dam:"дамба", k_statue:"статуя", k_colossus:"колос"
  },
  ru:{
   lang_name:"Русский",
@@ -1491,7 +1504,10 @@ const I18N={
   hdr_inventory:"Инвентарь", hdr_vehicles:"Транспорт", hdr_milestones:"Вехи",
   rec_first_space:"&#128640; Первый в космосе", rec_reached_space:"&#128640; Достигли космоса", rec_fastest_air:"&#9992; Самый быстрый самолёт",
   rec_flying_veh:"&#128736; Летающий транспорт", rec_top_inv:"&#127942; Топ изобретатель", rec_most_veh:"&#128666; Больше всего транспорта", rec_richest:"&#128176; Самый богатый",
-  rec_nobody_yet:"пока никто", rec_none_flying:"пока никто не летает", rec_agents_count:"агент(ов)", rec_of_built:"построено", rec_credits:"кредитов"
+  rec_nobody_yet:"пока никто", rec_none_flying:"пока никто не летает", rec_agents_count:"агент(ов)", rec_of_built:"построено", rec_credits:"кредитов",
+  rec_wonders:"&#127894; Возведено Чудес", rec_of_kinds:"из 7 видов", rec_none_yet:"пока ни одного",
+  ev_reached:"достиг", ev_first:"ПЕРВЫЙ!", ev_invented:"изобрёл", ev_landed:"приземлился", ev_round_trip:"туда-обратно!", ev_elevator:"орбитальный лифт построен", ev_raised:"возвёл ВЕЛИКИЙ", ev_now_the:"&mdash; теперь", ev_built:"построил", ev_a_structure:"строение", ev_veh_wrecked:"транспорт разбит", ev_str_ruined:"строение разрушено", ev_defeated:"повержен", ev_by:"от", ev_allied:"в союзе с", ev_declared_war:"объявил войну", ev_made_peace:"заключил мир с", ev_attuned:"настроился на", ev_an_artifact:"артефакт", ev_law_emerged:"возник новый закон:",
+  k_aqueduct:"акведук", k_theater:"театр", k_castle:"замок", k_temple:"храм", k_dam:"дамба", k_statue:"статуя", k_colossus:"колосс"
  }
 };
 function detectLang(){const ls=(navigator.languages&&navigator.languages.length)?navigator.languages:[navigator.language||navigator.userLanguage||'en'];
@@ -1500,6 +1516,22 @@ function detectLang(){const ls=(navigator.languages&&navigator.languages.length)
 let LANG=localStorage.getItem('nha_lang')||detectLang();
 if(!I18N[LANG])LANG='en';
 function t(key){try{return (I18N[LANG]&&I18N[LANG][key])||I18N.en[key]||key;}catch(e){return key;}}
+function kindName(k){return t('k_'+k)||esc(k);}                 // localized megastructure kind name
+function evTx(e,tn){const dt=e.data||{};const P=(dt.points!=null)?' +'+dt.points:'';tn=tn||(id=>'#'+id);   // ONE localized event formatter for every feed (highlights / timeline / profile)
+ if(e.kind=='escape')return '&#128640; '+t('ev_reached')+' '+esc(dt.milestone||'space')+(dt.first?' <span class=AG>('+t('ev_first')+')</span>':'')+P;
+ if(e.kind=='invent')return '&#129514; '+t('ev_invented')+' <b>'+esc(dt.name||dt.item)+'</b>'+P;
+ if(e.kind=='build'&&dt.elevator)return '&#127959;&#65039; '+t('ev_elevator')+P;
+ if(e.kind=='build'&&dt.monument)return '&#127894; '+t('ev_raised')+' <b>'+kindName(dt.monument)+'</b>'+((dt.first&&dt.title)?' '+t('ev_now_the')+' <span class=AG>'+esc(dt.title)+'</span>!':'')+P;
+ if(e.kind=='build')return '&#127959;&#65039; '+t('ev_built')+' '+esc(dt.part||dt.structure||t('ev_a_structure'))+P;
+ if(e.kind=='land')return '&#129681; '+t('ev_landed')+(dt.round_trip?' ('+t('ev_round_trip')+')':'')+' +'+(dt.points||0);
+ if(e.kind=='destroyed')return (dt.type=='vehicle'?'&#128165; '+t('ev_veh_wrecked'):dt.type=='structure'?'&#127959;&#65039; '+t('ev_str_ruined'):'&#128128; <span class=O>'+t('ev_defeated')+'</span>')+(dt.by!=null?' '+t('ev_by')+' <span class=AG>'+tn(dt.by)+'</span>':'');
+ if(e.kind=='ally')return '&#129309; <span class=AG>'+t('ev_allied')+'</span> <span class=AG>'+tn(dt['with']||dt.to)+'</span>';
+ if(e.kind=='war')return '&#9876;&#65039; <span class=O>'+t('ev_declared_war')+'</span> <span class=AG>'+tn(dt.to||dt['with']||dt.b)+'</span>';
+ if(e.kind=='peace')return '&#128330; '+t('ev_made_peace')+' <span class=AG>'+tn(dt.to||dt['with']||dt.b)+'</span>';
+ if(e.kind=='attune')return '&#10024; '+t('ev_attuned')+' '+esc(dt.kind||t('ev_an_artifact'))+(dt.first?' ('+t('ev_first')+')':'')+P;
+ if(e.kind=='generate')return '&#9883;&#65039; '+t('ev_law_emerged')+' '+esc(dt.name||dt.item||'?');
+ if(e.kind=='reject')return '<span class=rej>&#10060; '+esc(dt.reason||e.kind)+'</span>';
+ return '<span class=sub>'+esc(e.kind)+'</span>';}
 function applyI18n(){
  document.documentElement.lang=LANG;
  document.querySelectorAll('[data-i18n]').forEach(el=>{const k=el.getAttribute('data-i18n');el.innerHTML=t(k);});
@@ -1535,7 +1567,7 @@ async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)re
  const inv=Object.entries(b).filter(([k,v])=>v).map(([k,v])=>esc(k)+' '+v).join(', ')||t('lbl_empty');
  const veh=(d.vehicles||[]).map(v=>esc(v.name||'?')+(v.flies?' [fly]':'')+(v.drives?' [drive]':'')+(v.autonomous?' [auto]':'')).join(', ')||t('lbl_none');
  const disc=(d.discoveries||[]).map(x=>`<div><b>${esc(x.name)}</b> <span class=sub>t${x.tick}</span> +${x.points}</div>`).reverse().join('')||`<div class=sub>${t('lbl_none')}</div>`;
- const ms=(d.milestones||[]).map(e=>{const dt=e.data||{};let tx;if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points+' pts';else if(e.kind=='invent')tx='invented '+esc(dt.name||dt.item)+' +'+dt.points;else if(e.kind=='build'&&dt.elevator)tx='orbital elevator complete +'+dt.points;else tx=esc(e.kind);return `<div><span class=sub>t${e.tick}</span> ${tx}</div>`;}).join('')||`<div class=sub>${t('lbl_none')}</div>`;
+ const ms=(d.milestones||[]).map(e=>`<div><span class=sub>t${e.tick}</span> ${evTx(e)}</div>`).join('')||`<div class=sub>${t('lbl_none')}</div>`;
  $('profile').removeAttribute('data-i18n');
  const ptitle=at.title?` <span title="prestige title" style="background:#3a2d6b;color:#d9c6ff;border-radius:5px;padding:1px 7px;font-size:13px;font-weight:bold">&#127894; ${esc(at.title)}</span>`:'';   // 🏆 prestige title (monument builder)
  $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span>${ptitle}</h2><div>pos (${a.x},${a.y}) &middot; <span class=O>&#10084; ${at.hp||0}/${at.hp_max||100} hp</span> &middot; <span class=AG>&#9876; ${at.kills||0} kills / ${at.deaths||0} deaths</span> &middot; alt ${at.altitude||0}${at.in_space?` <span class=AG>${t('lbl_space_tag')}</span>`:''} &middot; ${at.inventor_points||0} pts</div><h2>${t('hdr_inventory')}</h2><div class=sub>${inv}</div><h2>${t('hdr_vehicles')} (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>${t('hdr_discoveries')}</h2><div class=feed>${disc}</div><h2>${t('hdr_milestones')}</h2><div class=feed>${ms}</div>`;}
@@ -1623,15 +1655,14 @@ async function tick(){
   rows.push([t('rec_top_inv'), ti?`<span class=AG>${esc(ti.name)}</span> &middot; ${ti.pts} pts`:'-']);
   rows.push([t('rec_most_veh'), mv?`<span class=AG>${esc(mv.name)}</span> &middot; ${mv.n}`:'-']);
   rows.push([t('rec_richest'), ri?`<span class=AG>${esc(ri.name)}</span> &middot; ${ri.cr} ${t('rec_credits')}`:'-']);
+  const wo=rc.wonders||[];
+  rows.push([t('rec_wonders'), `<b>${rc.wonder_kinds||0}</b> ${t('rec_of_kinds')}`]);
+  wo.forEach(w=>rows.push([`&#127894; ${esc(w.title)}`, `<span class=AG>${esc(w.name)}</span>`]));
+  if(!wo.length)rows.push(['', `<span class=sub>${t('rec_none_yet')}</span>`]);
   $('records').innerHTML='<table>'+rows.map(r=>`<tr><td>${r[0]}<td>${r[1]}</tr>`).join('')+'</table>';
  }
  const ms=await j('/milestones');
- if(ms)$('milestones').innerHTML=ms.milestones.map(e=>{const dt=e.data||{};let txt;
-  if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
-  else if(e.kind=='invent')txt=`&#129514; <span class=AG>INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
-  else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
-  else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
-  return `<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${txt}</div>`;}).join('')||`<div class=sub>${t('ph_no_milestones')}</div>`;
+ if(ms)$('milestones').innerHTML=ms.milestones.map(e=>`<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${evTx(e)}</div>`).join('')||`<div class=sub>${t('ph_no_milestones')}</div>`;
  const dp=await j('/relations');
  if(dp){const R=dp.relations||[],nm=(id,n)=>esc(n||('#'+id));
   const A=R.filter(x=>x.state=='ally'),W=R.filter(x=>x.state=='war'),O=R.filter(x=>x.state=='offer');
@@ -1641,20 +1672,7 @@ async function tick(){
  }
  const tl=await j('/timeline');
  if(tl){const tn=id=>{if(id==null)return '?';const a=by[id];return a&&a.name?esc(a.name):'#'+id;};
-  $('timeline').innerHTML=tl.timeline.map(e=>{const dt=e.data||{};let tx;
-  if(e.kind=='escape')tx='reached '+esc(dt.milestone||'space')+(dt.first?' (FIRST!)':'')+' +'+dt.points;
-  else if(e.kind=='invent')tx='invented '+esc(dt.name||dt.item)+' +'+dt.points;
-  else if(e.kind=='land')tx='landed'+(dt.round_trip?' (round trip!)':'')+' +'+(dt.points||0);
-  else if(e.kind=='build'&&dt.elevator)tx='&#127959;&#65039; orbital elevator complete +'+dt.points;
-  else if(e.kind=='build')tx='&#127959;&#65039; built '+esc(dt.part||dt.structure||'a structure')+(dt.points?' +'+dt.points:'');
-  else if(e.kind=='destroyed')tx=(dt.type=='vehicle'?'&#128165; vehicle wrecked':dt.type=='structure'?'&#127959;&#65039; structure ruined':'&#128128; <span class=O>was defeated</span>')+(dt.by!=null?' by <span class=AG>'+tn(dt.by)+'</span>':'');
-  else if(e.kind=='ally')tx='&#129309; <span class=AG>allied</span> with <span class=AG>'+tn(dt['with']||dt.to)+'</span>';
-  else if(e.kind=='war')tx='&#9876;&#65039; <span class=O>declared war</span> on <span class=AG>'+tn(dt.to||dt['with']||dt.b)+'</span>';
-  else if(e.kind=='peace')tx='&#128330; made peace with <span class=AG>'+tn(dt.to||dt['with']||dt.b)+'</span>';
-  else if(e.kind=='attune')tx='&#10024; attuned to '+esc(dt.kind||'an artifact')+(dt.first?' (FIRST!)':'')+(dt.points?' +'+dt.points:'');
-  else if(e.kind=='generate')tx='&#9883;&#65039; a new law emerged: '+esc(dt.name||dt.item||'?');
-  else tx=esc(e.kind);
-  return `<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${tx}</div>`;}).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}
+  $('timeline').innerHTML=tl.timeline.map(e=>`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}
  const ro=await j('/roster');
  if(ro){const on=ro.agents.filter(a=>a.online).length;
   $('roster').innerHTML=`<span class=sub>${on} ${t('lbl_online_of')} / ${ro.agents.length} ${t('lbl_total')} &mdash; </span>`+ro.agents.map(a=>`<a style="cursor:pointer;color:${a.online?'#3fb950':'#7d8590'}" onclick="loadProfile(${a.id})">${a.id} ${esc(a.name||'?')}${a.title?' <span style="color:#b9a3ff" title="prestige title">&#127894;'+esc(a.title)+'</span>':''}${a.in_space?' ['+t('lbl_space_tag')+']':''}</a>`).join(' &middot; ')||`<span class=sub>${t('ph_no_agents_short')}</span>`;}
