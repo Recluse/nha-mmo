@@ -429,10 +429,12 @@ def _scene():
         asteroids = [{"x": r["x"], "y": r["y"], "res": r["res"], "amount": r["amount"] or 0} for r in cur.fetchall()]
         cur.execute("SELECT x, y, attrs->>'kind' kind FROM entities WHERE type='artifact'")
         artifacts = [{"x": r["x"], "y": r["y"], "kind": r["kind"], "loc": "ground"} for r in cur.fetchall()]
+        cur.execute("SELECT id, x, y, (attrs->>'flock')::int flock FROM entities WHERE type='goose'")   # shoreline goose flocks (swim/graze/honk/peck)
+        geese = [{"id": r["id"], "x": r["x"], "y": r["y"], "flock": r["flock"]} for r in cur.fetchall()]
     sx, sy, sr = engine.storm_center(t, WORLD_W, WORLD_H)
     return {"w": WORLD_W, "h": WORLD_H, "biomes": rows, "deposits": deposits, "agents": agents,
             "vehicles": vehicles, "structures": structures, "bombs": bombs, "asteroids": asteroids,
-            "artifacts": artifacts, "storm": {"x": sx, "y": sy, "r": sr}}
+            "artifacts": artifacts, "geese": geese, "storm": {"x": sx, "y": sy, "r": sr}}
 
 
 @app.get("/scene")
@@ -1703,9 +1705,10 @@ function initWorld3D(){
  moon.position.set(0,72,-28); sc.add(moon);
  const stormMesh=new T.Mesh(new T.SphereGeometry(14,16,12),new T.MeshBasicMaterial({color:0x8aa0b8,transparent:true,opacity:0.16}));
  stormMesh.visible=false; sc.add(stormMesh);                                  // drifting storm — mining/chopping under it is halved
- const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(), astG=new T.Group(), artG=new T.Group();
- sc.add(depG); sc.add(agG); sc.add(vehG); sc.add(strG); sc.add(astG); sc.add(artG);
+ const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(), astG=new T.Group(), artG=new T.Group(), gooseG=new T.Group();
+ sc.add(depG); sc.add(agG); sc.add(vehG); sc.add(strG); sc.add(astG); sc.add(artG); sc.add(gooseG);
  const zigFX=[];   // ziggurat shimmer targets (glow/capstone/sparkle motes) — pulsed every frame in the render loop
+ const gooseFX=[]; // per-goose wing-flap/bob targets — gently animated every frame in the render loop (tt)
  let waterU=null;  // animated-water ShaderMaterial uniforms (uTime) — advanced every frame in the render loop
  let yaw=0.7,pitch=0.85,dist=170;
  // numeric guard: any handler that feeds yaw/pitch/dist a NaN (e.g. a wheel event with deltaY=NaN, or a
@@ -1995,8 +1998,36 @@ void main(){
    const m=new T.Mesh(gArt,new T.MeshLambertMaterial({color:0xa371f7,emissive:0x4b2b78}));
    m.position.set(p[0],p[1]+2.0,p[2]);artG.add(m);});
  }
+ // shoreline geese — a small white body + orange beak + dark webbed feet/wing nubs, seated on the terrain
+ // via P(x,y) so geese on water cells (which sit low, ~-1.6) look like they're swimming and land geese graze.
+ const gGooseBody=new T.SphereGeometry(0.34,10,8), gGooseHead=new T.SphereGeometry(0.17,8,6),
+       gGooseBeak=new T.ConeGeometry(0.07,0.22,6), gGooseWing=new T.SphereGeometry(0.2,6,5),
+       gGooseFoot=new T.BoxGeometry(0.12,0.04,0.18);
+ const gooseWhite=new T.MeshLambertMaterial({color:0xf4f4ee}), gooseBeak=new T.MeshLambertMaterial({color:0xe8902a}),
+       gooseFootM=new T.MeshLambertMaterial({color:0xd87a1e});
+ function buildGeese(gs){
+  while(gooseG.children.length)gooseG.remove(gooseG.children[0]);
+  gooseFX.length=0;                                          // drop last frame's flap/bob refs before rebuilding
+  (gs||[]).forEach(g=>{try{                                  // per-goose guard: one bad goose can't blank the scene
+   const p=P(g.x,g.y);
+   const grp=new T.Group();
+   grp.position.set(p[0],p[1]+0.34,p[2]);
+   const yaw=((g.id||0)*1.7)%6.283;                          // deterministic facing from the id (no RNG)
+   grp.rotation.y=yaw;
+   const body=new T.Mesh(gGooseBody,gooseWhite); body.scale.set(1.0,0.82,1.45); grp.add(body);   // plump elongated body
+   const neck=new T.Mesh(gGooseBody,gooseWhite); neck.scale.set(0.34,0.78,0.34); neck.position.set(0,0.34,0.34); grp.add(neck);
+   const head=new T.Mesh(gGooseHead,gooseWhite); head.position.set(0,0.6,0.44); grp.add(head);
+   const beak=new T.Mesh(gGooseBeak,gooseBeak); beak.rotation.x=Math.PI/2; beak.position.set(0,0.58,0.62); grp.add(beak);
+   const lw=new T.Mesh(gGooseWing,gooseWhite); lw.scale.set(0.5,0.7,1.1); lw.position.set(-0.3,0.06,0); grp.add(lw);
+   const rw=new T.Mesh(gGooseWing,gooseWhite); rw.scale.set(0.5,0.7,1.1); rw.position.set(0.3,0.06,0); grp.add(rw);
+   const lf=new T.Mesh(gGooseFoot,gooseFootM); lf.position.set(-0.12,-0.3,-0.1); grp.add(lf);
+   const rf=new T.Mesh(gGooseFoot,gooseFootM); rf.position.set(0.12,-0.3,-0.1); grp.add(rf);
+   gooseG.add(grp);
+   gooseFX.push({grp:grp,lw:lw,rw:rw,base:p[1]+0.34,ph:((g.id||0)%17)*0.37});   // bob the body + flap the wings via tt
+  }catch(e){}});
+ }
  let built=false;
- async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
+ async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);buildGeese(s.geese);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
  refresh(); setInterval(refresh,3000);
  // render loop — hardened so NOTHING (a wheel event, a NaN camera, a transient render throw, or the host
  // collapsing to 0px) can permanently blank the 3D world: the whole body is in try/catch so a throw can't kill
@@ -2013,6 +2044,10 @@ void main(){
     if(fx.kind=='glow')fx.m.material.opacity=fx.base*(0.55+0.55*Math.sin(tt*2.2+fx.ph));
     else if(fx.kind=='cap')fx.m.scale.setScalar(1+0.3*Math.sin(tt*3.1+fx.ph));
     else fx.m.material.opacity=Math.max(0,Math.sin(tt*4.5+fx.ph));}
+   for(const g of gooseFX){                                  // geese gently bob + flap their wings
+    g.grp.position.y=g.base+0.05*Math.sin(tt*2.0+g.ph);
+    const fl=0.5+0.35*Math.sin(tt*6.0+g.ph);
+    g.lw.rotation.z=fl; g.rw.rotation.z=-fl;}
    if(waterU)waterU.uTime.value=tt;}catch(e){}   // isolated so a shimmer/water slip can't blank the canvas
    ren.render(sc,cam);
   }catch(err){clampCam();}                                 // never let a frame error stop the loop

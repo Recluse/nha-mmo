@@ -30,7 +30,7 @@ DESCEND = 40             # altitude shed per `land` (controlled descent back hom
 # ===================== SEASON 3 CONSTANTS (all integers) =====================
 # --- combat / HP (unified across weapons + death + alliances) ---
 HP_MAX = 100
-HP_BY_TYPE = {"agent": 100, "vehicle": 120, "structure": 200}
+HP_BY_TYPE = {"agent": 100, "vehicle": 120, "structure": 200, "goose": 8}
 HP_REGEN = 2                  # agents only, per tick, up to HP_MAX, only when not at war this tick AND not downed
 ATTACK_RANGE = 6              # Manhattan (default weapon reach)
 WEAPON_RANGE_KINETIC = 6
@@ -113,6 +113,15 @@ KARMA_MAX = 6
 KARMA_DIV = 4
 COOP_THRESH = 6
 _NF_W_MARKET = 2
+# --- geese (shoreline hazard, increment) ---
+GOOSE_FLOCKS = 3                 # one-time deterministic spawn: this many gaggles anchored at water deposits
+GOOSE_PER_FLOCK_MIN = 4         # each gaggle holds MIN..MAX geese (count derived per-flock from _h, no RNG)
+GOOSE_PER_FLOCK_MAX = 6
+GOOSE_WATER_RES = ("water", "brine", "salt", "ice", "algae")   # water-ish deposits geese anchor to (sea/coast)
+GOOSE_ROAM = 3                  # a goose waddles within this Chebyshev radius of its anchor cell
+GOOSE_HONK_EVERY = 5           # one flock honks every this-many ticks (deterministic, staggered by flock id)
+GOOSE_PECK_MIN_CLUSTER = 2     # an agent on/adjacent to this many geese of a flock gets pecked
+GOOSE_PECK_MAX = 5            # peck damage is capped at this (scales with cluster size, never one-shots)
 # ============================================================================
 
 SCHEMA = """
@@ -696,6 +705,8 @@ def apply_intent(it, ents, cur, t, events):
             x0, y0 = a["x"], a["y"]                       # the agent's CURRENT cell is the SW corner of the footprint
             if x0 < 0 or y0 < 0 or x0 + w > W or y0 + h > H:
                 return "rejected", f"the {w}x{h} footprint runs off the world edge — move so it fits in-bounds"
+            if geese_block_footprint(ents, x0, y0, w, h):   # a gaggle on/around the footprint blocks the raise
+                return "rejected", "a gaggle of hissing geese blocks the site — shoo them off first"
             # footprint must be clear of every existing structure (DB query sees prior ticks + structures raised earlier this tick)
             cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x>=%s AND x<%s AND y>=%s AND y<%s LIMIT 1",
                         (x0, x0 + w, y0, y0 + h))
@@ -734,6 +745,8 @@ def apply_intent(it, ents, cur, t, events):
                                            "builder_name": a["attrs"].get("name")})))
             return "applied", f"built a {kind} monument ({w}x{h}) #{mid} +{pts} pts"
         on_moon = bool(a["attrs"].get("on_moon"))   # regolith builds only when actually landed (post-rework: altitude 600 alone = orbit, not the Moon)
+        if not on_moon and geese_block_footprint(ents, a["x"], a["y"], 1, 1):   # no geese on the Moon; only earthbound shoreline builds are blocked
+            return "rejected", "a gaggle of hissing geese blocks the site — shoo them off first"
         size = max(1, min(20, _ai(args, "size", 3)))
         height = max(1, min(60, _ai(args, "height", size)))
         cost = {"regolith": size + max(1, height // 12)} if on_moon else {"metal": size, "composite": max(1, height // 12)}
@@ -1500,6 +1513,108 @@ def drift_asteroids(ents, t, events):
                 a["attrs"].pop("docked_to", None)
                 events.append((t, a["id"], "undock", {"reason": "drift"}))
 
+def _world_dims(ents):
+    """World w/h from the market entity — the same idiom apply_intent/move use (never bare live env)."""
+    mkt = next((x for x in ents.values() if x["type"] == "market"), None)
+    w = int(mkt["attrs"].get("w", 156)) if mkt else 156
+    h = int(mkt["attrs"].get("h", 156)) if mkt else 156
+    return w, h
+
+def geese_at(ents, x, y, rng=1):
+    """Geese on or within Chebyshev `rng` of (x,y), grouped by flock id → {fid: [goose, ...]}.
+    Shared by the build-interference guard (a gaggle blocks a site) and the peck/defend system."""
+    out = {}
+    for g in ents.values():
+        if g["type"] != "goose":
+            continue
+        if max(abs(int(g["x"]) - int(x)), abs(int(g["y"]) - int(y))) <= rng:
+            out.setdefault(g["attrs"].get("flock"), []).append(g)
+    return out
+
+def geese_block_footprint(ents, x0, y0, w, h):
+    """True if any goose occupies OR is adjacent to a w×h footprint with SW corner (x0,y0) — used to
+    reject builds. Cheap: a goose blocks iff it lies in the footprint expanded by one cell on each side."""
+    for g in ents.values():
+        if g["type"] != "goose":
+            continue
+        gx, gy = int(g["x"]), int(g["y"])
+        if (x0 - 1) <= gx <= (x0 + w) and (y0 - 1) <= gy <= (y0 + h):
+            return True
+    return False
+
+def move_geese(ents, cur, t, events):
+    """Shoreline geese — a deterministic, replay-safe flock hazard (NO RNG; everything keyed on _h / ids / t).
+
+    (a) ONE-TIME SPAWN (idempotent — only if zero geese exist): a few gaggles anchored at existing water
+        deposits, picked deterministically by sorting water deposits by id and selecting via _h. Each goose
+        carries type 'goose', low hp (HP_BY_TYPE), its flock (anchor deposit id) + anchor cell (ax/ay).
+    (b) WADDLE: each goose wobbles within GOOSE_ROAM cells of its anchor via _h keyed on its id + t (closed,
+        clamped to world bounds) — geese on water cells swim, geese on adjacent land graze.
+    (c) HONK: one flock per GOOSE_HONK_EVERY ticks emits a 'honk' event ("HONK HONK").
+    (d) DEFEND/PECK: an agent on/adjacent to >=GOOSE_PECK_MIN_CLUSTER geese of a flock is pecked for a small
+        cluster-scaled HP hit (capped GOOSE_PECK_MAX), floored so it can never kill — ambient 'stay away'."""
+    w, h = _world_dims(ents)
+    geese = [g for g in ents.values() if g["type"] == "goose"]
+    # (a) one-time deterministic spawn anchored at water deposits
+    if not geese:
+        waters = sorted((e for e in ents.values() if e["type"] == "deposit"
+                         and e["attrs"].get("resource") in GOOSE_WATER_RES), key=lambda e: e["id"])
+        if waters:
+            n = len(waters)
+            picked, seen = [], set()
+            for k in range(GOOSE_FLOCKS):                  # deterministic distinct anchors (probe forward on collision)
+                idx = _h("goose", "anchor", k) % n
+                for _ in range(n):
+                    if idx not in seen:
+                        break
+                    idx = (idx + 1) % n
+                seen.add(idx); picked.append(waters[idx])
+            for anchor in picked:
+                fid = anchor["id"]; ax, ay = int(anchor["x"]), int(anchor["y"])
+                cnt = GOOSE_PER_FLOCK_MIN + _h("goose", "cnt", fid) % (GOOSE_PER_FLOCK_MAX - GOOSE_PER_FLOCK_MIN + 1)
+                for j in range(cnt):
+                    gx = min(w - 1, max(0, ax + (_h("goose", "sx", fid, j) % (2 * GOOSE_ROAM + 1) - GOOSE_ROAM)))
+                    gy = min(h - 1, max(0, ay + (_h("goose", "sy", fid, j) % (2 * GOOSE_ROAM + 1) - GOOSE_ROAM)))
+                    gid = new_entity(ents, cur, "goose", gx, gy, None,
+                                     {"flock": fid, "ax": ax, "ay": ay, "seq": j,
+                                      "hp": HP_BY_TYPE["goose"], "hp_max": HP_BY_TYPE["goose"]})
+                    events.append((t, gid, "goose_spawn", {"flock": fid, "ax": ax, "ay": ay}))
+            geese = [g for g in ents.values() if g["type"] == "goose"]
+    # (b) waddle: closed deterministic wobble around each goose's stored anchor, clamped to bounds
+    for g in geese:
+        at = g["attrs"]
+        ax = int(at.get("ax", g["x"])); ay = int(at.get("ay", g["y"]))
+        g["x"] = min(w - 1, max(0, ax + (_h(g["id"], "gx", t // 2) % 7 - 3)))
+        g["y"] = min(h - 1, max(0, ay + (_h(g["id"], "gy", t // 2) % 7 - 3)))
+    if not geese:
+        return
+    # group surviving geese by flock for honk + peck
+    flocks = {}
+    for g in geese:
+        flocks.setdefault(g["attrs"].get("flock"), []).append(g)
+    # (c) honk: one flock per GOOSE_HONK_EVERY ticks (deterministic pick), the lowest-id goose voices it
+    fids = sorted(fid for fid in flocks if fid is not None)
+    if fids and t % GOOSE_HONK_EVERY == 0:
+        fid = fids[_h("goose", "honk", t // GOOSE_HONK_EVERY) % len(fids)]
+        crew = sorted(flocks[fid], key=lambda g: g["id"])
+        events.append((t, crew[0]["id"], "honk", {"flock": fid, "n": len(crew), "text": "HONK HONK"}))
+    # (d) defend/peck: each agent clustered in a flock takes a small, non-lethal, cluster-scaled peck
+    for a in ents.values():
+        if a["type"] != "agent" or int(a["attrs"].get("downed_until", 0)) > t:
+            continue
+        near = geese_at(ents, a["x"], a["y"], 1)            # geese on/adjacent, grouped by flock
+        best_fid, cluster = None, 0
+        for fid, gs in sorted(near.items(), key=lambda kv: (kv[0] is None, kv[0])):
+            if fid is not None and len(gs) > cluster:
+                best_fid, cluster = fid, len(gs)
+        if cluster >= GOOSE_PECK_MIN_CLUSTER:
+            dmg = min(cluster, GOOSE_PECK_MAX)
+            hp = hp_of(a)
+            a["attrs"]["hp"] = max(1, hp - dmg)             # floored at 1 — geese harass, never kill
+            if a["attrs"]["hp"] < hp:
+                events.append((t, a["id"], "peck", {"flock": best_fid, "geese": cluster,
+                                                    "dmg": hp - a["attrs"]["hp"], "text": "pecked by hissing geese!"}))
+
 def decay_loot(ents, cur, t):
     """Loot piles past their TTL evaporate (the materials setback window closes)."""
     for e in list(ents.values()):
@@ -1580,6 +1695,7 @@ def tick(conn):
     regen_hp(ents, t)
     expire_diplomacy(ents, cur, t)
     drift_asteroids(ents, t, events)
+    move_geese(ents, cur, t, events)                      # shoreline goose flocks: spawn-once + waddle + honk + peck (deterministic)
     decay_loot(ents, cur, t)
     for e in ents.values():
         cur.execute("UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s",
