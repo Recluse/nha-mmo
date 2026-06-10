@@ -91,6 +91,10 @@ def main():
                 print(f"#{p['id']} {p.get('proposed_name') or p['sig']} -> {tag} :: {verdict['reason'][:70]}", flush=True)
             except Exception as e:
                 print(f"judge #{p.get('id')} failed: {e}", flush=True)
+                if getattr(e, "code", None) == 429:          # rate-limited: stop hammering the LLM, let the window reset before retrying the rest
+                    print("rate-limited (429) — backing off 90s", flush=True)
+                    time.sleep(90)
+                    break
             time.sleep(1.5)
         time.sleep(INTERVAL)
 
