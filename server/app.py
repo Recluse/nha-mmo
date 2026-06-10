@@ -1677,15 +1677,12 @@ function initWorld3D(){
  const cam=new T.PerspectiveCamera(55, host.clientWidth/host.clientHeight, 0.5, 3000);
  sc.add(new T.AmbientLight(0xffffff,0.75));
  const sun=new T.DirectionalLight(0xfff0d0,0.9); sun.position.set(80,160,50); sc.add(sun);
- function moonTex(){const c=document.createElement('canvas');c.width=512;c.height=256;const g=c.getContext('2d');
-  g.fillStyle='#b8bcc4';g.fillRect(0,0,512,256);                                                  // base regolith grey
-  for(let i=0;i<7;i++){const x=(i*97+40)%512,y=(i*53+30)%256,r=24+(i*13)%40;g.fillStyle='rgba(122,126,136,0.5)';g.beginPath();g.arc(x,y,r,0,7);g.fill();}   // dark maria seas
-  for(let i=0;i<95;i++){const x=(i*131+17)%512,y=(i*71+29)%256,r=2+(i*7)%9;                        // craters: bright rim + dark floor
-   g.fillStyle='rgba(158,162,170,0.85)';g.beginPath();g.arc(x,y,r,0,7);g.fill();
-   g.fillStyle='rgba(92,96,106,0.85)';g.beginPath();g.arc(x,y,r*0.66,0,7);g.fill();}
-  const tx=new T.CanvasTexture(c);return tx;}
- const moon=new T.Mesh(new T.SphereGeometry(9,32,24),new T.MeshLambertMaterial({map:moonTex(),emissive:0x20232a}));
- moon.position.set(0,72,-28); sc.add(moon);                                  // the Moon — procedural craters+maria texture; the altitude-600 goal floats above the world
+ // the Moon — a REAL (NASA-derived) lunar map served same-origin at /moon.jpg, loaded async onto the sphere; a plain
+ // grey stands in until it arrives. The altitude-600 space-race goal floats above the world.
+ const moonMat=new T.MeshLambertMaterial({color:0xb9bcc4,emissive:0x14161a});
+ new T.TextureLoader().load('/moon.jpg',function(tx){moonMat.map=tx;moonMat.color.setHex(0xffffff);moonMat.needsUpdate=true;});
+ const moon=new T.Mesh(new T.SphereGeometry(9,48,32),moonMat);
+ moon.position.set(0,72,-28); sc.add(moon);
  const stormMesh=new T.Mesh(new T.SphereGeometry(14,16,12),new T.MeshBasicMaterial({color:0x8aa0b8,transparent:true,opacity:0.16}));
  stormMesh.visible=false; sc.add(stormMesh);                                  // drifting storm — mining/chopping under it is halved
  const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(), astG=new T.Group(), artG=new T.Group();
@@ -1952,3 +1949,11 @@ LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo.png")
 @app.get("/logo.png")
 def logo():
     return FileResponse(LOGO_PATH, media_type="image/png")
+
+
+MOON_PATH = os.path.join(os.path.dirname(__file__), "moon.jpg")
+
+
+@app.get("/moon.jpg")
+def moon_texture():
+    return FileResponse(MOON_PATH, media_type="image/jpeg")
