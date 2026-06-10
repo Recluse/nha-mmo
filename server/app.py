@@ -1688,6 +1688,7 @@ function initWorld3D(){
  const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(), astG=new T.Group(), artG=new T.Group();
  sc.add(depG); sc.add(agG); sc.add(vehG); sc.add(strG); sc.add(astG); sc.add(artG);
  const zigFX=[];   // ziggurat shimmer targets (glow/capstone/sparkle motes) — pulsed every frame in the render loop
+ let waterU=null;  // animated-water ShaderMaterial uniforms (uTime) — advanced every frame in the render loop
  let yaw=0.7,pitch=0.85,dist=170;
  // numeric guard: any handler that feeds yaw/pitch/dist a NaN (e.g. a wheel event with deltaY=NaN, or a
  // wild devicePixelRatio) would otherwise propagate to the camera position and PERMANENTLY blank the canvas
@@ -1731,7 +1732,52 @@ function initWorld3D(){
   const pos=geo.attributes.position,col=[];
   for(let i=0;i<pos.count;i++){const vx=i%w,vy=Math.floor(i/w);const b=BIO[(bio[vy]||'')[vx]]||BIO['.'];pos.setY(i,b[1]);const c=new T.Color(b[0]);col.push(c.r,c.g,c.b);}
   geo.setAttribute('color',new T.Float32BufferAttribute(col,3)); geo.computeVertexNormals();
-  sc.add(new T.Mesh(geo,new T.MeshLambertMaterial({vertexColors:true,flatShading:true})));
+  const tmat=new T.MeshLambertMaterial({vertexColors:true,flatShading:true});
+  tmat.onBeforeCompile=function(sh){                          // procedural land texture: rock on slopes + snow on peaks + noise mottle, injected into Lambert so lighting is kept
+   sh.vertexShader=sh.vertexShader
+    .replace('#include <common>',`#include <common>
+varying vec3 vWP; varying vec3 vWN;`)
+    .replace('#include <begin_vertex>',`#include <begin_vertex>
+vWP=(modelMatrix*vec4(transformed,1.0)).xyz;`)
+    .replace('#include <beginnormal_vertex>',`#include <beginnormal_vertex>
+vWN=normalize(mat3(modelMatrix)*objectNormal);`);
+   sh.fragmentShader=sh.fragmentShader
+    .replace('#include <common>',`#include <common>
+varying vec3 vWP; varying vec3 vWN;
+float thash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float tnoise(vec2 p){vec2 i=floor(p),f=fract(p);float a=thash(i),b=thash(i+vec2(1.,0.)),c=thash(i+vec2(0.,1.)),d=thash(i+vec2(1.,1.));vec2 u=f*f*(3.-2.*f);return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);}`)
+    .replace('#include <color_fragment>',`#include <color_fragment>
+{ float slope=1.-clamp(vWN.y,0.,1.);
+  float n=tnoise(vWP.xz*0.7), n2=tnoise(vWP.xz*3.3);
+  diffuseColor.rgb*=0.80+0.40*n;
+  vec3 rock=vec3(0.40,0.38,0.36)*(0.7+0.5*n2);
+  diffuseColor.rgb=mix(diffuseColor.rgb,rock,smoothstep(0.30,0.62,slope));
+  float snow=smoothstep(4.0,6.0,vWP.y)*(1.-smoothstep(0.5,0.78,slope));
+  diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.92,0.95,1.0),snow*0.92); }`);
+  };
+  sc.add(new T.Mesh(geo,tmat));
+  try{buildWater(w,h);}catch(e){}                             // water is best-effort — never let it break the terrain
+ }
+ function buildWater(w,h){                                    // animated water: ONE sea-level plane; land sits above it so it only shows where terrain dips below (the water cells)
+  const wu={uTime:{value:0}};
+  const wmat=new T.ShaderMaterial({uniforms:wu,transparent:true,depthWrite:false,
+   vertexShader:`uniform float uTime; varying vec3 vW;
+void main(){ vec3 p=position;
+ float wv=sin(p.x*0.35+uTime*1.2)*0.10+cos(p.z*0.45+uTime*0.9)*0.08+sin((p.x+p.z)*0.7-uTime*1.7)*0.04;
+ p.y+=wv; vW=(modelMatrix*vec4(p,1.0)).xyz; gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.0); }`,
+   fragmentShader:`uniform float uTime; varying vec3 vW;
+float wh(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float wnz(vec2 p){vec2 i=floor(p),f=fract(p);float a=wh(i),b=wh(i+vec2(1.,0.)),c=wh(i+vec2(0.,1.)),d=wh(i+vec2(1.,1.));vec2 u=f*f*(3.-2.*f);return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);}
+void main(){
+ float r=wnz(vW.xz*0.5+vec2(uTime*0.25,-uTime*0.18));
+ float r2=wnz(vW.xz*1.3-vec2(uTime*0.15,uTime*0.2));
+ vec3 col=mix(vec3(0.04,0.13,0.36),vec3(0.10,0.40,0.66),r*0.7+r2*0.3);
+ float g=pow(max(0.0,sin(vW.x*0.6-uTime*1.0)*sin(vW.z*0.5+uTime*0.7)),12.0);
+ col+=vec3(0.7,0.85,1.0)*g*0.6;
+ col+=smoothstep(0.78,0.96,r2)*0.16;
+ gl_FragColor=vec4(col,0.86); }`});
+  const geo=new T.PlaneGeometry(w,h,Math.min(150,w-1),Math.min(150,h-1)); geo.rotateX(-Math.PI/2);
+  const m=new T.Mesh(geo,wmat); m.position.y=-0.45; m.renderOrder=1; sc.add(m); waterU=wu;
  }
  const gBox=new T.BoxGeometry(0.85,0.85,0.85), gTree=new T.ConeGeometry(0.55,1.8,6), gAg=new T.SphereGeometry(0.95,12,10), gPlant=new T.SphereGeometry(0.42,8,6);
  function buildDeposits(ds){
@@ -1927,7 +1973,8 @@ function initWorld3D(){
    try{const tt=performance.now()*0.001;for(const fx of zigFX){       // ziggurat shimmer — pulse glow, throb capstone, twinkle motes
     if(fx.kind=='glow')fx.m.material.opacity=fx.base*(0.55+0.55*Math.sin(tt*2.2+fx.ph));
     else if(fx.kind=='cap')fx.m.scale.setScalar(1+0.3*Math.sin(tt*3.1+fx.ph));
-    else fx.m.material.opacity=Math.max(0,Math.sin(tt*4.5+fx.ph));}}catch(e){}   // isolated so a shimmer slip can't blank the canvas
+    else fx.m.material.opacity=Math.max(0,Math.sin(tt*4.5+fx.ph));}
+   if(waterU)waterU.uTime.value=tt;}catch(e){}   // isolated so a shimmer/water slip can't blank the canvas
    ren.render(sc,cam);
   }catch(err){clampCam();}                                 // never let a frame error stop the loop
  })();
