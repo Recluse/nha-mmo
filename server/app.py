@@ -1917,6 +1917,20 @@ void main(){
     const leg=new T.Mesh(new T.BoxGeometry(base*0.12,fh*0.4,base*0.12),monMat(MONTONE.bronzeDk,0x2a1606));
     leg.position.set(sd*base*0.1,fh*0.2,0); fig.add(leg);});
    fig.position.y=ph; grp.add(fig);
+  }else if(kind=='colossus'){                                 // THE COLOSSUS — a towering crowned bronze figure, arm raised with a glowing beacon (the grandest Wonder)
+   const bs=Math.min(shortS,6), ph=Math.min(5,1.6+span*0.18);
+   const plinth=new T.Mesh(new T.BoxGeometry(bs,ph,bs),monMat(MONTONE.stone,emi)); plinth.position.y=ph/2; grp.add(plinth);
+   const fh=Math.min(16,7+span*0.9), fig=new T.Group();        // TALL — towers far above ordinary buildings
+   const torso=new T.Mesh(new T.BoxGeometry(bs*0.42,fh*0.46,bs*0.26),monMat(MONTONE.bronze,0x2a1606)); torso.position.y=fh*0.52; fig.add(torso);
+   const head=new T.Mesh(new T.SphereGeometry(bs*0.17,14,12),monMat(MONTONE.bronze,0x2a1606)); head.position.y=fh*0.86; fig.add(head);
+   for(let i=0;i<7;i++){const a=i/7*6.283;const sp=new T.Mesh(new T.ConeGeometry(bs*0.035,bs*0.22,4),monMat(MONTONE.bronze,0x3a2206)); sp.position.set(Math.cos(a)*bs*0.2,fh*0.97,Math.sin(a)*bs*0.2); fig.add(sp);}   // radiate crown
+   [-1,1].forEach(sd=>{const leg=new T.Mesh(new T.BoxGeometry(bs*0.14,fh*0.4,bs*0.14),monMat(MONTONE.bronzeDk,0x2a1606)); leg.position.set(sd*bs*0.12,fh*0.2,0); fig.add(leg);});
+   const la=new T.Mesh(new T.BoxGeometry(bs*0.12,fh*0.4,bs*0.12),monMat(MONTONE.bronzeDk,0x2a1606)); la.position.set(-bs*0.3,fh*0.55,0); la.rotation.z=0.34; fig.add(la);
+   const ra=new T.Mesh(new T.BoxGeometry(bs*0.12,fh*0.44,bs*0.12),monMat(MONTONE.bronzeDk,0x2a1606)); ra.position.set(bs*0.32,fh*0.74,0); ra.rotation.z=-0.18; fig.add(ra);   // raised arm
+   const torch=new T.Mesh(new T.SphereGeometry(bs*0.15,12,10),new T.MeshBasicMaterial({color:0xfff1c0})); torch.position.set(bs*0.4,fh*0.98,0); fig.add(torch);
+   const halo=new T.Mesh(new T.SphereGeometry(bs*0.42,14,12),new T.MeshBasicMaterial({color:0xffd24a,transparent:true,opacity:0.3})); halo.position.copy(torch.position); fig.add(halo);
+   zigFX.push({m:halo,base:0.34,kind:'glow',ph:1.7});         // beacon pulses via the render loop
+   fig.position.y=ph; grp.add(fig);
   }else{                                                      // castle (default): WALL ring + corner TOWERS + crenellation feel
    const wallH=Math.min(10,2.8+span*0.3), tw=Math.max(1.0,shortS*0.4), th=wallH*1.4;
    const hw=w/2, hh=h/2;

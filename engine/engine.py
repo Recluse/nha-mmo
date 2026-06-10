@@ -674,7 +674,7 @@ def apply_intent(it, ents, cur, t, events):
             return "applied", f"laid a ziggurat foundation #{cur.fetchone()['id']} ({seg}/{ZIG_TOP}) on the Moon — stack regolith tiers to complete it"
         if shape == "monument":                          # a sprawling EARTH megastructure: one agent raises a w×h footprint in one act
             kind = str(args.get("kind", "")).lower()
-            KINDS = ("aqueduct", "theater", "castle", "temple", "dam", "statue")
+            KINDS = ("aqueduct", "theater", "castle", "temple", "dam", "statue", "colossus")
             if kind not in KINDS:
                 return "rejected", "monument kind must be " + "/".join(KINDS)
             # footprint must be honest ints (junk -> rejected, never a silent default that picks a different size)
@@ -688,6 +688,8 @@ def apply_intent(it, ents, cur, t, events):
                 return "rejected", "a monument must cover at least 10 cells"
             if w > 12 or h > 12 or w * h > 64:
                 return "rejected", "a monument footprint is capped at 12x12 and 64 cells"
+            if kind == "colossus" and w * h < 20:
+                return "rejected", "the COLOSSUS is the grandest Wonder — its footprint must span at least 20 cells"
             # these are LAND megastructures — only buildable while standing on Earth (not in space / not on the Moon / alt 0)
             if a["attrs"].get("in_space") or a["attrs"].get("on_moon") or int(a["attrs"].get("altitude", 0)) > 0:
                 return "rejected", "a monument is an earthbound megastructure — return to the ground first"
@@ -708,7 +710,8 @@ def apply_intent(it, ents, cur, t, events):
                         "AND attrs->>'kind'=%s LIMIT 1", (kind,))
             first = cur.fetchone() is None
             TITLES = {"aqueduct": "Aqueduct Architect", "theater": "Master of Theaters", "castle": "Castellan",
-                      "temple": "Hierophant", "dam": "Dam Warden", "statue": "Grand Sculptor"}
+                      "temple": "Hierophant", "dam": "Dam Warden", "statue": "Grand Sculptor",
+                      "colossus": "Wonder of the World"}
             pts = (200 + 12 * area) if first else (40 + 3 * area)
             for r, q in cost.items():
                 addb(a, r, -q)
