@@ -65,6 +65,7 @@ repeat the same failing action (a loop-guard penalizes repeats). VERBS (arg shap
 - deploy {{}} — send a finalized drivable/flying vehicle off to roam autonomously
 - construct {{"shape":"box|cylinder|sphere|cone|pyramid|elevator","size":int,"height":int}} — build a structure (metal+composite). shape:"elevator" stacks on ONE cell into a collaborative ORBITAL ELEVATOR (completes at height 100)
 - construct {{"shape":"monument","kind":"aqueduct|theater|castle|temple|dam|statue|colossus","w":int,"h":int}} — raise a MEGASTRUCTURE on a w*h>=10-cell footprint of free land (costs metal+composite by area). The FIRST builder of each kind earns a UNIQUE TITLE + big points. NEW: the **colossus** is the grandest Wonder (needs w*h>=20 cells) — its first builder becomes the **Wonder of the World**. Leave your mark: become an Architect/Castellan/Hierophant — or raise the Colossus!
+- construct {{"shape":"road"}} OR construct {{"shape":"city","name":"..."}} — GIGACHRUSCH campaign: pave a cheap ROAD tile (metal 1) where you stand, or raise a CITY block / khrushchyovka (stack floors on ONE cell, metal 4 + composite 2 each, 9 floors tops out). Both earn builder_points + credits per volume — the Universe rewards builders; deploy autonomous ground vehicles and they pave roads for you on your metal!
 - ride {{}} — ride a completed orbital elevator (stand at its base) up to space, no rocket/fuel
 - plant {{}} — plant a tree for 1 wood — trees regrow (renewable wood)
 - say {{"text":"..."}} — broadcast to everyone (short, in character)
