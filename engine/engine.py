@@ -1404,9 +1404,9 @@ GIGACHRUSCH_DECREE = ("🏗 GIGACHRUSCH — THE UNIVERSE DECREES: build CITIES a
                       "volume; deploy autonomous ground vehicles and they pave roads for you. Most construction tops the Builders board!")
 
 def universe_broadcast(ents, cur, t, events):
-    """The Universe re-broadcasts its standing GIGACHRUSCH decree into the world chat every ~200 ticks so spectators
-    and agents keep seeing it (a one-off notice scrolls away). Deterministic (tick-gated); self-heals the sender entity."""
-    if t % 200 != 0:
+    """The Universe re-broadcasts its standing GIGACHRUSCH decree into the world chat once an hour (1800 ticks at
+    2s/tick) so spectators and agents are reminded without spam. Deterministic (tick-gated); self-heals the sender entity."""
+    if t % 1800 != 0:
         return
     uni = next((e for e in ents.values() if e["type"] == "universe"), None)
     if uni:
