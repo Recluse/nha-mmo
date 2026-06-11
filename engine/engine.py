@@ -629,8 +629,8 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own"
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
-        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "ziggurat", "monument"):
-            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/ziggurat/monument"
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "ziggurat", "monument", "road", "city"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/ziggurat/monument/road/city"
         if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
             cost = {"metal": 15, "composite": 8}; seg = 20
             if any(get(a, r) < q for r, q in cost.items()):
@@ -744,6 +744,45 @@ def apply_intent(it, ents, cur, t, events):
                         (t, a["id"], Json({"monument": kind, "first": False, "points": pts,
                                            "builder_name": a["attrs"].get("name")})))
             return "applied", f"built a {kind} monument ({w}x{h}) #{mid} +{pts} pts"
+        if shape == "road":                              # ГИГАХРУЩ campaign: a cheap road tile — lay networks; volume earns builder_points
+            if get(a, "metal") < 1:
+                return "rejected", "a road tile needs metal 1"
+            cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s AND attrs->>'shape'='road' LIMIT 1", (a["x"], a["y"]))
+            if cur.fetchone():
+                return "rejected", "a road already runs across this cell"
+            addb(a, "metal", -1)
+            a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + 1
+            addb(a, "credits", 1)
+            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
+                        (a["x"], a["y"], a["id"], Json({"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
+                                                        "name": str(args.get("name", "road"))[:32]})))
+            events.append((t, a["id"], "build", {"road": True, "builder_points": 1, "builder_name": a["attrs"].get("name")}))
+            return "applied", f"laid a road at ({a['x']},{a['y']}) — ГИГАХРУЩ! +1 builder pt"
+        if shape == "city":                              # ГИГАХРУЩ campaign: a хрущёвка — stack floors on one block; taller = more builder_points
+            cost = {"metal": 4, "composite": 2}; DONE = 9
+            if any(get(a, r) < q for r, q in cost.items()):
+                return "rejected", f"a city floor needs {cost} — a хрущёвка rises floor by floor"
+            blk = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "city"
+                        and abs(e["x"] - a["x"]) + abs(e["y"] - a["y"]) <= 1 and not e["attrs"].get("complete")), None)
+            for r, q in cost.items():
+                addb(a, r, -q)
+            a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + 3
+            addb(a, "credits", 2)
+            if blk:
+                fl = int(blk["attrs"].get("floors", 0)) + 1
+                blk["attrs"]["floors"] = fl
+                if fl >= DONE and not blk["attrs"].get("complete"):
+                    blk["attrs"]["complete"] = True
+                    a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + 20
+                    events.append((t, a["id"], "build", {"city": True, "complete": True, "floors": fl, "builder_points": 23, "builder_name": a["attrs"].get("name")}))
+                    return "applied", f"ПАНЕЛЬКА #{blk['id']} topped out at {fl} floors — ГИГАХРУЩ! +23 builder pts"
+                return "applied", f"raised хрущёвка #{blk['id']} -> {fl}/{DONE} floors +3 builder pts"
+            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
+                        (a["x"], a["y"], a["id"], Json({"shape": "city", "floors": 1, "size": 2,
+                                                        "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
+                                                        "name": str(args.get("name", "хрущёвка"))[:32]})))
+            events.append((t, a["id"], "build", {"city": True, "floors": 1, "builder_points": 3, "builder_name": a["attrs"].get("name")}))
+            return "applied", f"laid хрущёвка foundation #{cur.fetchone()['id']} (1/{DONE}) — stack floors! +3 builder pts"
         on_moon = bool(a["attrs"].get("on_moon"))   # regolith builds only when actually landed (post-rework: altitude 600 alone = orbit, not the Moon)
         if not on_moon and geese_block_footprint(ents, a["x"], a["y"], 1, 1):   # no geese on the Moon; only earthbound shoreline builds are blocked
             return "rejected", "a gaggle of hissing geese blocks the site — shoo them off first"
@@ -1328,9 +1367,10 @@ def resolve_proposals(ents, cur, t, events):
             events.append((t, p["agent"], "reject", {"reason": p["reason"], "sig": p["sig"]}))
             cur.execute("UPDATE proposals SET status='refunded' WHERE id=%s", (p["id"],))
 
-def roam_autonomous(ents, t):
+def roam_autonomous(ents, cur, t, events):
     """Deployed autonomous vehicles wander the world on their own each tick. DETERMINISTIC (no RNG, so the
-    replay/state-hash chain stays valid): heading varies with tick+id; flyers also drift altitude."""
+    replay/state-hash chain stays valid): heading varies with tick+id; flyers also drift altitude.
+    ГИГАХРУЩ: grounded automatons also pave roads as they roam, funded by the OWNER's metal → owner earns builder_points."""
     mkt = next((x for x in ents.values() if x["type"] == "market"), None)
     w = int(mkt["attrs"].get("w", 156)) if mkt else 156
     h = int(mkt["attrs"].get("h", 156)) if mkt else 156
@@ -1341,6 +1381,23 @@ def roam_autonomous(ents, t):
         v["y"] = max(0, min(h - 1, v["y"] + ((t * 2 + v["id"] * 3) % 3) - 1))
         if v["attrs"].get("flies"):
             v["attrs"]["alt"] = max(0, min(600, int(v["attrs"].get("alt", 0)) + (((t + v["id"]) % 5) - 2) * 6))
+            continue                                          # flyers cruise; only grounded automatons build the ГИГАХРУЩ road grid
+        if (t + v["id"]) % 4 != 0:                            # pave on every 4th tick (deterministic throttle)
+            continue
+        owner = ents.get(v["owner"])
+        if not owner or owner["type"] != "agent" or get(owner, "metal") < 1:
+            continue
+        cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s LIMIT 1", (v["x"], v["y"]))
+        if cur.fetchone():                                    # cell already built on -> skip (no stacking roads)
+            continue
+        addb(owner, "metal", -1)
+        owner["attrs"]["builder_points"] = int(owner["attrs"].get("builder_points", 0)) + 1
+        addb(owner, "credits", 1)
+        cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
+                    (v["x"], v["y"], owner["id"], Json({"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
+                                                        "name": "auto-road", "by_automaton": v["id"]})))
+        events.append((t, owner["id"], "build", {"road": True, "automaton": v["id"], "builder_points": 1,
+                                                 "builder_name": owner["attrs"].get("name")}))
 
 def grow_trees(ents, t):
     """Trees (wood deposits) slowly regrow toward maturity → renewable forestry. Deterministic (staggered by id),
@@ -1684,7 +1741,7 @@ def tick(conn):
     match_market(ents, cur, t, events)
     expire_trades(ents, cur, t)
     resolve_proposals(ents, cur, t, events)
-    roam_autonomous(ents, t)
+    roam_autonomous(ents, cur, t, events)
     grow_trees(ents, t)
     grow_plants(ents, t)                                   # renewable plant deposits (medicine branch)
     orbital_decay(ents, t, events, cur)
