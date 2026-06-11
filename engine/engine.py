@@ -268,8 +268,7 @@ def apply_intent(it, ents, cur, t, events):
         for res, q in need.items():
             addb(a, res, -q)
         stats = vehicles.part_stats(part, ups)
-        cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('part',%s,%s,%s,%s)",
-                    (a["x"], a["y"], a["id"], Json({"part": part, "stats": stats, "upgrades": ups})))
+        new_entity(ents, cur, "part", a["x"], a["y"], a["id"], {"part": part, "stats": stats, "upgrades": ups})
         return "applied", f"built {part}" + (f" [+{'+'.join(ups)}]" if ups else "")
     if verb == "finalize":                               # assemble the agent's loose parts into a vehicle
         cur.execute("SELECT id, attrs->>'part' part, attrs->'stats' stats FROM entities "
@@ -280,12 +279,13 @@ def apply_intent(it, ents, cur, t, events):
         parts = [r["part"] for r in rows]
         stats_list = [r["stats"] or vehicles.PART.get(r["part"], {}) for r in rows]
         st = vehicles.finalize_stats(stats_list)
-        cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('vehicle',0,0,%s,%s) RETURNING id",
-                    (a["id"], Json({"name": args.get("name", "vehicle"), "parts": parts, **st,
-                                    "hp": HP_BY_TYPE["vehicle"], "hp_max": HP_BY_TYPE["vehicle"]})))   # stamp HP at creation (no lazy hp → replay-safe)
-        vid = cur.fetchone()["id"]
-        cur.execute("UPDATE entities SET attrs = attrs || '{\"used\":true}' WHERE id = ANY(%s)",
-                    ([r["id"] for r in rows],))
+        vid = new_entity(ents, cur, "vehicle", 0, 0, a["id"], {"name": args.get("name", "vehicle"), "parts": parts, **st,
+                         "hp": HP_BY_TYPE["vehicle"], "hp_max": HP_BY_TYPE["vehicle"]})   # stamp HP at creation (no lazy hp → replay-safe)
+        used_ids = [r["id"] for r in rows]
+        cur.execute("UPDATE entities SET attrs = attrs || '{\"used\":true}' WHERE id = ANY(%s)", (used_ids,))
+        for pid in used_ids:                                 # mirror the used flag into ents so RAM == DB (in-memory world)
+            if pid in ents:
+                ents[pid]["attrs"]["used"] = True
         return "applied", f"vehicle #{vid} drives={st['drives']} v={st['v_ground']} flies={st['flies']}"
     if verb in ("sell", "buy"):                          # trade raw/refined with the depot for credits
         r, n = args["resource"], _ai(args, "n", 1)
@@ -652,11 +652,10 @@ def apply_intent(it, ents, cur, t, events):
                                 (t, a["id"], Json({"elevator": True, "complete": True, "height": newh, "points": 200})))
                     return "applied", f"ORBITAL ELEVATOR #{elev['id']} COMPLETE at height {newh} — agents can `ride` it to space! +200 pts"
                 return "applied", f"extended orbital elevator #{elev['id']} -> {newh}/{ATMOSPHERE_TOP}"
-            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
-                        (a["x"], a["y"], a["id"], Json({"shape": "elevator", "height": seg, "size": 2,
-                                                        "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
-                                                        "name": str(args.get("name", "orbital elevator"))[:32]})))
-            return "applied", f"laid an orbital-elevator base #{cur.fetchone()['id']} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
+            eid = new_entity(ents, cur, "structure", a["x"], a["y"], a["id"], {"shape": "elevator", "height": seg, "size": 2,
+                             "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
+                             "name": str(args.get("name", "orbital elevator"))[:32]})
+            return "applied", f"laid an orbital-elevator base #{eid} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
         if shape == "ziggurat":                          # Moon-only collaborative monument: stack regolith tiers on one cell
             if not a["attrs"].get("on_moon"):
                 return "rejected", "a ziggurat can only be raised on the Moon — land there first"
@@ -678,11 +677,10 @@ def apply_intent(it, ents, cur, t, events):
                                 (t, a["id"], Json({"ziggurat": True, "complete": True, "height": newh, "points": 250})))
                     return "applied", f"GREAT ZIGGURAT #{zig['id']} COMPLETE at height {newh} — a monument crowns the Moon! +250 pts"
                 return "applied", f"raised the ziggurat #{zig['id']} -> {newh}/{ZIG_TOP}"
-            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
-                        (a["x"], a["y"], a["id"], Json({"shape": "ziggurat", "height": seg, "size": 3,
-                                                        "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
-                                                        "name": str(args.get("name", "ziggurat"))[:32]})))
-            return "applied", f"laid a ziggurat foundation #{cur.fetchone()['id']} ({seg}/{ZIG_TOP}) on the Moon — stack regolith tiers to complete it"
+            eid = new_entity(ents, cur, "structure", a["x"], a["y"], a["id"], {"shape": "ziggurat", "height": seg, "size": 3,
+                             "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
+                             "name": str(args.get("name", "ziggurat"))[:32]})
+            return "applied", f"laid a ziggurat foundation #{eid} ({seg}/{ZIG_TOP}) on the Moon — stack regolith tiers to complete it"
         if shape == "monument":                          # a sprawling EARTH megastructure: one agent raises a w×h footprint in one act
             kind = str(args.get("kind", "")).lower()
             KINDS = ("aqueduct", "theater", "castle", "temple", "dam", "statue", "colossus")
@@ -729,11 +727,9 @@ def apply_intent(it, ents, cur, t, events):
             for r, q in cost.items():
                 addb(a, r, -q)
             name = str(args.get("name", kind))[:32]
-            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
-                        (x0, y0, a["id"], Json({"shape": "monument", "kind": kind, "w": w, "h": h, "name": name,
-                                                "builder": a["id"], "complete": True, "points": pts,
-                                                "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})))
-            mid = cur.fetchone()["id"]
+            mid = new_entity(ents, cur, "structure", x0, y0, a["id"], {"shape": "monument", "kind": kind, "w": w, "h": h, "name": name,
+                             "builder": a["id"], "complete": True, "points": pts,
+                             "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
             a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
             if first:
                 title = TITLES[kind]
@@ -755,9 +751,8 @@ def apply_intent(it, ents, cur, t, events):
             addb(a, "metal", -1)
             a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + 1
             addb(a, "credits", 1)
-            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
-                        (a["x"], a["y"], a["id"], Json({"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
-                                                        "name": str(args.get("name", "road"))[:32]})))
+            new_entity(ents, cur, "structure", a["x"], a["y"], a["id"], {"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
+                       "name": str(args.get("name", "road"))[:32]})
             events.append((t, a["id"], "build", {"road": True, "builder_points": 1, "builder_name": a["attrs"].get("name")}))
             return "applied", f"laid a road at ({a['x']},{a['y']}) — GIGACHRUSCH! +1 builder pt"
         if shape == "city":                              # GIGACHRUSCH campaign: a khrushchyovka — stack floors on one block; taller = more builder_points
@@ -779,12 +774,11 @@ def apply_intent(it, ents, cur, t, events):
                     events.append((t, a["id"], "build", {"city": True, "complete": True, "floors": fl, "builder_points": 23, "builder_name": a["attrs"].get("name")}))
                     return "applied", f"PANELKA #{blk['id']} topped out at {fl} floors — GIGACHRUSCH! +23 builder pts"
                 return "applied", f"raised khrushchyovka #{blk['id']} -> {fl}/{DONE} floors +3 builder pts"
-            cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
-                        (a["x"], a["y"], a["id"], Json({"shape": "city", "floors": 1, "size": 2,
-                                                        "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
-                                                        "name": str(args.get("name", "khrushchyovka"))[:32]})))
+            eid = new_entity(ents, cur, "structure", a["x"], a["y"], a["id"], {"shape": "city", "floors": 1, "size": 2,
+                             "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
+                             "name": str(args.get("name", "khrushchyovka"))[:32]})
             events.append((t, a["id"], "build", {"city": True, "floors": 1, "builder_points": 3, "builder_name": a["attrs"].get("name")}))
-            return "applied", f"laid khrushchyovka foundation #{cur.fetchone()['id']} (1/{DONE}) — stack floors! +3 builder pts"
+            return "applied", f"laid khrushchyovka foundation #{eid} (1/{DONE}) — stack floors! +3 builder pts"
         on_moon = bool(a["attrs"].get("on_moon"))   # regolith builds only when actually landed (post-rework: altitude 600 alone = orbit, not the Moon)
         if not on_moon and geese_block_footprint(ents, a["x"], a["y"], 1, 1):   # no geese on the Moon; only earthbound shoreline builds are blocked
             return "rejected", "a gaggle of hissing geese blocks the site — shoo them off first"
@@ -795,11 +789,10 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", f"{shape} (size {size}, height {height}) needs {cost}" + (" — mine regolith on the Moon" if on_moon else "")
         for r, q in cost.items():
             addb(a, r, -q)
-        cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
-                    (a["x"], a["y"], a["id"], Json({"shape": shape, "size": size, "height": height,
-                                                    "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
-                                                    "color": str(args.get("color", ""))[:16], "name": str(args.get("name", shape))[:32],
-                                                    "alt": 600 if on_moon else 0})))
+        new_entity(ents, cur, "structure", a["x"], a["y"], a["id"], {"shape": shape, "size": size, "height": height,
+                   "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
+                   "color": str(args.get("color", ""))[:16], "name": str(args.get("name", shape))[:32],
+                   "alt": 600 if on_moon else 0})
         return "applied", f"built {shape} (size {size}, h {height}) {'on the Moon ' if on_moon else ''}at ({a['x']},{a['y']}) for {cost}"
     if verb == "ride":                                   # ride a completed orbital elevator to space — no rocket, no fuel
         cur.execute("SELECT (attrs->>'height')::int h FROM entities WHERE type='structure' "
@@ -835,9 +828,8 @@ def apply_intent(it, ents, cur, t, events):
         cur.execute("SELECT attrs->>'gen_seed' s FROM entities WHERE type='deposit' AND attrs->>'gen_seed' IS NOT NULL LIMIT 1")
         row = cur.fetchone(); gs = (row["s"] if row else None) or "42"
         addb(a, "wood", -1)
-        cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('deposit',%s,%s,%s)",
-                    (a["x"], a["y"], Json({"resource": "wood", "amount": 3, "biome": "plains",
-                                           "gen_seed": gs, "planted": True})))
+        new_entity(ents, cur, "deposit", a["x"], a["y"], None, {"resource": "wood", "amount": 3, "biome": "plains",
+                   "gen_seed": gs, "planted": True})
         return "applied", f"planted a tree at ({a['x']},{a['y']}) — chop it later; trees regrow over time"
     # ===================== SEASON 3 VERBS =====================
     if verb == "attack":                                 # fire a held ranged weapon at a target (consumes ammo)
@@ -1395,9 +1387,8 @@ def roam_autonomous(ents, cur, t, events):
         addb(owner, "metal", -1)
         owner["attrs"]["builder_points"] = int(owner["attrs"].get("builder_points", 0)) + 1
         addb(owner, "credits", 1)
-        cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
-                    (v["x"], v["y"], owner["id"], Json({"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
-                                                        "name": "auto-road", "by_automaton": v["id"]})))
+        new_entity(ents, cur, "structure", v["x"], v["y"], owner["id"], {"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
+                   "name": "auto-road", "by_automaton": v["id"]})
         events.append((t, owner["id"], "build", {"road": True, "automaton": v["id"], "builder_points": 1,
                                                  "builder_name": owner["attrs"].get("name")}))
 
@@ -1414,9 +1405,7 @@ def universe_broadcast(ents, cur, t, events):
     if uni:
         uid = uni["id"]
     else:
-        cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('universe',0,0,'{}'::jsonb,%s) RETURNING id",
-                    (Json({"name": "🌌 THE UNIVERSE"}),))
-        uid = cur.fetchone()["id"]
+        uid = new_entity(ents, cur, "universe", 0, 0, None, {"name": "🌌 THE UNIVERSE"})
     cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, GIGACHRUSCH_DECREE))
 
 def grow_trees(ents, t):
