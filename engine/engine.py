@@ -13,7 +13,7 @@ Run:  PG_DSN='host=127.0.0.1 dbname=nhamoo user=postgres' python engine.py [tick
 """
 import os, sys, json, hashlib
 import psycopg2
-from psycopg2.extras import RealDictCursor, Json
+from psycopg2.extras import RealDictCursor, Json, execute_batch
 import vehicles   # PART / BUILD_COST / finalize() — for the build & finalize intents
 import crafting   # PROPS / RULES / combine() — emergent physics crafting
 
@@ -1731,6 +1731,8 @@ def tick(conn):
     cur.execute("UPDATE world SET tick = tick + 1 WHERE id = 1 RETURNING tick")
     t = cur.fetchone()["tick"]
     cur.execute("SELECT * FROM entities"); ents = {e["id"]: e for e in cur.fetchall()}
+    _clean = {eid: (e["x"], e["y"], json.dumps(e["buffers"], sort_keys=True), json.dumps(e["attrs"], sort_keys=True))
+              for eid, e in ents.items()}                 # snapshot for dirty-tracking — only CHANGED entities written back
     events = []
     cur.execute("SELECT * FROM intents WHERE status = 'pending' ORDER BY id")
     for it in cur.fetchall():
@@ -1775,9 +1777,11 @@ def tick(conn):
     drift_asteroids(ents, t, events)
     move_geese(ents, cur, t, events)                      # shoreline goose flocks: spawn-once + waddle + honk + peck (deterministic)
     decay_loot(ents, cur, t)
-    for e in ents.values():
-        cur.execute("UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s",
-                    (e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), e["id"]))
+    dirty = [(e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), eid) for eid, e in ents.items()
+             if _clean.get(eid) != (e["x"], e["y"], json.dumps(e["buffers"], sort_keys=True), json.dumps(e["attrs"], sort_keys=True))]
+    execute_batch(cur, "UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s", dirty, page_size=500)
+    # dirty write-back: ONLY entities changed this tick (was rewriting all ~8k incl 7715 static deposits every tick →
+    # >12s stall + a postgres hammer that flapped the API). New rows are INSERTed elsewhere; deletes via DELETE.
     for (tk, eid, kind, data) in events:
         cur.execute("INSERT INTO events(tick, entity, kind, data) VALUES(%s,%s,%s,%s)",
                     (tk, eid, kind, Json(data)))

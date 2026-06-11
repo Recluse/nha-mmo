@@ -1,0 +1,50 @@
+# pgbouncer = connection pool in front of Postgres. The app does per-request _connect() with NO pool, so
+# multiple uvicorn workers exhaust Postgres max_connections (FATAL: too many clients). pgbouncer multiplexes
+# the app's many short-lived client connections onto a small fixed pool of real Postgres connections (~25),
+# which is the PREREQUISITE for the nha-api/nha-tick multiprocess split.
+# transaction pool_mode (app does open-query-close per request → max reuse). trust auth = same as postgres
+# (no password in PG_DSN). ignore_startup_parameters=extra_float_digits is required for psycopg2 + txn mode.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer
+  namespace: nha-mmo
+spec:
+  selector: {app: pgbouncer}
+  ports:
+    - {port: 5432, targetPort: 5432}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+  namespace: nha-mmo
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: pgbouncer}}
+  template:
+    metadata: {labels: {app: pgbouncer}}
+    spec:
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:latest
+          env:
+            - {name: DB_HOST, value: "postgres"}
+            - {name: DB_PORT, value: "5432"}
+            - {name: DB_USER, value: "nhamoo"}
+            - {name: DB_NAME, value: "nhamoo"}
+            - {name: POOL_MODE, value: "transaction"}
+            - {name: MAX_CLIENT_CONN, value: "2000"}
+            - {name: DEFAULT_POOL_SIZE, value: "60"}   # 4 API workers under slow-/observe load need more (was 25 → pool starvation → /healthz timeout → API 0/1). 60+reserve < postgres max_connections 100.
+            - {name: MIN_POOL_SIZE, value: "10"}
+            - {name: RESERVE_POOL_SIZE, value: "5"}
+            - {name: AUTH_TYPE, value: "trust"}
+            - {name: ADMIN_USERS, value: "nhamoo"}
+            - {name: IGNORE_STARTUP_PARAMETERS, value: "extra_float_digits"}
+          ports: [{containerPort: 5432}]
+          readinessProbe:
+            tcpSocket: {port: 5432}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {memory: 128Mi}

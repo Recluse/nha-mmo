@@ -24,22 +24,18 @@ spec:
           workingDir: /app
           command: ["sh", "-c"]
           args:
+            # dedicated tick process — NOT uvicorn. Skips _grid (the /map biome pre-warm the ticker never needs,
+            # which stalled startup under load) and serves no HTTP. Just ensure-world then the engine tick loop.
             - pip install --no-cache-dir -q fastapi "uvicorn[standard]" psycopg2-binary pydantic
-              && exec uvicorn server.app:app --host 0.0.0.0 --port 8000
+              && exec python -c "from server import app; app._ensure_world(); app._tick_loop()"
           env:
-            - {name: PG_DSN, value: "host=postgres.nha-mmo.svc.cluster.local dbname=nhamoo user=nhamoo"}
+            - {name: PG_DSN, value: "host=postgres.nha-mmo.svc.cluster.local dbname=nhamoo user=nhamoo"}  # DIRECT
             - {name: TICK_SECONDS, value: "2"}
             - {name: WORLD_SEED, value: "42"}
             - {name: PYTHONUNBUFFERED, value: "1"}
             - {name: RUN_TICK, value: "1"}    # <-- only this pod runs the engine
-          ports: [{containerPort: 8000}]
-          startupProbe:
-            httpGet: {path: /healthz, port: 8000}
-            periodSeconds: 5
-            failureThreshold: 40
-          readinessProbe:
-            httpGet: {path: /healthz, port: 8000}
-            periodSeconds: 10
+          # no ports / no httpGet probe — dedicated tick process serves no HTTP (a /healthz probe would pin it 0/1).
+          # The tick loop self-heals transient DB errors; a hard crash exits PID 1 → k8s restarts the pod.
           volumeMounts:
             - {name: engine, mountPath: /app/engine}
             - {name: server, mountPath: /app/server}

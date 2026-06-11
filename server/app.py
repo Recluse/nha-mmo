@@ -201,9 +201,12 @@ def _ensure_world():
     global _FRONTIER_X, _FRONTIER_Y
     conn = _connect()
     cur = conn.cursor()
-    cur.execute(engine.SCHEMA); conn.commit()
-    cur.execute("CREATE TABLE IF NOT EXISTS visitors (ip_hash text PRIMARY KEY, first_seen timestamptz DEFAULT now())")
-    conn.commit()                                     # unique-spectator counter (hashed IPs, no raw addresses stored)
+    cur.execute("SELECT to_regclass('world')")        # FRESH-DB GUARD: only run schema DDL when `world` is missing.
+    if cur.fetchone()[0] is None:                     # engine.SCHEMA's CREATE/ALTER TABLE take ACCESS EXCLUSIVE locks;
+        cur.execute(engine.SCHEMA); conn.commit()     # running them on EVERY pod startup made concurrent pods (API +
+        cur.execute("CREATE TABLE IF NOT EXISTS visitors (ip_hash text PRIMARY KEY, first_seen timestamptz DEFAULT now())")
+        conn.commit()                                 # tick + restarts) deadlock on the `world` lock and JAM Postgres.
+    # NB: schema migrations are now applied out-of-band (the DDL no longer auto-runs once the world exists).
     engine.seed_demo(conn)                            # base depot + market + a starter agent
     cur.execute("SELECT count(*) FROM entities WHERE type='deposit'")
     fresh = cur.fetchone()[0] == 0
@@ -300,7 +303,8 @@ def _tick_syncer():
 @app.on_event("startup")
 def _startup():
     _ensure_world()
-    _grid()                                              # pre-warm the cached biome grid (so first /map is fast)
+    threading.Thread(target=_grid, daemon=True).start()  # pre-warm /map grid in BACKGROUND — must NOT block startup
+                                                         # (blocking _grid x4 uvicorn workers stalled startup → API 0/1 → 502)
     if os.environ.get("RUN_TICK"):                       # ONLY the single nha-tick deployment runs the engine
         threading.Thread(target=_tick_loop, daemon=True).start()
         print("nha: engine tick loop STARTED (RUN_TICK set)", flush=True)
