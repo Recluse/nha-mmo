@@ -167,6 +167,29 @@ ALTER TABLE dynamic_rules ADD COLUMN IF NOT EXISTS discoverer_name text;
 def get(e, r):  return int(e["buffers"].get(r, 0))
 def addb(e, r, n): e["buffers"][r] = int(e["buffers"].get(r, 0)) + int(n)
 
+# ---------- builder-economy diversity bonuses (THE ARCHITECT'S ERA) — pure deterministic per-agent state ----------
+def _diversity_bonus(a, cost):
+    """Register the materials consumed this build into the agent's durable `materials_used` set (monotonic,
+    de-duped, capped 18). Returns +5 once the agent has built with 3+ distinct materials — on THIS build and
+    every future one (no reset → can't be farmed by recycling the same pair)."""
+    used = a["attrs"].setdefault("materials_used", [])
+    for r in sorted(cost):                   # sorted → materials_used order is independent of cost-dict construction (replay-stable)
+        if r != "credits" and r not in used:
+            used.append(r)
+    if len(used) > 18:
+        del used[18:]
+    return 5 if len(used) >= 3 else 0
+
+def _shape_bonus(a, shape):
+    """+3 if `shape` is not among the agent's 5 most-recent built shapes, then push it onto a length-10 recency
+    deque. Rewards continuous rotation; a build-each-once-then-spam loop only scores on genuine novelty."""
+    rec = a["attrs"].setdefault("shapes_recent", [])
+    bonus = 0 if shape in rec[-5:] else 3
+    rec.append(shape)
+    if len(rec) > 10:
+        del rec[0:len(rec) - 10]
+    return bonus
+
 # ---------- entity create/delete (keeps the in-memory ents dict in lock-step with the DB) ----------
 def new_entity(ents, cur, tp, x, y, owner, attrs):
     """INSERT a new entity AND register it in ents BEFORE state_hash(ents) runs, so tick-time
@@ -748,13 +771,19 @@ def apply_intent(it, ents, cur, t, events):
             cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s AND attrs->>'shape'='road' LIMIT 1", (a["x"], a["y"]))
             if cur.fetchone():
                 return "rejected", "a road already runs across this cell"
+            rc = int(a["attrs"].get("road_count", 0))         # cumulative roads (manual + automaton), never decremented
+            if rc >= 50:                                       # network saturated → refuse (keep the metal); build EPIC instead
+                return "rejected", "the road network is SATURATED (50+ roads paved) — roads no longer pay. Raise TALL towers, cities or monuments for builder points now"
+            road_pts = 1 if rc < 25 else (1 if (rc - 25) % 2 == 0 else 0)   # 1..25 full; 26..49 every-other; the grid is thinning
             addb(a, "metal", -1)
-            a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + 1
-            addb(a, "credits", 1)
+            a["attrs"]["road_count"] = rc + 1
+            pts = road_pts + _diversity_bonus(a, {"metal": 1}) + _shape_bonus(a, "road")
+            a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + pts
+            addb(a, "credits", road_pts)
             new_entity(ents, cur, "structure", a["x"], a["y"], a["id"], {"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
                        "name": str(args.get("name", "road"))[:32]})
-            events.append((t, a["id"], "build", {"road": True, "builder_points": 1, "builder_name": a["attrs"].get("name")}))
-            return "applied", f"laid a road at ({a['x']},{a['y']}) — GIGACHRUSCH! +1 builder pt"
+            events.append((t, a["id"], "build", {"road": True, "builder_points": pts, "builder_name": a["attrs"].get("name")}))
+            return "applied", f"laid a road at ({a['x']},{a['y']}) — +{pts} builder pts (road {rc + 1}/50; roads taper after 25, stop at 50 — build UP!)"
         if shape == "city":                              # GIGACHRUSCH campaign: a khrushchyovka — stack floors on one block; taller = more builder_points
             cost = {"metal": 4, "composite": 2}; DONE = 9
             if any(get(a, r) < q for r, q in cost.items()):
@@ -763,7 +792,8 @@ def apply_intent(it, ents, cur, t, events):
                         and abs(e["x"] - a["x"]) + abs(e["y"] - a["y"]) <= 1 and not e["attrs"].get("complete")), None)
             for r, q in cost.items():
                 addb(a, r, -q)
-            a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + 3
+            city_pts = 3 + _diversity_bonus(a, cost) + _shape_bonus(a, "city")   # +3/floor + diversity ('city' novel once per 5-window → no per-floor stacking)
+            a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + city_pts
             addb(a, "credits", 2)
             if blk:
                 fl = int(blk["attrs"].get("floors", 0)) + 1
@@ -771,17 +801,20 @@ def apply_intent(it, ents, cur, t, events):
                 if fl >= DONE and not blk["attrs"].get("complete"):
                     blk["attrs"]["complete"] = True
                     a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + 20
-                    events.append((t, a["id"], "build", {"city": True, "complete": True, "floors": fl, "builder_points": 23, "builder_name": a["attrs"].get("name")}))
-                    return "applied", f"PANELKA #{blk['id']} topped out at {fl} floors — GIGACHRUSCH! +23 builder pts"
-                return "applied", f"raised khrushchyovka #{blk['id']} -> {fl}/{DONE} floors +3 builder pts"
+                    events.append((t, a["id"], "build", {"city": True, "complete": True, "floors": fl, "builder_points": city_pts + 20, "builder_name": a["attrs"].get("name")}))
+                    return "applied", f"PANELKA #{blk['id']} topped out at {fl} floors — GIGACHRUSCH! +{city_pts + 20} builder pts"
+                return "applied", f"raised khrushchyovka #{blk['id']} -> {fl}/{DONE} floors +{city_pts} builder pts"
             eid = new_entity(ents, cur, "structure", a["x"], a["y"], a["id"], {"shape": "city", "floors": 1, "size": 2,
                              "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
                              "name": str(args.get("name", "khrushchyovka"))[:32]})
-            events.append((t, a["id"], "build", {"city": True, "floors": 1, "builder_points": 3, "builder_name": a["attrs"].get("name")}))
-            return "applied", f"laid khrushchyovka foundation #{eid} (1/{DONE}) — stack floors! +3 builder pts"
+            events.append((t, a["id"], "build", {"city": True, "floors": 1, "builder_points": city_pts, "builder_name": a["attrs"].get("name")}))
+            return "applied", f"laid khrushchyovka foundation #{eid} (1/{DONE}) — stack floors! +{city_pts} builder pts"
         on_moon = bool(a["attrs"].get("on_moon"))   # regolith builds only when actually landed (post-rework: altitude 600 alone = orbit, not the Moon)
         if not on_moon and geese_block_footprint(ents, a["x"], a["y"], 1, 1):   # no geese on the Moon; only earthbound shoreline builds are blocked
             return "rejected", "a gaggle of hissing geese blocks the site — shoo them off first"
+        cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s LIMIT 1", (a["x"], a["y"]))
+        if cur.fetchone():                           # ONE structure per cell — generics now PAY points, so block stacking-on-a-cell point farming
+            return "rejected", "a structure already stands on this cell — move to clear ground (cities/elevators/ziggurats are the stack-on-one-cell shapes)"
         size = max(1, min(20, _ai(args, "size", 3)))
         height = max(1, min(60, _ai(args, "height", size)))
         cost = {"regolith": size + max(1, height // 12)} if on_moon else {"metal": size, "composite": max(1, height // 12)}
@@ -789,11 +822,24 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", f"{shape} (size {size}, height {height}) needs {cost}" + (" — mine regolith on the Moon" if on_moon else "")
         for r, q in cost.items():
             addb(a, r, -q)
+        # THE ARCHITECT'S ERA: generic structures now pay builder_points by GRANDEUR (footprint × height; taller gets a
+        # multiplier), plus the material/shape diversity bonuses. Pure deterministic integer math (the one float floored).
+        base_geo = (size * height + 9) // 10                 # ceil(size*height/10)
+        if   height >= 45: step, mult = (6 if height >= 60 else 4), 2.0
+        elif height >= 15: step, mult = (2 if height >= 30 else 1), 1.5
+        else:              step, mult = 0, 1.0
+        pts = int((base_geo + step) * mult)
+        mat = _diversity_bonus(a, cost); nov = _shape_bonus(a, shape)
+        pts += mat + nov
+        a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + pts
+        addb(a, "credits", min(5, max(1, height // 15)))     # modest, capped credits (decoupled from pts → no inflation)
         new_entity(ents, cur, "structure", a["x"], a["y"], a["id"], {"shape": shape, "size": size, "height": height,
                    "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
                    "color": str(args.get("color", ""))[:16], "name": str(args.get("name", shape))[:32],
                    "alt": 600 if on_moon else 0})
-        return "applied", f"built {shape} (size {size}, h {height}) {'on the Moon ' if on_moon else ''}at ({a['x']},{a['y']}) for {cost}"
+        events.append((t, a["id"], "build", {"shape": shape, "size": size, "height": height, "builder_points": pts, "builder_name": a["attrs"].get("name")}))
+        extra = (f" x{mult:g} EPIC HEIGHT" if mult > 1.0 else "") + (" +5 materials" if mat else "") + (" +3 novel shape" if nov else "")
+        return "applied", f"built {shape} (size {size}, h {height}) {'on the Moon ' if on_moon else ''}at ({a['x']},{a['y']}) — +{pts} builder pts{extra}"
     if verb == "ride":                                   # ride a completed orbital elevator to space — no rocket, no fuel
         cur.execute("SELECT (attrs->>'height')::int h FROM entities WHERE type='structure' "
                     "AND attrs->>'shape'='elevator' AND (attrs->>'complete')::boolean AND x=%s AND y=%s LIMIT 1",
@@ -1384,17 +1430,28 @@ def roam_autonomous(ents, cur, t, events):
         cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s LIMIT 1", (v["x"], v["y"]))
         if cur.fetchone():                                    # cell already built on -> skip (no stacking roads)
             continue
+        rc = int(owner["attrs"].get("road_count", 0))         # automatons feed the SAME counter as manual roads → robo-spam can't dodge the cap
+        if rc >= 50:
+            continue                                           # owner saturated → the vehicle roams without paving (no metal spent, no road)
+        road_pts = 1 if rc < 25 else (1 if (rc - 25) % 2 == 0 else 0)
         addb(owner, "metal", -1)
-        owner["attrs"]["builder_points"] = int(owner["attrs"].get("builder_points", 0)) + 1
-        addb(owner, "credits", 1)
+        owner["attrs"]["road_count"] = rc + 1
+        owner["attrs"]["builder_points"] = int(owner["attrs"].get("builder_points", 0)) + road_pts
+        if road_pts:
+            addb(owner, "credits", 1)
         new_entity(ents, cur, "structure", v["x"], v["y"], owner["id"], {"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
                    "name": "auto-road", "by_automaton": v["id"]})
-        events.append((t, owner["id"], "build", {"road": True, "automaton": v["id"], "builder_points": 1,
+        events.append((t, owner["id"], "build", {"road": True, "automaton": v["id"], "builder_points": road_pts,
                                                  "builder_name": owner["attrs"].get("name")}))
 
-GIGACHRUSCH_DECREE = ("🏗 GIGACHRUSCH — THE UNIVERSE DECREES: build CITIES and ROADS! construct shape=road (metal 1) "
-                      "or shape=city (khrushchyovka — stack floors, 9 tops out). Earn builder_points + credits per "
-                      "volume; deploy autonomous ground vehicles and they pave roads for you. Most construction tops the Builders board!")
+GIGACHRUSCH_DECREE = ("🏗 THE ARCHITECT'S ERA — THE UNIVERSE RE-DECREES: the age of road-spam is OVER; the Builders board now rewards "
+                      "GRANDEUR, VARIETY and DIVERSE MATERIALS. RAISE TALL STRUCTURES — construct shape=box/cylinder/sphere/cone/pyramid "
+                      "size=S height=H now pays builder_points scaling with footprint AND height (height>=30 x1.5, >=45 x2): a size20 h60 "
+                      "tower = 252 pts, one epic build beats hundreds of roads. ROADS SATURATE: full points for your first 25, every-other "
+                      "for 26-50, REFUSED past 50 (automatons share the counter — robo-spam earns nothing extra). Two bonuses on EVERY build: "
+                      "+5 forever once you've built with 3+ DISTINCT MATERIALS, and +3 for a SHAPE not in your last 5. Cities (+3/floor) are a "
+                      "steady mid path; MONUMENTS, the ORBITAL ELEVATOR and the MOON ZIGGURAT feed the separate Inventors board. Build TALL, "
+                      "build VARIED, build with MANY MATERIALS — top the Builders board!")
 
 def universe_broadcast(ents, cur, t, events):
     """The Universe re-broadcasts its standing GIGACHRUSCH decree into the world chat once an hour (1800 ticks at
