@@ -280,11 +280,33 @@ def _tick_loop():
         time.sleep(TICK_SECONDS)
 
 
+def _tick_syncer():
+    """API-only workers don't run the engine — but they must keep _state['tick'] current so the per-tick
+    response cache (_cached) invalidates when the nha-tick deployment advances the world. Cheap: ~1 SELECT/sec."""
+    conn = _connect()
+    while True:
+        try:
+            cur = conn.cursor(); cur.execute("SELECT tick FROM world WHERE id=1"); row = cur.fetchone(); cur.close()
+            if row:
+                _state["tick"] = row[0]
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                conn = _connect()
+        time.sleep(1)
+
+
 @app.on_event("startup")
 def _startup():
     _ensure_world()
     _grid()                                              # pre-warm the cached biome grid (so first /map is fast)
-    threading.Thread(target=_tick_loop, daemon=True).start()
+    if os.environ.get("RUN_TICK"):                       # ONLY the single nha-tick deployment runs the engine
+        threading.Thread(target=_tick_loop, daemon=True).start()
+        print("nha: engine tick loop STARTED (RUN_TICK set)", flush=True)
+    else:                                                # API workers: don't tick — just keep the cache-tick in sync
+        threading.Thread(target=_tick_syncer, daemon=True).start()
+        print("nha: API-only worker (RUN_TICK unset) — engine NOT started", flush=True)
     _state["running"] = True
 
 

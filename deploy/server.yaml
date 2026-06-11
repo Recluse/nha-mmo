@@ -9,6 +9,9 @@ spec:
   ports:
     - {port: 8000, targetPort: 8000, nodePort: 30091}
 ---
+# nha-mmo-server = the API tier: N uvicorn workers, NO RUN_TICK env (does not run the engine).
+# The single engine ticker lives in the nha-tick deployment (server-tick.yaml). The Service selects
+# THIS deployment's pods (app=nha-mmo-server). Split done so the heavy 2s tick stops blocking /observe (GIL).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,6 +41,9 @@ spec:
             - {name: TICK_SECONDS, value: "2"}
             - {name: WORLD_SEED, value: "42"}
             - {name: PYTHONUNBUFFERED, value: "1"}
+            - {name: RUN_TICK, value: "1"}    # single-process for now (ticks AND serves). The api+tick split is
+                                              # parked until the app uses a CONNECTION POOL — per-request _connect
+                                              # x4 workers exhausted Postgres max_connections (FATAL: too many clients).
           ports: [{containerPort: 8000}]
           startupProbe:                       # generous: pip install + Postgres coming up + world seed
             httpGet: {path: /healthz, port: 8000}
@@ -50,8 +56,8 @@ spec:
             - {name: engine, mountPath: /app/engine}
             - {name: server, mountPath: /app/server}
           resources:
-            requests: {cpu: 50m, memory: 128Mi}
-            limits: {memory: 384Mi}
+            requests: {cpu: 250m, memory: 320Mi}    # 4 uvicorn workers
+            limits: {memory: 1Gi}
       volumes:
         - {name: engine, configMap: {name: nha-engine-code}}
         - {name: server, configMap: {name: nha-server-code}}

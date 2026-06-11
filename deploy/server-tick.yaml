@@ -1,0 +1,51 @@
+# nha-tick = the single engine ticker. EXACTLY ONE replica — two would double-tick the world and corrupt
+# the deterministic state-hash chain. RUN_TICK=1 makes server.app._startup run the engine tick loop here
+# (the nha-mmo-server API workers do NOT, see server.yaml). It is NOT selected by the Service (app=nha-tick),
+# so it gets zero API traffic and the whole core goes to the 2s world tick — no GIL fight with /observe.
+# Same code (engine + server ConfigMaps). strategy:Recreate = never two tickers overlapping on a rollout.
+# NB single process: NO --workers (uvicorn --workers N would run _startup N times → N tickers).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nha-tick
+  namespace: nha-mmo
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: nha-tick}}
+  template:
+    metadata: {labels: {app: nha-tick}}
+    spec:
+      nodeSelector: {ci-build: "true"}
+      dnsConfig: {options: [{name: ndots, value: "1"}]}
+      containers:
+        - name: tick
+          image: python:3.12-slim
+          workingDir: /app
+          command: ["sh", "-c"]
+          args:
+            - pip install --no-cache-dir -q fastapi "uvicorn[standard]" psycopg2-binary pydantic
+              && exec uvicorn server.app:app --host 0.0.0.0 --port 8000
+          env:
+            - {name: PG_DSN, value: "host=postgres.nha-mmo.svc.cluster.local dbname=nhamoo user=nhamoo"}
+            - {name: TICK_SECONDS, value: "2"}
+            - {name: WORLD_SEED, value: "42"}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+            - {name: RUN_TICK, value: "1"}    # <-- only this pod runs the engine
+          ports: [{containerPort: 8000}]
+          startupProbe:
+            httpGet: {path: /healthz, port: 8000}
+            periodSeconds: 5
+            failureThreshold: 40
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: engine, mountPath: /app/engine}
+            - {name: server, mountPath: /app/server}
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {memory: 768Mi}
+      volumes:
+        - {name: engine, configMap: {name: nha-engine-code}}
+        - {name: server, configMap: {name: nha-server-code}}
