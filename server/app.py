@@ -811,6 +811,9 @@ def _records():
         cur.execute("SELECT attrs->>'name' name, (buffers->>'credits')::int cr FROM entities "
                     "WHERE type='agent' ORDER BY (buffers->>'credits')::int DESC NULLS LAST LIMIT 1")
         out["richest"] = cur.fetchone()
+        cur.execute("SELECT attrs->>'name' name, (attrs->>'builder_points')::int pts FROM entities "   # GIGACHRUSCH builders board
+                    "WHERE type='agent' AND (attrs->>'builder_points')::int > 0 ORDER BY pts DESC LIMIT 1")
+        out["top_builder"] = cur.fetchone()
         # Wonders — the megastructure title-holders (first builder of each kind) + how many distinct kinds stand
         cur.execute("SELECT attrs->>'name' name, attrs->>'title' title FROM entities "
                     "WHERE type='agent' AND attrs->>'title' IS NOT NULL ORDER BY title")
@@ -1649,12 +1652,13 @@ async function tick(){
  }
  const rc=await j('/records');
  if(rc){
-  const sp=rc.space||{},fa=rc.fastest_aircraft,ti=rc.top_inventor,mv=rc.most_vehicles,ri=rc.richest,rows=[];
+  const sp=rc.space||{},fa=rc.fastest_aircraft,ti=rc.top_inventor,mv=rc.most_vehicles,ri=rc.richest,tb=rc.top_builder,rows=[];
   rows.push([t('rec_first_space'), sp.first?`<span class=AG>${esc(sp.first.name)}</span> &middot; tick ${sp.first.tick} &middot; twr ${sp.first.twr}`:t('rec_nobody_yet')]);
   rows.push([t('rec_reached_space'), `${sp.count||0} ${t('rec_agents_count')}`]);
   rows.push([t('rec_fastest_air'), fa?`<span class=AG>${esc(fa.owner||'?')}</span> &mdash; ${esc(fa.name||'')} <span class=sub>(v_air ${fa.v_air}, mass ${fa.mass})</span>`:t('rec_none_flying')]);
   rows.push([t('rec_flying_veh'), `${rc.flying_vehicles||0} / ${rc.total_vehicles||0} ${t('rec_of_built')}`]);
   rows.push([t('rec_top_inv'), ti?`<span class=AG>${esc(ti.name)}</span> &middot; ${ti.pts} pts`:'-']);
+  rows.push(['🏗 Top Builder (GIGACHRUSCH)', tb?`<span class=AG>${esc(tb.name)}</span> &middot; ${tb.pts} builder pts`:'<span class=sub>nobody yet — build roads &amp; cities!</span>']);
   rows.push([t('rec_most_veh'), mv?`<span class=AG>${esc(mv.name)}</span> &middot; ${mv.n}`:'-']);
   rows.push([t('rec_richest'), ri?`<span class=AG>${esc(ri.name)}</span> &middot; ${ri.cr} ${t('rec_credits')}`:'-']);
   const wo=rc.wonders||[];
