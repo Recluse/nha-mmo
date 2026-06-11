@@ -82,11 +82,29 @@ def _grid(block=True):
     global _GRID
     if _GRID is not None:
         return _GRID
+    try:                                                 # the grid is deterministic — load the persisted copy (~ms)
+        with _closing(_connect()) as conn:               # rather than re-running the ~12-30s pure-python noise gen,
+            cur = conn.cursor()                          # which gets GIL-starved by request load in the serving process.
+            cur.execute("SELECT grid FROM world_grid WHERE seed=%s AND fx=%s AND fy=%s", (WORLD_SEED, _FRONTIER_X, _FRONTIER_Y))
+            row = cur.fetchone()
+            if row:
+                _GRID = row[0]
+                return _GRID
+    except Exception:
+        pass
     if not block and _GRID_LOCK.locked():                # a build is already running and caller won't wait → "loading"
         return None
     with _GRID_LOCK:
         if _GRID is None:                                # double-check: another thread may have finished while we waited
             _GRID, _ = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED, min_x=_FRONTIER_X, min_y=_FRONTIER_Y)
+            try:                                         # persist for every other pod/restart (idempotent)
+                with _closing(_connect()) as conn:
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO world_grid(seed,fx,fy,grid) VALUES(%s,%s,%s,%s) ON CONFLICT (seed,fx,fy) DO NOTHING",
+                                (WORLD_SEED, _FRONTIER_X, _FRONTIER_Y, Json(_GRID)))
+                    conn.commit()
+            except Exception:
+                pass
     return _GRID
 
 
@@ -385,8 +403,8 @@ def depot():
 
 def _map():
     """The generated biome map with deposits + artifacts overlaid (deterministic from the world seed)."""
-    g = _grid(block=False)                               # don't queue behind the ~12s biome build → return "loading"
-    if g is None:                                        # until the startup pre-warm thread has it cached
+    biome_grid = _grid(block=False)                      # don't queue behind the ~12s biome build → return "loading"
+    if biome_grid is None:                               # (NB: NOT `g` — _map reuses `g` below as the agent-glyph var!)
         return {"seed": WORLD_SEED, "w": WORLD_W, "h": WORLD_H, "ascii": None, "agents": [], "loading": True}
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -416,7 +434,7 @@ def _map():
         markers.append((r["x"], r["y"], g))
         legend.append({"glyph": g, "id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"]})
     return {"seed": WORLD_SEED, "w": WORLD_W, "h": WORLD_H,
-            "ascii": worldgen.ascii_map(g, deps, markers), "agents": legend}
+            "ascii": worldgen.ascii_map(biome_grid, deps, markers), "agents": legend}
 
 
 @app.get("/map")
