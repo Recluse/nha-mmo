@@ -366,8 +366,8 @@ def _map():
     # precedence (built last → wins in ascii_map's amap): deposits < artifacts < structures/vehicles < agents
     for x, y in [(r["x"], r["y"]) for r in artrows]:    # ancient artifacts
         markers.append((x, y, "!"))
-    for r in strrows:                                   # structures: elevator = '╫' (tower), everything else = '▣' (building)
-        markers.append((r["x"], r["y"], "╫" if r["shape"] == "elevator" else "▣"))
+    for r in strrows:                                   # structures: per-shape glyph — GIGACHRUSCH road '·' + city '▥' (хрущёвка), elevator '╫', else '▣'
+        markers.append((r["x"], r["y"], {"elevator": "╫", "ziggurat": "▲", "monument": "▦", "road": "·", "city": "▥"}.get(r["shape"], "▣")))
     for r in vehrows:                                   # vehicles (rover/craft) = '▾'
         markers.append((r["x"], r["y"], "▾"))
     for i, r in enumerate(arows):                       # agents drawn last → win on overlap
@@ -413,13 +413,13 @@ def _scene():
         vehicles = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
                      "alt": r["alt"] or 0, "fly": bool(r["fly"]),
                      "hp": r["hp"], "hp_max": r["hp_max"], "wrecked": bool(r["wrecked"])} for r in cur.fetchall()]
-        cur.execute("SELECT id, attrs->>'shape' shape, x, y, (attrs->>'size')::int size, (attrs->>'height')::int height, "
+        cur.execute("SELECT id, attrs->>'shape' shape, x, y, (attrs->>'size')::int size, (attrs->>'height')::int height, (attrs->>'floors')::int floors, "
                     "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt, "
                     "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'ruined')::boolean ruined, "
                     "attrs->>'kind' kind, (attrs->>'w')::int mw, (attrs->>'h')::int mh, attrs->>'name' name "   # monument footprint + kind (NULL for ordinary structures)
                     "FROM entities WHERE type='structure'")
         structures = [{"id": r["id"], "shape": r["shape"], "x": r["x"], "y": r["y"], "size": r["size"] or 2,
-                       "height": r["height"] or 2, "color": r["color"] or "", "complete": bool(r["complete"]),
+                       "height": r["height"] or 2, "floors": r["floors"] or 0, "color": r["color"] or "", "complete": bool(r["complete"]),
                        "alt": r["alt"] or 0, "hp": r["hp"], "hp_max": r["hp_max"], "ruined": bool(r["ruined"]),
                        "kind": r["kind"], "w": r["mw"], "h": r["mh"], "name": r["name"]}   # kind/w/h only meaningful when shape=='monument'
                       for r in cur.fetchall()]
@@ -1984,9 +1984,13 @@ void main(){
     else if(s.shape=='sphere'){geo=new T.SphereGeometry(sz/2,16,12);vh=sz;}
     else if(s.shape=='cone')geo=new T.ConeGeometry(sz/2,vh,16);
     else if(s.shape=='pyramid')geo=new T.ConeGeometry(sz/1.4,vh,4);
+    else if(s.shape=='road'){vh=0.12;geo=new T.BoxGeometry(sz*1.4,vh,sz*1.4);}                                 // GIGACHRUSCH: a flat road tile hugging the ground
+    else if(s.shape=='city'){vh=Math.max(1.2,Math.min(20,(s.floors||1)*1.5));geo=new T.BoxGeometry(sz*1.1,vh,sz*1.1);}   // a khrushchyovka — height grows floor by floor
     else geo=new T.BoxGeometry(sz,vh,sz);}
    let col=0x9aa4b2; if(s.color&&/^#?[0-9a-fA-F]{6}$/.test(s.color))col=parseInt(s.color.replace('#',''),16);
    if(s.shape=='elevator')col=s.complete?0x58a6ff:0xa371f7;
+   if(s.shape=='road')col=0x4a4e57;                              // asphalt grey
+   if(s.shape=='city')col=s.complete?0xd7c9a8:0xb9b0a0;          // concrete panel; warmer tone once topped out
    const m=new T.Mesh(geo,new T.MeshLambertMaterial({color:col}));m.position.set(p[0],p[1]+vh/2+(s.alt||0)/9,p[2]);strG.add(m);}catch(e){}});
  }
  const gAst=new T.IcosahedronGeometry(1.1,0), gArt=new T.OctahedronGeometry(1.0,0);
