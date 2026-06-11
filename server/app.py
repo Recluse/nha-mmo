@@ -71,12 +71,22 @@ def _cached(key, builder):
     return payload
 
 
-def _grid():
-    """Cached deterministic biome grid (~8s to generate) — built once; /map then only overlays deposits +
-    agents on it, so polling stays cheap. Uses the frontier bounds so tundra appears only in new cells."""
+_GRID_LOCK = threading.Lock()
+
+def _grid(block=True):
+    """Cached deterministic biome grid (~12s to generate over 48400 cells) — built ONCE under a lock; /map then
+    only overlays deposits + agents, so polling stays cheap. `block=False` (the /map request path) returns None
+    while a build is in progress instead of queueing — without the lock, every concurrent /map request kicked off
+    its OWN worldgen, the builds starved each other on CPU, the cache never filled, and the threadpool saturated
+    (whole site died). The startup pre-warm thread calls _grid() (block=True) to build it once."""
     global _GRID
-    if _GRID is None:
-        _GRID, _ = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED, min_x=_FRONTIER_X, min_y=_FRONTIER_Y)
+    if _GRID is not None:
+        return _GRID
+    if not block and _GRID_LOCK.locked():                # a build is already running and caller won't wait → "loading"
+        return None
+    with _GRID_LOCK:
+        if _GRID is None:                                # double-check: another thread may have finished while we waited
+            _GRID, _ = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED, min_x=_FRONTIER_X, min_y=_FRONTIER_Y)
     return _GRID
 
 
@@ -375,6 +385,9 @@ def depot():
 
 def _map():
     """The generated biome map with deposits + artifacts overlaid (deterministic from the world seed)."""
+    g = _grid(block=False)                               # don't queue behind the ~12s biome build → return "loading"
+    if g is None:                                        # until the startup pre-warm thread has it cached
+        return {"seed": WORLD_SEED, "w": WORLD_W, "h": WORLD_H, "ascii": None, "agents": [], "loading": True}
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT x, y, attrs->>'resource' res FROM entities "
@@ -403,7 +416,7 @@ def _map():
         markers.append((r["x"], r["y"], g))
         legend.append({"glyph": g, "id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"]})
     return {"seed": WORLD_SEED, "w": WORLD_W, "h": WORLD_H,
-            "ascii": worldgen.ascii_map(_grid(), deps, markers), "agents": legend}
+            "ascii": worldgen.ascii_map(g, deps, markers), "agents": legend}
 
 
 @app.get("/map")
@@ -417,7 +430,9 @@ _BIOME_CODE = {"water": "~", "plains": ".", "forest": "#", "desert": ":", "mount
 def _scene():
     """Structured world for the 3D view: biome grid (rows of codes) + live deposits + online agents +
     season-3 hp / bombs / asteroids / artifacts."""
-    grid = _grid()
+    grid = _grid(block=False)                            # non-blocking: "loading" until the biome build is cached
+    if grid is None:
+        return {"w": WORLD_W, "h": WORLD_H, "rows": [], "deposits": [], "agents": [], "loading": True}
     rows = ["".join(_BIOME_CODE.get(c, ".") for c in row) for row in grid]
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)

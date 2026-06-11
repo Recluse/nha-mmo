@@ -169,8 +169,9 @@ def ascii_map(grid, deposits, agents=()):
     # ♣ = tree (wood), ‘,’ = plant/flora (herb/lichen/fungus/algae), per-resource glyph (RES_GLYPH) for minerals.
     dmap = {(x, y): _res_glyph(res) for x, y, res, *_ in deposits}
     amap = {(int(x), int(y)): ch for x, y, ch in agents}        # agents/markers drawn on top of deposits/biome
-    return "\n".join("".join(amap.get((x, y), dmap.get((x, y), GLYPH[c])) for x, c in enumerate(row))
-                     for y, row in enumerate(grid))
+    return "\n".join("".join(amap.get((x, y), dmap.get((x, y), GLYPH.get(c, "?"))) for x, c in enumerate(row))
+                     for y, row in enumerate(grid))            # GLYPH.get (not GLYPH[c]) — an unknown biome code must
+                                                               # NOT KeyError the whole map (was crashing /map → 500)
 
 def write_deposits(conn, deposits, seed):
     cur = conn.cursor()
