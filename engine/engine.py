@@ -744,7 +744,7 @@ def apply_intent(it, ents, cur, t, events):
                         (t, a["id"], Json({"monument": kind, "first": False, "points": pts,
                                            "builder_name": a["attrs"].get("name")})))
             return "applied", f"built a {kind} monument ({w}x{h}) #{mid} +{pts} pts"
-        if shape == "road":                              # ГИГАХРУЩ campaign: a cheap road tile — lay networks; volume earns builder_points
+        if shape == "road":                              # GIGACHRUSCH campaign: a cheap road tile — lay networks; volume earns builder_points
             if get(a, "metal") < 1:
                 return "rejected", "a road tile needs metal 1"
             cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s AND attrs->>'shape'='road' LIMIT 1", (a["x"], a["y"]))
@@ -757,11 +757,11 @@ def apply_intent(it, ents, cur, t, events):
                         (a["x"], a["y"], a["id"], Json({"shape": "road", "size": 1, "hp": 30, "hp_max": 30,
                                                         "name": str(args.get("name", "road"))[:32]})))
             events.append((t, a["id"], "build", {"road": True, "builder_points": 1, "builder_name": a["attrs"].get("name")}))
-            return "applied", f"laid a road at ({a['x']},{a['y']}) — ГИГАХРУЩ! +1 builder pt"
-        if shape == "city":                              # ГИГАХРУЩ campaign: a хрущёвка — stack floors on one block; taller = more builder_points
+            return "applied", f"laid a road at ({a['x']},{a['y']}) — GIGACHRUSCH! +1 builder pt"
+        if shape == "city":                              # GIGACHRUSCH campaign: a khrushchyovka — stack floors on one block; taller = more builder_points
             cost = {"metal": 4, "composite": 2}; DONE = 9
             if any(get(a, r) < q for r, q in cost.items()):
-                return "rejected", f"a city floor needs {cost} — a хрущёвка rises floor by floor"
+                return "rejected", f"a city floor needs {cost} — a khrushchyovka rises floor by floor"
             blk = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "city"
                         and abs(e["x"] - a["x"]) + abs(e["y"] - a["y"]) <= 1 and not e["attrs"].get("complete")), None)
             for r, q in cost.items():
@@ -775,14 +775,14 @@ def apply_intent(it, ents, cur, t, events):
                     blk["attrs"]["complete"] = True
                     a["attrs"]["builder_points"] = int(a["attrs"].get("builder_points", 0)) + 20
                     events.append((t, a["id"], "build", {"city": True, "complete": True, "floors": fl, "builder_points": 23, "builder_name": a["attrs"].get("name")}))
-                    return "applied", f"ПАНЕЛЬКА #{blk['id']} topped out at {fl} floors — ГИГАХРУЩ! +23 builder pts"
-                return "applied", f"raised хрущёвка #{blk['id']} -> {fl}/{DONE} floors +3 builder pts"
+                    return "applied", f"PANELKA #{blk['id']} topped out at {fl} floors — GIGACHRUSCH! +23 builder pts"
+                return "applied", f"raised khrushchyovka #{blk['id']} -> {fl}/{DONE} floors +3 builder pts"
             cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('structure',%s,%s,%s,%s) RETURNING id",
                         (a["x"], a["y"], a["id"], Json({"shape": "city", "floors": 1, "size": 2,
                                                         "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
-                                                        "name": str(args.get("name", "хрущёвка"))[:32]})))
+                                                        "name": str(args.get("name", "khrushchyovka"))[:32]})))
             events.append((t, a["id"], "build", {"city": True, "floors": 1, "builder_points": 3, "builder_name": a["attrs"].get("name")}))
-            return "applied", f"laid хрущёвка foundation #{cur.fetchone()['id']} (1/{DONE}) — stack floors! +3 builder pts"
+            return "applied", f"laid khrushchyovka foundation #{cur.fetchone()['id']} (1/{DONE}) — stack floors! +3 builder pts"
         on_moon = bool(a["attrs"].get("on_moon"))   # regolith builds only when actually landed (post-rework: altitude 600 alone = orbit, not the Moon)
         if not on_moon and geese_block_footprint(ents, a["x"], a["y"], 1, 1):   # no geese on the Moon; only earthbound shoreline builds are blocked
             return "rejected", "a gaggle of hissing geese blocks the site — shoo them off first"
@@ -1370,7 +1370,7 @@ def resolve_proposals(ents, cur, t, events):
 def roam_autonomous(ents, cur, t, events):
     """Deployed autonomous vehicles wander the world on their own each tick. DETERMINISTIC (no RNG, so the
     replay/state-hash chain stays valid): heading varies with tick+id; flyers also drift altitude.
-    ГИГАХРУЩ: grounded automatons also pave roads as they roam, funded by the OWNER's metal → owner earns builder_points."""
+    GIGACHRUSCH: grounded automatons also pave roads as they roam, funded by the OWNER's metal → owner earns builder_points."""
     mkt = next((x for x in ents.values() if x["type"] == "market"), None)
     w = int(mkt["attrs"].get("w", 156)) if mkt else 156
     h = int(mkt["attrs"].get("h", 156)) if mkt else 156
@@ -1381,7 +1381,7 @@ def roam_autonomous(ents, cur, t, events):
         v["y"] = max(0, min(h - 1, v["y"] + ((t * 2 + v["id"] * 3) % 3) - 1))
         if v["attrs"].get("flies"):
             v["attrs"]["alt"] = max(0, min(600, int(v["attrs"].get("alt", 0)) + (((t + v["id"]) % 5) - 2) * 6))
-            continue                                          # flyers cruise; only grounded automatons build the ГИГАХРУЩ road grid
+            continue                                          # flyers cruise; only grounded automatons build the GIGACHRUSCH road grid
         if (t + v["id"]) % 4 != 0:                            # pave on every 4th tick (deterministic throttle)
             continue
         owner = ents.get(v["owner"])
