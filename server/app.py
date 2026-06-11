@@ -752,9 +752,9 @@ def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "
         cur = conn.cursor(cursor_factory=RealDictCursor)
         if kind:
             kinds = [k.strip() for k in kind.split(",") if k.strip()]
-            cur.execute("SELECT tick, entity, kind, data FROM events WHERE kind = ANY(%s) ORDER BY id DESC LIMIT %s", (kinds, limit))
+            cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data FROM events e LEFT JOIN entities a ON a.id=e.entity WHERE e.kind = ANY(%s) ORDER BY e.id DESC LIMIT %s", (kinds, limit))
         else:
-            cur.execute("SELECT tick, entity, kind, data FROM events ORDER BY id DESC LIMIT %s", (limit,))
+            cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data FROM events e LEFT JOIN entities a ON a.id=e.entity ORDER BY e.id DESC LIMIT %s", (limit,))
         rows = [dict(r) for r in cur.fetchall()]
     return {"log": rows}
 
@@ -1600,7 +1600,7 @@ async function j(p){try{const r=await fetch(p);return r.ok?await r.json():null;}
 async function tick(){
  const w=await j('/world'); if(!w)return;
  $('hdr').innerHTML=`tick <b>${w.tick}</b> &middot; ${w.tick_seconds}s/tick &middot; hash <code>${w.last_state_hash||'-'}</code> &middot; `+Object.entries(w.entities).map(([k,v])=>`${k}:${v}`).join(' ')+` &middot; <span style="color:#58a6ff" title="${t('ttl_visitors')}">&#128065; ${w.visitors||0} ${t('lbl_visitors')}</span>`;
- const m=await j('/map'); const by={};
+ const m=await j('/map'); const by={}; const tn=id=>{if(id==null)return '?';const a=by[id];return a&&a.name?esc(a.name):'#'+id;};
  if(m){$('map').innerHTML=colorize(m.ascii); $('map').dataset.w=m.w; $('map').dataset.h=m.h; fitMap(); (m.agents||[]).forEach(x=>by[x.id]=x);}
  const a=await j('/agents');
  if(a){
@@ -1629,14 +1629,14 @@ async function tick(){
  if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';
  const mk=await j('/market');
  if(mk){const lp=Object.entries(mk.last_prices||{}).map(([r,p])=>`<span class=price>${r} <b>@${p}</b></span>`).join('')||`<span class=sub>${t('ph_no_trades')}</span>`;
-  const ob=(mk.orders||[]).slice(0,16).map(o=>`<div>#${o.agent} <span class=${o.side=='sell'?'O':'F'}>${o.side}</span> ${o.qty} ${o.resource} @ ${o.price}</div>`).join('');
+  const ob=(mk.orders||[]).slice(0,16).map(o=>`<div>${tn(o.agent)} <span class=${o.side=='sell'?'O':'F'}>${o.side}</span> ${o.qty} ${o.resource} @ ${o.price}</div>`).join('');
   $('market').innerHTML=`<div style="margin-bottom:6px">${t('lbl_last')} ${lp}</div>${ob||`<span class=sub>${t('ph_orderbook_empty')}</span>`}`;}
  const ch=await j('/chat');
- if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to #${x.recipient}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;
+ if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;
  const lg=await j('/log');
  if(lg)$('log').innerHTML=lg.log.map(e=>{const dt=e.data||{};let txt;
   if(e.kind=='act')txt=`<b>${dt.verb}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
-  else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(#${dt.seller}->#${dt.buyer})</span>`;
+  else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
   else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
   else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
   else if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
@@ -1664,7 +1664,7 @@ async function tick(){
   $('records').innerHTML='<table>'+rows.map(r=>`<tr><td>${r[0]}<td>${r[1]}</tr>`).join('')+'</table>';
  }
  const ms=await j('/milestones');
- if(ms)$('milestones').innerHTML=ms.milestones.map(e=>`<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${evTx(e)}</div>`).join('')||`<div class=sub>${t('ph_no_milestones')}</div>`;
+ if(ms)$('milestones').innerHTML=ms.milestones.map(e=>`<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_no_milestones')}</div>`;
  const dp=await j('/relations');
  if(dp){const R=dp.relations||[],nm=(id,n)=>esc(n||('#'+id));
   const A=R.filter(x=>x.state=='ally'),W=R.filter(x=>x.state=='war'),O=R.filter(x=>x.state=='offer');
@@ -1673,7 +1673,7 @@ async function tick(){
   $('dipl_offer').innerHTML=O.map(x=>{const pn=x.proposer==x.b?nm(x.b,x.b_name):nm(x.a,x.a_name),on=x.proposer==x.b?nm(x.a,x.a_name):nm(x.b,x.b_name);return `<div>&#9995; ${pn} &rarr; ${on} <span class=sub>(${t('lbl_pending')})</span></div>`;}).join('')||`<div class=sub>${t('ph_no_offers')}</div>`;
  }
  const tl=await j('/timeline');
- if(tl){const tn=id=>{if(id==null)return '?';const a=by[id];return a&&a.name?esc(a.name):'#'+id;};
+ if(tl){
   $('timeline').innerHTML=tl.timeline.map(e=>`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}
  const ro=await j('/roster');
  if(ro){const on=ro.agents.filter(a=>a.online).length;
