@@ -371,7 +371,9 @@ def apply_intent(it, ents, cur, t, events):
         cur.execute("SELECT 1 FROM messages WHERE sender=%s AND tick=%s LIMIT 1", (a["id"], t))
         if cur.fetchone():
             return "rejected", "one message per tick"
-        text = str(args.get("text", ""))[:280]
+        text = str(args.get("text", "")).strip()[:280]
+        if not text:                                     # no empty/whitespace-only chatter (some models spam blank says)
+            return "rejected", "empty message — say something real or stay silent"
         rcpt = _aid(args, "to") if verb == "tell" else None
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,%s,%s)",
                     (t, a["id"], rcpt, text))
