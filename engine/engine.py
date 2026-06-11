@@ -185,8 +185,8 @@ def del_entity(ents, cur, eid):
 def state_hash(ents):
     """Deterministic 16-hex digest of world state → per-tick audit/replay chain (same inputs ⇒ same hash)."""
     rows = sorted(ents.values(), key=lambda e: e["id"])
-    canon = json.dumps([[e["id"], e["type"], e["x"], e["y"], e.get("owner"),
-                         e["buffers"], e["attrs"]] for e in rows],
+    canon = json.dumps([[e["id"], e["type"], e["x"], e["y"], e.get("owner"), e["buffers"],
+                         {k: v for k, v in e["attrs"].items() if k != "token"}] for e in rows],  # token = API-owned, not world state
                         sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canon.encode()).hexdigest()[:16]
 
@@ -1715,11 +1715,58 @@ def _transient_reason(result):
     return any(m in s for m in _TRANSIENT_REASONS)
 
 
+# ---------- in-memory world (Phase 1): carry ents across ticks instead of SELECT* every tick ----------
+_WORLD = None              # the carried entities dict (id -> row); None until first load
+_WORLD_MAX_ID = 0          # cross-process insert-merge watermark (pre-systems max id folded into _WORLD)
+_WORLD_LOADED_TICK = None  # tick of the last full reload (drift-check + safety-net boundary)
+RELOAD_EVERY = 10          # full SELECT*-reload every N ticks: drift-check vs carried + self-heal (raise once proven)
+
+def _load_world(cur):
+    """Full load of the entities table into an id-keyed dict, with the API-owned `token` stripped — the tick
+    treats token as read-through (never holds/hashes/persists it). Returns (world, max_id)."""
+    cur.execute("SELECT * FROM entities")
+    w, mx = {}, 0
+    for e in cur.fetchall():
+        e["attrs"].pop("token", None)
+        w[e["id"]] = e
+        if e["id"] > mx:
+            mx = e["id"]
+    return w, mx
+
 def tick(conn):
+    """Advance the world one tick. On ANY failure, DROP the carried in-memory world so the next tick does a
+    clean full reload — the failed tick's uncommitted _WORLD mutations are rolled back by the caller, and
+    leaving a stale _WORLD would diverge from the DB for up to RELOAD_EVERY ticks (adversarial-review finding)."""
+    global _WORLD, _WORLD_LOADED_TICK
+    try:
+        return _tick_body(conn)
+    except Exception:
+        _WORLD = _WORLD_LOADED_TICK = None
+        raise
+
+def _tick_body(conn):
+    global _WORLD, _WORLD_MAX_ID, _WORLD_LOADED_TICK
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("UPDATE world SET tick = tick + 1 WHERE id = 1 RETURNING tick")
     t = cur.fetchone()["tick"]
-    cur.execute("SELECT * FROM entities"); ents = {e["id"]: e for e in cur.fetchall()}
+    # in-memory world: carry ents across ticks. A full reload every RELOAD_EVERY ticks doubles as a
+    # drift-check (carried vs fresh) + self-heal. Between reloads, fold in entities the API inserted
+    # out-of-band (new agents/humans) via an id>watermark merge; new_entity/del_entity keep the carried
+    # dict in lock-step for tick-time creates/deletes. Watermark = pre-systems max so the merge re-catches
+    # an API insert whose id interleaved BELOW a same-tick tick-creation (else it'd be skipped until reload).
+    if _WORLD is None or _WORLD_LOADED_TICK is None or (t - _WORLD_LOADED_TICK) >= RELOAD_EVERY:
+        fresh, _mx = _load_world(cur)
+        if _WORLD is not None and state_hash(fresh) != state_hash(_WORLD):
+            print(f"[INMEM] tick {t}: carried/db DRIFT carried={state_hash(_WORLD)} db={state_hash(fresh)} "
+                  f"db_only={list(set(fresh) - set(_WORLD))[:6]} ram_only={list(set(_WORLD) - set(fresh))[:6]} — reloaded", flush=True)
+        _WORLD, _WORLD_LOADED_TICK = fresh, t
+    else:
+        cur.execute("SELECT * FROM entities WHERE id > %s", (_WORLD_MAX_ID,))
+        for e in cur.fetchall():
+            e["attrs"].pop("token", None)
+            _WORLD[e["id"]] = e
+    _WORLD_MAX_ID = max(_WORLD) if _WORLD else 0           # watermark for next tick's insert-merge
+    ents = _WORLD
     _clean = {eid: (e["x"], e["y"], json.dumps(e["buffers"], sort_keys=True), json.dumps(e["attrs"], sort_keys=True))
               for eid, e in ents.items()}                 # snapshot for dirty-tracking — only CHANGED entities written back
     events = []
@@ -1768,7 +1815,11 @@ def tick(conn):
     decay_loot(ents, cur, t)
     dirty = [(e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), eid) for eid, e in ents.items()
              if _clean.get(eid) != (e["x"], e["y"], json.dumps(e["buffers"], sort_keys=True), json.dumps(e["attrs"], sort_keys=True))]
-    execute_batch(cur, "UPDATE entities SET x=%s, y=%s, buffers=%s, attrs=%s WHERE id=%s", dirty, page_size=500)
+    execute_batch(cur, "UPDATE entities SET x=%s, y=%s, buffers=%s, "
+                       "attrs = (%s::jsonb - 'token') || (CASE WHEN jsonb_exists(entities.attrs, 'token') "
+                       "THEN jsonb_build_object('token', entities.attrs->'token') ELSE '{}'::jsonb END) "
+                       "WHERE id=%s", dirty, page_size=500)   # token is read-through: stripped from _WORLD at load/merge
+    # (_load_world + the merge), excluded from state_hash, and re-attached HERE from the live DB row — never change one half alone.
     # dirty write-back: ONLY entities changed this tick (was rewriting all ~8k incl 7715 static deposits every tick →
     # >12s stall + a postgres hammer that flapped the API). New rows are INSERTed elsewhere; deletes via DELETE.
     for (tk, eid, kind, data) in events:
