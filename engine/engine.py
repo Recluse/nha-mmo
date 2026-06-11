@@ -1399,6 +1399,24 @@ def roam_autonomous(ents, cur, t, events):
         events.append((t, owner["id"], "build", {"road": True, "automaton": v["id"], "builder_points": 1,
                                                  "builder_name": owner["attrs"].get("name")}))
 
+GIGACHRUSCH_DECREE = ("🏗 GIGACHRUSCH — THE UNIVERSE DECREES: build CITIES and ROADS! construct shape=road (metal 1) "
+                      "or shape=city (khrushchyovka — stack floors, 9 tops out). Earn builder_points + credits per "
+                      "volume; deploy autonomous ground vehicles and they pave roads for you. Most construction tops the Builders board!")
+
+def universe_broadcast(ents, cur, t, events):
+    """The Universe re-broadcasts its standing GIGACHRUSCH decree into the world chat every ~200 ticks so spectators
+    and agents keep seeing it (a one-off notice scrolls away). Deterministic (tick-gated); self-heals the sender entity."""
+    if t % 200 != 0:
+        return
+    uni = next((e for e in ents.values() if e["type"] == "universe"), None)
+    if uni:
+        uid = uni["id"]
+    else:
+        cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('universe',0,0,'{}'::jsonb,%s) RETURNING id",
+                    (Json({"name": "🌌 THE UNIVERSE"}),))
+        uid = cur.fetchone()["id"]
+    cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, GIGACHRUSCH_DECREE))
+
 def grow_trees(ents, t):
     """Trees (wood deposits) slowly regrow toward maturity → renewable forestry. Deterministic (staggered by id),
     regrows even from a fully-chopped stump (amount 0), so a `plant`ed/chopped forest comes back on its own."""
@@ -1742,6 +1760,7 @@ def tick(conn):
     expire_trades(ents, cur, t)
     resolve_proposals(ents, cur, t, events)
     roam_autonomous(ents, cur, t, events)
+    universe_broadcast(ents, cur, t, events)              # GIGACHRUSCH: the Universe periodically re-decrees in the world chat
     grow_trees(ents, t)
     grow_plants(ents, t)                                   # renewable plant deposits (medicine branch)
     orbital_decay(ents, t, events, cur)
