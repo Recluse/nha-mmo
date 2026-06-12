@@ -564,12 +564,19 @@ def observe_ep(agent_id: int):
     return obs
 
 
+_station_cache = {"t": -999.0, "v": {}}                   # tiny in-process TTL cache — every spectator's dashboard polls /station every 2s
 @app.get("/station")
 def station_ep():
-    """Spectator view of the SPACE ERA orbital station — the live module bill + progress (no agent id needed). Returns {} outside the era."""
+    """Spectator view of the SPACE ERA orbital station — the live module bill + progress (no agent id needed). Returns {} outside the era.
+    Cached in-process for 4s so the per-spectator 2s polling serves from memory instead of hitting the DB on every request (the build moves slowly)."""
+    now = time.monotonic()
+    if now - _station_cache["t"] < 4.0:
+        return _station_cache["v"]
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        return _station_status(cur) or {}
+        v = _station_status(cur) or {}
+    _station_cache["t"] = now; _station_cache["v"] = v   # benign race under the GIL — worst case two threads recompute once
+    return v
 
 
 class AgentIn(BaseModel):
