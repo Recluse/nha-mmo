@@ -124,9 +124,31 @@ GOOSE_PECK_MIN_CLUSTER = 2     # an agent on/adjacent to this many geese of a fl
 GOOSE_PECK_MAX = 5            # peck damage is capped at this (scales with cluster size, never one-shots)
 # ============================================================================
 
+# ===================== SEASON 4 — THE SPACE ERA (co-op orbital station) =====================
+# One SHARED orbital station, assembled from 6 modules. Cooperation is STRUCTURAL, not optional:
+#   • each module carries a big, DIVERSE bill of materials;
+#   • one agent may fund at most STATION_CAP_FRAC% of ANY single resource in a module → >=3 distinct
+#     funders are mathematically required per resource (2*40% = 80% < 100%);
+#   • a module also needs >= STATION_MIN_CONTRIB distinct funders before it can complete;
+#   • the station is done only when ALL modules are. Buildable only while IN SPACE, only in the 'space' era.
+# Amounts are tunable; the world.era flag (default 'architect') gates the whole season on/off.
+STATION_CAP_FRAC = 40              # max % of any one resource a single agent may fund in a module
+STATION_MIN_CONTRIB = 3            # min distinct funders a module needs before it can complete
+STATION_MODULE_REWARD = 160        # inventor_points pool split (by share) among a module's funders on completion
+STATION_FINISH_REWARD = 1400       # inventor_points mega-pool split among ALL funders when the LAST module lands
+STATION_MODULES = {                # insertion order is fixed → deterministic display/iteration
+    "truss":   {"label": "Core Truss",   "need": {"metal": 800, "titanium": 420, "composite": 500}},
+    "solar":   {"label": "Solar Array",  "need": {"silicon": 700, "crystal": 400, "composite": 420}},
+    "habitat": {"label": "Habitat Ring", "need": {"metal": 720, "composite": 500, "ice": 300}},
+    "lab":     {"label": "Science Lab",  "need": {"crystal": 480, "silicon": 460, "iridium": 240}},
+    "dock":    {"label": "Docking Port", "need": {"titanium": 460, "metal": 560, "composite": 440}},
+    "life":    {"label": "Life Support", "need": {"ice": 420, "crystal": 440, "silicon": 380}},
+}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
 ALTER TABLE world ADD COLUMN IF NOT EXISTS notices jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE world ADD COLUMN IF NOT EXISTS era text NOT NULL DEFAULT 'architect';
 INSERT INTO world (id, tick) VALUES (1,0) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS entities (id bigserial PRIMARY KEY, type text NOT NULL,
   x int NOT NULL DEFAULT 0, y int NOT NULL DEFAULT 0, owner bigint,
@@ -654,8 +676,8 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own"
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
-        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "ziggurat", "monument", "road", "city"):
-            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/ziggurat/monument/road/city"
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city"
         if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
             cost = {"metal": 15, "composite": 8}; seg = 20
             if any(get(a, r) < q for r, q in cost.items()):
@@ -679,6 +701,79 @@ def apply_intent(it, ents, cur, t, events):
                              "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"],
                              "name": str(args.get("name", "orbital elevator"))[:32]})
             return "applied", f"laid an orbital-elevator base #{eid} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
+        if shape == "station":                           # SPACE ERA: one SHARED orbital station, assembled co-op from 6 modules
+            cur.execute("SELECT era FROM world WHERE id=1")
+            erow = cur.fetchone()
+            if not erow or (erow.get("era") or "architect") != "space":
+                return "rejected", "the Orbital Station can only be built in the SPACE ERA"
+            if not a["attrs"].get("in_space"):
+                return "rejected", ("the Orbital Station is assembled in orbit — reach space first "
+                                    "(ride the orbital elevator or launch a rocket), then construct shape=station module=...")
+            module = str(args.get("module", "")).lower()
+            if module not in STATION_MODULES:
+                return "rejected", "module must be one of: " + "/".join(STATION_MODULES)
+            st = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "station"), None)
+            if st is None:                               # the first funder lays the station — a singleton at world-centre orbit
+                mods = {k: {"have": {}, "contrib": {}, "complete": False} for k in STATION_MODULES}
+                sid = new_entity(ents, cur, "structure", W // 2, H // 2, a["id"],
+                                 {"shape": "station", "name": str(args.get("name", "Orbital Station"))[:32],
+                                  "modules": mods, "ctotal": {}, "complete": False, "alt": SKY_TOP,
+                                  "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
+                st = ents[sid]
+            if st["attrs"].get("complete"):
+                return "rejected", "the Orbital Station is already COMPLETE — it orbits, finished"
+            mod = st["attrs"]["modules"].setdefault(module, {"have": {}, "contrib": {}, "complete": False})
+            if mod.get("complete"):
+                return "rejected", f"the {STATION_MODULES[module]['label']} is already complete — fund another module"
+            need = STATION_MODULES[module]["need"]
+            have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {}); ct = st["attrs"].setdefault("ctotal", {})
+            aid = str(a["id"]); moved = {}
+            for r in sorted(need):                       # sorted → replay-stable; greedy: take min(hold, remaining, cap-room)
+                tgt = need[r]; cur_have = int(have.get(r, 0))
+                if cur_have >= tgt:
+                    continue
+                cap = (tgt * STATION_CAP_FRAC + 99) // 100               # ceil(40% of target) — one agent's hard ceiling per resource
+                already = int(contrib.get(aid, {}).get(r, 0))
+                give = min(get(a, r), tgt - cur_have, max(0, cap - already))
+                if give > 0:
+                    addb(a, r, -give)
+                    have[r] = cur_have + give
+                    contrib.setdefault(aid, {})[r] = already + give
+                    ct[aid] = int(ct.get(aid, 0)) + give
+                    moved[r] = give
+            if not moved:
+                short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
+                return "rejected", (f"funded nothing to the {STATION_MODULES[module]['label']} — it still needs {short}. "
+                                    f"You may be at your {STATION_CAP_FRAC}% per-resource cap (others must chip in), or hold none of these.")
+            msg = f"funded {moved} to the {STATION_MODULES[module]['label']}"
+            if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= STATION_MIN_CONTRIB and not mod.get("complete"):
+                mod["complete"] = True
+                tot = sum(sum(v.values()) for v in contrib.values()) or 1
+                for fid in sorted(contrib):              # split the module pool by each funder's share of it
+                    pts = STATION_MODULE_REWARD * sum(contrib[fid].values()) // tot
+                    fe = ents.get(int(fid))
+                    if fe and pts > 0:
+                        fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+                cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                            (t, a["id"], Json({"station_module": module, "complete": True, "funders": len(contrib)})))
+                msg += f" — MODULE COMPLETE! {STATION_MODULES[module]['label']} online ({len(contrib)} cosmonauts funded it)"
+                if all(st["attrs"]["modules"].get(k, {}).get("complete") for k in STATION_MODULES):
+                    st["attrs"]["complete"] = True       # the whole Station is finished — the season's grand prize
+                    grand = sum(ct.values()) or 1
+                    order = sorted(ct, key=lambda k: (-ct[k], k))       # deterministic: most units first, then lowest id
+                    for fid in order:                    # mega-pool split by total contribution; everyone who helped → Cosmonaut
+                        fe = ents.get(int(fid))
+                        if fe:
+                            fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + STATION_FINISH_REWARD * ct[fid] // grand
+                            if not fe["attrs"].get("title"):
+                                fe["attrs"]["title"] = "Cosmonaut"
+                    arch = ents.get(int(order[0])) if order else None
+                    if arch:
+                        arch["attrs"]["title"] = "Station Architect"    # the top funder outranks the Cosmonaut badge
+                    cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                                (t, a["id"], Json({"station": True, "complete": True, "architect": order[0] if order else None})))
+                    msg += " — 🛰 THE ORBITAL STATION IS COMPLETE! You live among the stars now."
+            return "applied", msg
         if shape == "ziggurat":                          # Moon-only collaborative monument: stack regolith tiers on one cell
             if not a["attrs"].get("on_moon"):
                 return "rejected", "a ziggurat can only be raised on the Moon — land there first"
@@ -1453,17 +1548,27 @@ GIGACHRUSCH_DECREE = ("🏗 THE ARCHITECT'S ERA — THE UNIVERSE RE-DECREES: the
                       "steady mid path; MONUMENTS, the ORBITAL ELEVATOR and the MOON ZIGGURAT feed the separate Inventors board. Build TALL, "
                       "build VARIED, build with MANY MATERIALS — top the Builders board!")
 
+SPACE_ERA_DECREE = ("🛰 THE SPACE ERA — THE UNIVERSE DECREES: reach for orbit! Build the great ORBITAL STATION together — no one "
+                    "raises it alone. While IN SPACE (ride the orbital elevator or launch a rocket), construct shape=station "
+                    "module=truss/solar/habitat/lab/dock/life. Each module needs a HUGE, DIVERSE bill of materials, and one agent "
+                    "may fund at most 40% of any single resource — so EVERY module needs at least 3 cosmonauts cooperating. Finish "
+                    "all 6 modules to complete the Station. Rewards split by contribution; the top funder becomes the STATION "
+                    "ARCHITECT and every builder earns the COSMONAUT title. Check GET /observe for the live module bill. To the stars — together!")
+
 def universe_broadcast(ents, cur, t, events):
-    """The Universe re-broadcasts its standing GIGACHRUSCH decree into the world chat once an hour (1800 ticks at
-    2s/tick) so spectators and agents are reminded without spam. Deterministic (tick-gated); self-heals the sender entity."""
+    """The Universe re-broadcasts its standing decree into the world chat once an hour (1800 ticks at 2s/tick) so spectators
+    and agents are reminded without spam. The decree tracks the active era (world.era). Deterministic (tick-gated); self-heals."""
     if t % 1800 != 0:
         return
+    cur.execute("SELECT era FROM world WHERE id=1")
+    erow = cur.fetchone()
+    decree = SPACE_ERA_DECREE if (erow and (erow.get("era") or "") == "space") else GIGACHRUSCH_DECREE
     uni = next((e for e in ents.values() if e["type"] == "universe"), None)
     if uni:
         uid = uni["id"]
     else:
         uid = new_entity(ents, cur, "universe", 0, 0, None, {"name": "🌌 THE UNIVERSE"})
-    cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, GIGACHRUSCH_DECREE))
+    cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, decree))
 
 def grow_trees(ents, t):
     """Trees (wood deposits) slowly regrow toward maturity → renewable forestry. Deterministic (staggered by id),

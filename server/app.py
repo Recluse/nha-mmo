@@ -524,6 +524,31 @@ def relations():
     return _cached("relations", _relations)
 
 
+def _station_status(cur):
+    """SPACE ERA only: the orbital-station blueprint + live per-module progress, so agents know exactly what to fund.
+    Returns None outside the 'space' era. Read-only; two small queries."""
+    cur.execute("SELECT era FROM world WHERE id=1")
+    erow = cur.fetchone()
+    if not erow or (erow["era"] or "") != "space":
+        return None
+    cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='station' LIMIT 1")
+    srow = cur.fetchone()
+    live = (srow["attrs"].get("modules", {}) if srow else {})
+    out = {"cap_pct_per_agent": engine.STATION_CAP_FRAC, "min_funders_per_module": engine.STATION_MIN_CONTRIB,
+           "station_exists": bool(srow), "complete": bool(srow and srow["attrs"].get("complete")),
+           "modules_total": len(engine.STATION_MODULES), "modules_done": 0, "modules": []}
+    for key, spec in engine.STATION_MODULES.items():
+        m = live.get(key, {}); have = m.get("have", {})
+        out["modules"].append({
+            "module": key, "label": spec["label"], "need": spec["need"],
+            "have": {r: int(have.get(r, 0)) for r in spec["need"]},
+            "remaining": {r: spec["need"][r] - int(have.get(r, 0)) for r in spec["need"] if int(have.get(r, 0)) < spec["need"][r]},
+            "funders": len(m.get("contrib", {})), "complete": bool(m.get("complete"))})
+        if m.get("complete"):
+            out["modules_done"] += 1
+    return out
+
+
 @app.get("/observe/{agent_id}")
 def observe_ep(agent_id: int):
     with _closing(_connect()) as conn:
@@ -535,6 +560,7 @@ def observe_ep(agent_id: int):
         cur.execute("SELECT notices FROM world WHERE id=1")   # official announcements — world.notices, which the tick never overwrites
         nrow = cur.fetchone()
         obs["system_notices"] = (nrow["notices"] if nrow and nrow["notices"] else [])
+        obs["space_station"] = _station_status(cur)          # SPACE ERA: co-op orbital-station blueprint + live progress (None outside the era)
     return obs
 
 
@@ -2036,6 +2062,21 @@ void main(){
   grp.position.set(gp[0],gp[1]+(s.alt||0)/9,gp[2]);           // seat the whole group on the terrain at the footprint center
   return grp;
  }
+ function makeStation(s){                                          // SPACE ERA — the shared orbital station (spine + modules + docking ring + solar wings)
+  const grp=new T.Group(), done=!!s.complete;
+  const hull=done?0xc7d2dc:0x8b95a3;                               // bright hull once complete, dull grey while under construction
+  const mat=(c,e)=>new T.MeshLambertMaterial({color:c,emissive:e||0x0f1320,flatShading:true});
+  const core=new T.Mesh(new T.CylinderGeometry(1.0,1.0,8,16),mat(hull)); core.rotation.z=Math.PI/2; grp.add(core);                 // horizontal spine
+  [-2.6,0,2.6].forEach(ox=>{const m=new T.Mesh(new T.CylinderGeometry(1.5,1.5,1.7,16),mat(hull)); m.rotation.z=Math.PI/2; m.position.x=ox; grp.add(m);});   // habitat modules
+  const ring=new T.Mesh(new T.TorusGeometry(2.7,0.24,8,28),mat(done?0x58a6ff:0xf0883e,0x14233a)); ring.rotation.y=Math.PI/2; grp.add(ring);   // docking ring: blue done / orange WIP
+  [-1,1].forEach(sd=>{                                             // two solar wings on booms, above & below the spine
+   const boom=new T.Mesh(new T.BoxGeometry(0.16,3.2,0.16),mat(hull)); boom.position.y=sd*3.0; grp.add(boom);
+   const wing=new T.Mesh(new T.BoxGeometry(7.0,0.1,2.6),new T.MeshLambertMaterial({color:0x1b3a6b,emissive:0x0a1830})); wing.position.y=sd*5.0; grp.add(wing);
+  });
+  const p=P(s.x,s.y); grp.position.set(p[0],p[1]+(s.alt||600)/9,p[2]);                                                            // seat it high in orbit
+  if(done){const lb=label('\\u{1F6F0} '+(s.name||'Orbital Station')); lb.scale.set(14,3.2,1); lb.position.y=7.5; grp.add(lb);}     // 🛰 label once complete
+  return grp;
+ }
  function buildStructures(ss){
   while(strG.children.length)strG.remove(strG.children[0]);
   zigFX.length=0;                                             // drop last frame's shimmer refs before rebuilding
@@ -2043,6 +2084,7 @@ void main(){
   (ss||[]).forEach(s=>{try{                                          // per-structure guard: one bad shape can't blank ALL structures
    if(s.shape=='ziggurat'){strG.add(makeZiggurat(s,zigN++));return;}   // Moon-only monument — placed on the Moon, not the terrain
    if(s.shape=='monument'){strG.add(makeMonument(s));return;}          // terrain megastructure spanning a w x h footprint
+   if(s.shape=='station'){strG.add(makeStation(s));return;}            // SPACE ERA: the co-op orbital station, high in orbit
    const p=P(s.x,s.y),sz=Math.max(0.8,(s.size||2)*0.6);let geo,vh;
    if(s.shape=='elevator'){vh=Math.max(1,(s.height||20)/9);geo=new T.CylinderGeometry(0.6,0.95,vh,8);}
    else{vh=Math.max(0.8,Math.min(16,(s.height||3)/4));
