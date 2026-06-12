@@ -140,7 +140,7 @@ STATION_MODULES = {                # insertion order is fixed → deterministic 
     "truss":   {"label": "Core Truss",   "need": {"metal": 800, "titanium": 420, "composite": 500}},
     "solar":   {"label": "Solar Array",  "need": {"silicon": 700, "crystal": 400, "composite": 420}},
     "habitat": {"label": "Habitat Ring", "need": {"metal": 720, "composite": 500, "ice": 300}},
-    "lab":     {"label": "Science Lab",  "need": {"crystal": 480, "silicon": 460, "iridium": 240}},
+    "lab":     {"label": "Science Lab",  "need": {"crystal": 480, "silicon": 460, "iridium": 120}},   # iridium is scarce (asteroids only) → kept modest so the Lab can't soft-lock
     "dock":    {"label": "Docking Port", "need": {"titanium": 460, "metal": 560, "composite": 440}},
     "life":    {"label": "Life Support", "need": {"ice": 420, "crystal": 440, "silicon": 380}},
 }
@@ -702,7 +702,7 @@ def apply_intent(it, ents, cur, t, events):
                              "name": str(args.get("name", "orbital elevator"))[:32]})
             return "applied", f"laid an orbital-elevator base #{eid} ({seg}/{ATMOSPHERE_TOP}) — stack more segments on this cell to reach space"
         if shape == "station":                           # SPACE ERA: one SHARED orbital station, assembled co-op from 6 modules
-            cur.execute("SELECT era FROM world WHERE id=1")
+            cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # to_jsonb → NULL (not error) if the era column is absent on a restored DB
             erow = cur.fetchone()
             if not erow or (erow.get("era") or "architect") != "space":
                 return "rejected", "the Orbital Station can only be built in the SPACE ERA"
@@ -760,16 +760,16 @@ def apply_intent(it, ents, cur, t, events):
                 if all(st["attrs"]["modules"].get(k, {}).get("complete") for k in STATION_MODULES):
                     st["attrs"]["complete"] = True       # the whole Station is finished — the season's grand prize
                     grand = sum(ct.values()) or 1
-                    order = sorted(ct, key=lambda k: (-ct[k], k))       # deterministic: most units first, then lowest id
-                    for fid in order:                    # mega-pool split by total contribution; everyone who helped → Cosmonaut
-                        fe = ents.get(int(fid))
-                        if fe:
-                            fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + STATION_FINISH_REWARD * ct[fid] // grand
+                    order = sorted(ct, key=lambda k: (-ct[k], int(k)))  # deterministic: most units first, then lowest id
+                    for fid in order:                    # mega-pool split by contribution; only MEANINGFUL funders (pts>0) earn the share + Cosmonaut — 1-unit sybils get nothing
+                        fe = ents.get(int(fid)); pts = STATION_FINISH_REWARD * ct[fid] // grand
+                        if fe and pts > 0:
+                            fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
                             if not fe["attrs"].get("title"):
                                 fe["attrs"]["title"] = "Cosmonaut"
                     arch = ents.get(int(order[0])) if order else None
-                    if arch:
-                        arch["attrs"]["title"] = "Station Architect"    # the top funder outranks the Cosmonaut badge
+                    if arch and not arch["attrs"].get("title"):
+                        arch["attrs"]["title"] = "Station Architect"    # top funder; preserves any rarer earned title (e.g. a Wonder)
                     cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                                 (t, a["id"], Json({"station": True, "complete": True, "architect": order[0] if order else None})))
                     msg += " — 🛰 THE ORBITAL STATION IS COMPLETE! You live among the stars now."
@@ -826,7 +826,7 @@ def apply_intent(it, ents, cur, t, events):
             if geese_block_footprint(ents, x0, y0, w, h):   # a gaggle on/around the footprint blocks the raise
                 return "rejected", "a gaggle of hissing geese blocks the site — shoo them off first"
             # footprint must be clear of every existing structure (DB query sees prior ticks + structures raised earlier this tick)
-            cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x>=%s AND x<%s AND y>=%s AND y<%s LIMIT 1",
+            cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x>=%s AND x<%s AND y>=%s AND y<%s AND COALESCE((attrs->>'alt')::int,0)=0 LIMIT 1",
                         (x0, x0 + w, y0, y0 + h))
             if cur.fetchone():
                 return "rejected", "another structure already stands inside that footprint — pick clear ground"
@@ -907,7 +907,7 @@ def apply_intent(it, ents, cur, t, events):
         on_moon = bool(a["attrs"].get("on_moon"))   # regolith builds only when actually landed (post-rework: altitude 600 alone = orbit, not the Moon)
         if not on_moon and geese_block_footprint(ents, a["x"], a["y"], 1, 1):   # no geese on the Moon; only earthbound shoreline builds are blocked
             return "rejected", "a gaggle of hissing geese blocks the site — shoo them off first"
-        cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s LIMIT 1", (a["x"], a["y"]))
+        cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s AND COALESCE((attrs->>'alt')::int,0)=0 LIMIT 1", (a["x"], a["y"]))
         if cur.fetchone():                           # ONE structure per cell — generics now PAY points, so block stacking-on-a-cell point farming
             return "rejected", "a structure already stands on this cell — move to clear ground (cities/elevators/ziggurats are the stack-on-one-cell shapes)"
         size = max(1, min(20, _ai(args, "size", 3)))
@@ -1254,6 +1254,8 @@ def _can_harm(attacker, target, ents, t):
     """Gating shared by attack + steal: returns (ok, why)."""
     if int(attacker["attrs"].get("downed_until", 0)) > t:
         return False, "you are downed"
+    if target["type"] == "structure" and target["attrs"].get("shape") == "station":
+        return False, "the Orbital Station is protected co-op infrastructure — it cannot be attacked"
     if target["type"] == "agent":
         if _are_allies(ents, attacker["id"], target["id"]):
             return False, "you cannot harm an ally"
@@ -1307,6 +1309,8 @@ def armor(tgt):
 
 def apply_damage(e, eff, t, attacker, events, cur, ents):
     """Subtract eff hp; on first reaching 0 run the death/down routine. Returns True if this hit was fatal."""
+    if e["type"] == "structure" and e["attrs"].get("shape") == "station":
+        return False                                  # the Orbital Station is indestructible co-op infrastructure (covers attack + bombs/explode)
     eff = max(MIN_EFF_DMG, int(eff))
     hp = max(0, hp_of(e) - eff)
     e["attrs"]["hp"] = hp
@@ -1522,7 +1526,7 @@ def roam_autonomous(ents, cur, t, events):
         owner = ents.get(v["owner"])
         if not owner or owner["type"] != "agent" or get(owner, "metal") < 1:
             continue
-        cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s LIMIT 1", (v["x"], v["y"]))
+        cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s AND COALESCE((attrs->>'alt')::int,0)=0 LIMIT 1", (v["x"], v["y"]))
         if cur.fetchone():                                    # cell already built on -> skip (no stacking roads)
             continue
         rc = int(owner["attrs"].get("road_count", 0))         # automatons feed the SAME counter as manual roads → robo-spam can't dodge the cap
@@ -1560,7 +1564,7 @@ def universe_broadcast(ents, cur, t, events):
     and agents are reminded without spam. The decree tracks the active era (world.era). Deterministic (tick-gated); self-heals."""
     if t % 1800 != 0:
         return
-    cur.execute("SELECT era FROM world WHERE id=1")
+    cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # to_jsonb → NULL (not error) if the era column is absent on a restored DB
     erow = cur.fetchone()
     decree = SPACE_ERA_DECREE if (erow and (erow.get("era") or "") == "space") else GIGACHRUSCH_DECREE
     uni = next((e for e in ents.values() if e["type"] == "universe"), None)

@@ -418,7 +418,7 @@ def _map():
         artrows = cur.fetchall()
         cur.execute("SELECT x, y FROM entities WHERE type='vehicle'")     # all vehicles (built or roaming) sit on a cell
         vehrows = cur.fetchall()
-        cur.execute("SELECT x, y, attrs->>'shape' shape FROM entities WHERE type='structure'")
+        cur.execute("SELECT x, y, attrs->>'shape' shape FROM entities WHERE type='structure' AND COALESCE((attrs->>'alt')::int,0)=0")   # ground map only — the orbital station (alt 600) lives in the 3D scene, not the 2D ascii map
         strrows = cur.fetchall()
     glyphs = "123456789ABDEGHJKLMNPQRSTUVXYZ"          # single chars, skipping O/C/F/W (deposit letters)
     markers, legend = [], []
@@ -527,7 +527,7 @@ def relations():
 def _station_status(cur):
     """SPACE ERA only: the orbital-station blueprint + live per-module progress, so agents know exactly what to fund.
     Returns None outside the 'space' era. Read-only; two small queries."""
-    cur.execute("SELECT era FROM world WHERE id=1")
+    cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # to_jsonb → NULL (not error) if the era column is absent on a restored DB
     erow = cur.fetchone()
     if not erow or (erow["era"] or "") != "space":
         return None
