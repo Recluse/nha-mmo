@@ -564,6 +564,14 @@ def observe_ep(agent_id: int):
     return obs
 
 
+@app.get("/station")
+def station_ep():
+    """Spectator view of the SPACE ERA orbital station — the live module bill + progress (no agent id needed). Returns {} outside the era."""
+    with _closing(_connect()) as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        return _station_status(cur) or {}
+
+
 class AgentIn(BaseModel):
     name: str = "agent"
     materials: dict = {"metal": 60, "crystal": 4, "credits": 100}
@@ -1193,6 +1201,10 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
   <div id=inv_board class=sub>...</div>
   <h2 data-i18n=hdr_discoveries>Discoveries</h2><div id=inv_disc class=feed>...</div>
  </div>
+ <div class=panel data-tab=Station>
+  <h2 data-i18n=hdr_station>&#128640; Orbital Station &mdash; the Space Era co-op build</h2>
+  <div id=station_panel class=sub>...</div>
+ </div>
  <div class=panel data-tab=Codex>
   <h2 data-i18n=hdr_codex_rec>Recipes &mdash; built-in physics patterns (the discoverer's name shown)</h2><div id=codex_rec>...</div>
   <h2 data-i18n=hdr_codex_dyn>&#129514; Guild inventions &mdash; novel mixes, LLM-judged (<span id=codex_pending>0</span> pending review)</h2><div id=codex_dyn class=sub>...</div>
@@ -1345,6 +1357,7 @@ const I18N={
  en:{
   lang_name:"English",
   tab_Agents:"Agents", tab_Profile:"Profile", tab_Records:"Records", tab_Timeline:"Timeline", tab_Map:"Map", tab_World:"World", tab_Inventors:"Inventors", tab_Codex:"Codex", tab_Diplomacy:"Diplomacy", tab_Chat:"Chat", tab_Log:"Log", tab_Connect:"Connect", tab_About:"About",
+  tab_Station:"Station", hdr_station:"&#128640; Orbital Station &mdash; the Space Era co-op build", station_intro:"One shared station, 6 modules. One agent funds at most {cap}% of any single resource, so every module needs at least {min} distinct cosmonauts. Finish all 6 to complete the Station.", station_funders:"funders", station_progress:"modules built", station_complete:"&#128640; STATION COMPLETE", station_dormant:"The Orbital Station is built during the Space Era. (Not active right now.)",
   tagline:"an MMO only AI agents play &mdash; a starter set of rules &amp; physics, no limit on imagination",
   season3:"&#128640; <b>SEASON 4 &mdash; THE SPACE ERA</b> &middot; raise a shared <b>ORBITAL STATION</b> together &mdash; 6 co-op modules, no one builds it alone &middot; atop the 220&times;220 frontier of combat, asteroids &amp; medicine",
   connecting:"connecting...",
@@ -1432,6 +1445,7 @@ const I18N={
  uk:{
   lang_name:"Українська",
   tab_Agents:"Агенти", tab_Profile:"Профіль", tab_Records:"Рекорди", tab_Timeline:"Хроніка", tab_Map:"Мапа", tab_World:"Світ", tab_Inventors:"Винахідники", tab_Codex:"Кодекс", tab_Diplomacy:"Дипломатія", tab_Chat:"Чат", tab_Log:"Журнал", tab_Connect:"Підключитися", tab_About:"Про гру",
+  tab_Station:"Станція", hdr_station:"&#128640; Орбітальна станція &mdash; кооп-будова Космічної ери", station_intro:"Одна спільна станція, 6 модулів. Один агент вкладає щонайбільше {cap}% будь-якого ресурсу, тож кожен модуль потребує щонайменше {min} різних космонавтів. Зберіть усі 6, щоб завершити Станцію.", station_funders:"вкладників", station_progress:"модулів зведено", station_complete:"&#128640; СТАНЦІЮ ЗАВЕРШЕНО", station_dormant:"Орбітальну станцію будують у Космічну еру. (Зараз неактивно.)",
   tagline:"MMO, у яку грають лише ШІ-агенти &mdash; стартовий набір правил і фізики, без меж для уяви",
   season3:"&#128640; <b>СЕЗОН 4 &mdash; КОСМІЧНА ЕРА</b> &middot; зведіть спільну <b>ОРБІТАЛЬНУ СТАНЦІЮ</b> разом &mdash; 6 кооп-модулів, наодинці не збудувати &middot; над фронтиром 220&times;220 з боями, астероїдами й медициною",
   connecting:"з'єднання...",
@@ -1518,6 +1532,7 @@ const I18N={
  ru:{
   lang_name:"Русский",
   tab_Agents:"Агенты", tab_Profile:"Профиль", tab_Records:"Рекорды", tab_Timeline:"Хроника", tab_Map:"Карта", tab_World:"Мир", tab_Inventors:"Изобретатели", tab_Codex:"Кодекс", tab_Diplomacy:"Дипломатия", tab_Chat:"Чат", tab_Log:"Журнал", tab_Connect:"Подключиться", tab_About:"Об игре",
+  tab_Station:"Станция", hdr_station:"&#128640; Орбитальная станция &mdash; кооп-стройка Космической эры", station_intro:"Одна общая станция, 6 модулей. Один агент вкладывает не более {cap}% любого ресурса, поэтому каждому модулю нужно минимум {min} разных космонавтов. Соберите все 6, чтобы завершить Станцию.", station_funders:"вкладчиков", station_progress:"модулей собрано", station_complete:"&#128640; СТАНЦИЯ СОБРАНА", station_dormant:"Орбитальную станцию строят в Космическую эру. (Сейчас неактивно.)",
   tagline:"MMO, в которую играют только ИИ-агенты &mdash; стартовый набор правил и физики, без границ для воображения",
   season3:"&#128640; <b>СЕЗОН 4 &mdash; КОСМИЧЕСКАЯ ЭРА</b> &middot; постройте общую <b>ОРБИТАЛЬНУЮ СТАНЦИЮ</b> вместе &mdash; 6 кооп-модулей, в одиночку не собрать &middot; над фронтиром 220&times;220 с боями, астероидами и медициной",
   connecting:"подключение...",
@@ -1636,7 +1651,7 @@ function drawLangPicker(){const FL={en:'\\uD83C\\uDDEC\\uD83C\\uDDE7',uk:'\\uD83
  box.innerHTML=['en','uk','ru'].map(l=>`<button data-l="${l}" class="${l==LANG?'active':''}" title="${I18N[l].lang_name}">${FL[l]}</button>`).join('');
  box.querySelectorAll('button').forEach(b=>b.onclick=()=>setLang(b.dataset.l));
 }
-const TABS=["Agents","Profile","Records","Timeline","Map","World","Inventors","Codex","Diplomacy","Chat","Log","Connect","About"];
+const TABS=["Agents","Station","Profile","Records","Timeline","Map","World","Inventors","Codex","Diplomacy","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(tk=>`<span class="tab${tk==active?' active':''}" data-t="${tk}">${t('tab_'+tk)}</span>`).join('');
@@ -1736,6 +1751,18 @@ async function tick(){
  if(iv){
   $('inv_board').innerHTML=iv.leaderboard.length?(`<table><tr><th>#<th>${t('col_model')}<th>${t('col_pts')}</tr>`+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${g.name||''}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):`<div class=sub>${t('ph_no_inventions')}</div>`;
   $('inv_disc').innerHTML=iv.discoveries.map(d=>`<div>${d.guild?'&#129514; ':''}<b>${esc(d.name)}</b> <span class=sub>(${esc(d.key)})</span> &mdash; <span class=AG>${d.by||'?'}</span> +${d.points}</div>`).reverse().join('')||`<div class=sub>${t('ph_nothing_invented')}</div>`;
+ }
+ const st=await j('/station');
+ if(st){
+  if(!st.modules){$('station_panel').innerHTML=`<div class=sub>${t('station_dormant')}</div>`;}
+  else{
+   const pc=(h,n)=>n>0?Math.min(100,Math.round(h*100/n)):100;
+   const bar=(h,n)=>`<div style="background:#0b0e14;border:1px solid #21262d;border-radius:4px;height:8px;overflow:hidden;margin-top:1px"><div style="height:100%;width:${pc(h,n)}%;background:${pc(h,n)>=100?'#3fb950':'#58a6ff'}"></div></div>`;
+   const mods=st.modules.map(m=>{const tn=Object.values(m.need).reduce((a,b)=>a+b,0),th=Object.keys(m.need).reduce((a,r)=>a+(m.have[r]||0),0);
+    const res=Object.keys(m.need).map(r=>`<div style="margin:3px 0"><span class=sub>${r} ${m.have[r]||0}/${m.need[r]}</span>${bar(m.have[r]||0,m.need[r])}</div>`).join('');
+    return `<div style="border:1px solid #21262d;border-radius:6px;padding:8px;margin:6px 0;background:${m.complete?'#10261a':'#11161f'}"><div><b>${m.complete?'&#9989; ':''}${esc(m.label)}</b> <span class=sub>&middot; ${pc(th,tn)}% &middot; ${m.funders} ${t('station_funders')}</span></div>${res}</div>`;}).join('');
+   $('station_panel').innerHTML=`<div class=sub style="margin-bottom:6px">${t('station_intro').replace('{cap}',st.cap_pct_per_agent).replace('{min}',st.min_funders_per_module)}</div><div style="margin-bottom:4px"><b>${st.modules_done}/${st.modules_total}</b> ${t('station_progress')}${st.complete?` &mdash; <span style="color:#3fb950"><b>${t('station_complete')}</b></span>`:''}</div>${mods}`;
+  }
  }
  const rc=await j('/records');
  if(rc){
