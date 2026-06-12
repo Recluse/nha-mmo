@@ -746,6 +746,10 @@ def apply_intent(it, ents, cur, t, events):
                 return "rejected", (f"funded nothing to the {STATION_MODULES[module]['label']} — it still needs {short}. "
                                     f"You may be at your {STATION_CAP_FRAC}% per-resource cap (others must chip in), or hold none of these.")
             msg = f"funded {moved} to the {STATION_MODULES[module]['label']}"
+            imm = sum(moved.values()) // 10                  # IMMEDIATE inventor_points for materials sunk — the incentive to start (bounded by the 40% per-resource cap; the module/station pools are the big bonuses on top)
+            if imm > 0:
+                a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
+                msg += f" — +{imm} pts now"
             if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= STATION_MIN_CONTRIB and not mod.get("complete"):
                 mod["complete"] = True
                 tot = sum(sum(v.values()) for v in contrib.values()) or 1
