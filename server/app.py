@@ -1759,8 +1759,11 @@ function initWorld3D(){
  const T=window.THREE;
  const ren=new T.WebGLRenderer({antialias:true}); ren.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); ren.setSize(host.clientWidth,host.clientHeight); host.appendChild(ren.domElement);
  const sc=new T.Scene(); sc.background=new T.Color(0x04060e); sc.fog=new T.Fog(0x04060e,200,560);
- // starry night sky — a far dome of fixed-size white points, fog-immune (fog:false) so they shine against the deep distance
- {const SN=1500,SP=new Float32Array(SN*3);for(let i=0;i<SN;i++){const r=700+Math.random()*900,th=Math.random()*6.2832,ph=Math.acos(2*Math.random()-1);SP[i*3]=r*Math.sin(ph)*Math.cos(th);SP[i*3+1]=Math.abs(r*Math.cos(ph))+40;SP[i*3+2]=r*Math.sin(ph)*Math.sin(th);}const SG=new T.BufferGeometry();SG.setAttribute('position',new T.BufferAttribute(SP,3));sc.add(new T.Points(SG,new T.PointsMaterial({color:0xffffff,size:1.8,sizeAttenuation:false,transparent:true,opacity:0.9,fog:false})));}
+ // FULL-SPHERE starscape + a soft Milky Way band — pure points (GPU-light, no texture): per-star colour + size, denser along the galactic plane. Stars wrap the whole sky (yes, below too — flat-earthers beware).
+ {const NX=0,NY=Math.cos(0.6),NZ=Math.sin(0.6);   // galactic-plane normal (tilted); the Milky Way hugs the plane perpendicular to it
+  function mkStars(N,band,sz){const P=new Float32Array(N*3),C=new Float32Array(N*3);for(let i=0;i<N;i++){let dx,dy,dz,bd,g=0;do{const th=Math.random()*6.2832,u=2*Math.random()-1,s=Math.sqrt(1-u*u);dx=s*Math.cos(th);dy=u;dz=s*Math.sin(th);bd=Math.abs(dx*NX+dy*NY+dz*NZ);g++;}while(band&&bd>0.16&&g<8&&Math.random()>0.05);const mw=Math.max(0,1-bd/0.18),r=950+Math.random()*350;P[i*3]=dx*r;P[i*3+1]=dy*r;P[i*3+2]=dz*r;const t=Math.random();let cr=1,cg=1,cb=1;if(t<0.18){cr=0.72;cg=0.82;cb=1;}else if(t<0.40){cr=1;cg=0.93;cb=0.78;}else if(t<0.47){cr=1;cg=0.78;cb=0.68;}const br=(band?0.30:0.55)+0.40*Math.random()+0.35*mw;C[i*3]=Math.min(1,cr*br);C[i*3+1]=Math.min(1,cg*br);C[i*3+2]=Math.min(1,cb*br);}const G=new T.BufferGeometry();G.setAttribute('position',new T.BufferAttribute(P,3));G.setAttribute('color',new T.BufferAttribute(C,3));sc.add(new T.Points(G,new T.PointsMaterial({size:sz,sizeAttenuation:false,vertexColors:true,transparent:true,opacity:0.95,fog:false})));}
+  mkStars(2800,false,1.7);    // the general starfield (whole sphere, varied colours/brightness)
+  mkStars(3000,true,1.05);}   // the Milky Way — dense faint small stars hugging the galactic plane
  const cam=new T.PerspectiveCamera(55, host.clientWidth/host.clientHeight, 0.5, 3000);
  sc.add(new T.AmbientLight(0xffffff,0.75));
  const sun=new T.DirectionalLight(0xfff0d0,0.9); sun.position.set(80,160,50); sc.add(sun);
