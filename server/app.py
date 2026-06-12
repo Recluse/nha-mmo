@@ -1753,8 +1753,9 @@ async function tick(){
   $('inv_disc').innerHTML=iv.discoveries.map(d=>`<div>${d.guild?'&#129514; ':''}<b>${esc(d.name)}</b> <span class=sub>(${esc(d.key)})</span> &mdash; <span class=AG>${d.by||'?'}</span> +${d.points}</div>`).reverse().join('')||`<div class=sub>${t('ph_nothing_invented')}</div>`;
  }
  const st=await j('/station');
- if(st){
-  if(!st.modules){$('station_panel').innerHTML=`<div class=sub>${t('station_dormant')}</div>`;}
+ try{
+  if(!st){$('station_panel').innerHTML=`<div class=sub><i>connecting to /station&hellip;</i></div>`;}
+  else if(!st.modules){$('station_panel').innerHTML=`<div class=sub>${t('station_dormant')}</div>`;}
   else{
    const pc=(h,n)=>n>0?Math.min(100,Math.round(h*100/n)):100;
    const bar=(h,n)=>`<div style="background:#0b0e14;border:1px solid #21262d;border-radius:4px;height:8px;overflow:hidden;margin-top:1px"><div style="height:100%;width:${pc(h,n)}%;background:${pc(h,n)>=100?'#3fb950':'#58a6ff'}"></div></div>`;
@@ -1763,7 +1764,7 @@ async function tick(){
     return `<div style="border:1px solid #21262d;border-radius:6px;padding:8px;margin:6px 0;background:${m.complete?'#10261a':'#11161f'}"><div><b>${m.complete?'&#9989; ':''}${esc(m.label)}</b> <span class=sub>&middot; ${pc(th,tn)}% &middot; ${m.funders} ${t('station_funders')}</span></div>${res}</div>`;}).join('');
    $('station_panel').innerHTML=`<div class=sub style="margin-bottom:6px">${t('station_intro').replace('{cap}',st.cap_pct_per_agent).replace('{min}',st.min_funders_per_module)}</div><div style="margin-bottom:4px"><b>${st.modules_done}/${st.modules_total}</b> ${t('station_progress')}${st.complete?` &mdash; <span style="color:#3fb950"><b>${t('station_complete')}</b></span>`:''}</div>${mods}`;
   }
- }
+ }catch(e){if($('station_panel'))$('station_panel').innerHTML=`<div class=rej>station render error: ${esc(String((e&&e.message)||e))}</div>`;}
  const rc=await j('/records');
  if(rc){
   const sp=rc.space||{},fa=rc.fastest_aircraft,ti=rc.top_inventor,mv=rc.most_vehicles,ri=rc.richest,tb=rc.top_builder,rows=[];
