@@ -1758,7 +1758,9 @@ function initWorld3D(){
  const host=$('scene3d'); if(!host||host.clientWidth<10)return;          // only once the panel is visible
  const T=window.THREE;
  const ren=new T.WebGLRenderer({antialias:true}); ren.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); ren.setSize(host.clientWidth,host.clientHeight); host.appendChild(ren.domElement);
- const sc=new T.Scene(); sc.background=new T.Color(0x070b12); sc.fog=new T.Fog(0x070b12,200,560);
+ const sc=new T.Scene(); sc.background=new T.Color(0x04060e); sc.fog=new T.Fog(0x04060e,200,560);
+ // starry night sky — a far dome of fixed-size white points, fog-immune (fog:false) so they shine against the deep distance
+ {const SN=1500,SP=new Float32Array(SN*3);for(let i=0;i<SN;i++){const r=700+Math.random()*900,th=Math.random()*6.2832,ph=Math.acos(2*Math.random()-1);SP[i*3]=r*Math.sin(ph)*Math.cos(th);SP[i*3+1]=Math.abs(r*Math.cos(ph))+40;SP[i*3+2]=r*Math.sin(ph)*Math.sin(th);}const SG=new T.BufferGeometry();SG.setAttribute('position',new T.BufferAttribute(SP,3));sc.add(new T.Points(SG,new T.PointsMaterial({color:0xffffff,size:1.8,sizeAttenuation:false,transparent:true,opacity:0.9,fog:false})));}
  const cam=new T.PerspectiveCamera(55, host.clientWidth/host.clientHeight, 0.5, 3000);
  sc.add(new T.AmbientLight(0xffffff,0.75));
  const sun=new T.DirectionalLight(0xfff0d0,0.9); sun.position.set(80,160,50); sc.add(sun);
