@@ -1955,13 +1955,13 @@ void main(){
    function domeY(px,pz){const u=(px-cx)/rx,v=(pz-cz)/rz,d=1-u*u-v*v;return d>0?mid+ry*Math.sqrt(d):sb.min.y;}   // ellipsoid-top height under (px,pz)
    ld.load('/elephant.glb',function(eg){                     // four elephants — lowered onto the dome + shifted back from the protruding head, trunks tilted down ~30deg, facing outward
     const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
-    const hl=Math.hypot(cx,cz)+0.001, dx=cx/hl*span*0.14, dz=cz/hl*span*0.14;    // shift toward the shell bulk = away from the head (the head pulls the shell-bbox centre to the opposite side)
+    const hl=Math.hypot(cx,cz)+0.001, dx=cx/hl*span*0.2, dz=cz/hl*span*0.2;      // shift toward the shell bulk = away from the head (the head pulls the shell-bbox centre to the opposite side)
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
      const px=p[0]+dx, pz=p[1]+dz;
      const e=base.clone(true); e.scale.setScalar(k); e.rotation.x=0.52;          // scale + ~30deg trunk-down FIRST, so the bbox is taken post-tilt
      const eb=new T.Box3().setFromObject(e), ew=new T.Group();
      e.position.set(-(eb.min.x+eb.max.x)/2,-eb.min.y,-(eb.min.z+eb.max.z)/2);    // centre xz, LOWEST point (post-tilt) at the wrapper origin
-     ew.add(e); ew.position.set(px,domeY(px,pz)-eleH*0.5,pz); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);   // -eleH*0.5: sink so feet rest on the shell + the tilt-raised rump clears the Disc
+     ew.add(e); ew.position.set(px,domeY(px,pz)-eleH*0.4,pz); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);   // -eleH*0.4: sink so feet rest on the shell + the tilt-raised rump clears the Disc (raised from 0.5 so rear legs don't sink)
     });
    },undefined,function(){});
   },undefined,function(){});
