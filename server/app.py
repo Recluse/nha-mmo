@@ -1940,24 +1940,27 @@ void main(){
   const geo=new T.PlaneGeometry(w,h,Math.min(150,w-1),Math.min(150,h-1)); geo.rotateX(-Math.PI/2);
   const m=new T.Mesh(geo,wmat); m.position.y=-0.45; m.renderOrder=1; sc.add(m); waterU=wu;
  }
- function buildWorldTurtle(w,h){                              // Great A'Tuin + the four world-elephants holding up the Disc, below the map (models: "Poly by Google", CC-BY 3.0 via poly.pizza)
+ function buildWorldTurtle(w,h){                              // Great A'Tuin + the four world-elephants below the Disc (models: "Poly by Google", CC-BY 3.0 via poly.pizza)
   if(!T.GLTFLoader)return;
-  const ld=new T.GLTFLoader(), span=Math.max(w,h), eleH=Math.max(16,span*0.16), top=-eleH;
-  ld.load('/turtle.glb',function(g){                         // the world turtle — one, below the elephants, scaled to ~the disc width
+  const ld=new T.GLTFLoader(), span=Math.max(w,h), eleH=Math.max(32,span*0.32), top=-eleH;   // elephants 2x bigger
+  ld.load('/turtle.glb',function(g){                         // the world turtle, scaled to ~the disc width, shell peak at `top`
    const o=g.scene, s=new T.Box3().setFromObject(o).getSize(new T.Vector3());
-   o.scale.setScalar((w*1.05)/Math.max(s.x,s.z,0.001));
-   const b=new T.Box3().setFromObject(o), wrap=new T.Group();
+   o.scale.setScalar((w*1.15)/Math.max(s.x,s.z,0.001));
+   const b=new T.Box3().setFromObject(o), tw=new T.Group();
    o.position.set(-(b.min.x+b.max.x)/2,-b.max.y,-(b.min.z+b.max.z)/2);   // centre on xz, put its TOP at the wrapper origin
-   wrap.add(o); wrap.position.y=top; sc.add(wrap);
-  },undefined,function(){});
-  ld.load('/elephant.glb',function(g){                       // four elephants stood on the shell, facing outward, holding the disc
-   const base=g.scene, s=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(s.y,0.001);
-   [[-w*0.27,-h*0.26],[w*0.27,-h*0.26],[-w*0.27,h*0.26],[w*0.27,h*0.26]].forEach(function(p){
-    const e=base.clone(true); e.scale.setScalar(k);
-    const b=new T.Box3().setFromObject(e), wrap=new T.Group();
-    e.position.set(-(b.min.x+b.max.x)/2,-b.min.y,-(b.min.z+b.max.z)/2);  // centre on xz, put its FEET at the wrapper origin
-    wrap.add(e); wrap.position.set(p[0],top,p[1]); wrap.rotation.y=Math.atan2(p[0],p[1]); sc.add(wrap);
-   });
+   tw.add(o); tw.position.y=top; sc.add(tw); tw.updateMatrixWorld(true);
+   ld.load('/elephant.glb',function(eg){                     // four elephants — RAYCAST onto the DOMED shell so feet sit on the curved surface (no floating), trunks tilted down ~30deg, facing outward
+    const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001), rc=new T.Raycaster();
+    [[-w*0.26,-h*0.26],[w*0.26,-h*0.26],[-w*0.26,h*0.26],[w*0.26,h*0.26]].forEach(function(p){
+     rc.set(new T.Vector3(p[0],1000,p[1]),new T.Vector3(0,-1,0));
+     const hit=rc.intersectObject(tw,true), fy=hit.length?hit[0].point.y:top;   // y of the actual shell surface under (px,pz)
+     const e=base.clone(true); e.scale.setScalar(k);
+     const eb=new T.Box3().setFromObject(e), ew=new T.Group();
+     e.position.set(-(eb.min.x+eb.max.x)/2,-eb.min.y,-(eb.min.z+eb.max.z)/2);   // centre on xz, feet at the wrapper origin
+     e.rotation.x=0.52;                                                          // ~30deg trunk-down lean
+     ew.add(e); ew.position.set(p[0],fy,p[1]); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);
+    });
+   },undefined,function(){});
   },undefined,function(){});
  }
  const gBox=new T.BoxGeometry(0.85,0.85,0.85), gTree=new T.ConeGeometry(0.55,1.8,6), gAg=new T.SphereGeometry(0.95,12,10), gPlant=new T.SphereGeometry(0.42,8,6);
