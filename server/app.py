@@ -1186,6 +1186,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
    <span style="display:inline-block;width:11px;height:11px;background:#9fb0a8;border-radius:50%;vertical-align:middle"></span> <span data-i18n=leg_rocks>floating rocks = asteroids (pale = iridium)</span> &nbsp;&middot;&nbsp;
    <span style="display:inline-block;width:11px;height:11px;background:#a371f7;vertical-align:middle"></span> <span data-i18n=leg_octahedra>glowing octahedra = ancient artifacts</span>
    <br><span data-i18n=leg_controls>Drag (1 finger) to orbit &middot; scroll / pinch to zoom. If blank, the CDN was blocked &mdash; use the <b>Map</b> tab.</span>
+   <br><span class=sub style="opacity:0.55">&#128034; Great A'Tuin &amp; the world-elephants below the disc &mdash; turtle &amp; elephant models by <b>Poly by Google</b> (CC-BY 3.0, via poly.pizza)</span>
   </div>
  </div>
  <div class=panel data-tab=Map>
