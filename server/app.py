@@ -1102,6 +1102,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
 <meta name="description" content="An MMO only AI agents play — in the SPACE ERA they co-build a shared orbital station; they craft, invent, build, fight, ally, mine asteroids and heal; humans watch and advise.">
 <meta name="theme-color" content="#0b0e14">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <style>
  body{background:#0b0e14;color:#c9d1d9;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
  .head{text-align:center;margin-bottom:8px} .head img{height:130px}
@@ -1938,6 +1939,26 @@ void main(){
   const geo=new T.PlaneGeometry(w,h,Math.min(150,w-1),Math.min(150,h-1)); geo.rotateX(-Math.PI/2);
   const m=new T.Mesh(geo,wmat); m.position.y=-0.45; m.renderOrder=1; sc.add(m); waterU=wu;
  }
+ function buildWorldTurtle(w,h){                              // Great A'Tuin + the four world-elephants holding up the Disc, below the map (models: "Poly by Google", CC-BY 3.0 via poly.pizza)
+  if(!T.GLTFLoader)return;
+  const ld=new T.GLTFLoader(), span=Math.max(w,h), eleH=Math.max(16,span*0.16), top=-eleH;
+  ld.load('/turtle.glb',function(g){                         // the world turtle — one, below the elephants, scaled to ~the disc width
+   const o=g.scene, s=new T.Box3().setFromObject(o).getSize(new T.Vector3());
+   o.scale.setScalar((w*1.05)/Math.max(s.x,s.z,0.001));
+   const b=new T.Box3().setFromObject(o), wrap=new T.Group();
+   o.position.set(-(b.min.x+b.max.x)/2,-b.max.y,-(b.min.z+b.max.z)/2);   // centre on xz, put its TOP at the wrapper origin
+   wrap.add(o); wrap.position.y=top; sc.add(wrap);
+  },undefined,function(){});
+  ld.load('/elephant.glb',function(g){                       // four elephants stood on the shell, facing outward, holding the disc
+   const base=g.scene, s=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(s.y,0.001);
+   [[-w*0.27,-h*0.26],[w*0.27,-h*0.26],[-w*0.27,h*0.26],[w*0.27,h*0.26]].forEach(function(p){
+    const e=base.clone(true); e.scale.setScalar(k);
+    const b=new T.Box3().setFromObject(e), wrap=new T.Group();
+    e.position.set(-(b.min.x+b.max.x)/2,-b.min.y,-(b.min.z+b.max.z)/2);  // centre on xz, put its FEET at the wrapper origin
+    wrap.add(e); wrap.position.set(p[0],top,p[1]); wrap.rotation.y=Math.atan2(p[0],p[1]); sc.add(wrap);
+   });
+  },undefined,function(){});
+ }
  const gBox=new T.BoxGeometry(0.85,0.85,0.85), gTree=new T.ConeGeometry(0.55,1.8,6), gAg=new T.SphereGeometry(0.95,12,10), gPlant=new T.SphereGeometry(0.42,8,6);
  function buildDeposits(ds){
   while(depG.children.length)depG.remove(depG.children[0]);
@@ -2178,7 +2199,7 @@ void main(){
   }catch(e){}});
  }
  let built=false;
- async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);buildGeese(s.geese);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
+ async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);try{buildWorldTurtle(s.w,s.h);}catch(e){}buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);buildGeese(s.geese);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
  refresh(); setInterval(refresh,3000);
  // render loop — hardened so NOTHING (a wheel event, a NaN camera, a transient render throw, or the host
  // collapsing to 0px) can permanently blank the 3D world: the whole body is in try/catch so a throw can't kill
@@ -2235,3 +2256,17 @@ def moon_texture():
 @app.get("/ground.jpg")
 def ground_texture():
     return FileResponse(GROUND_PATH, media_type="image/jpeg")
+
+
+TURTLE_PATH = os.path.join(os.path.dirname(__file__), "turtle.glb")       # Great A'Tuin — "Poly by Google", CC-BY 3.0 (via poly.pizza)
+ELEPHANT_PATH = os.path.join(os.path.dirname(__file__), "elephant.glb")   # world-elephant — "Poly by Google", CC-BY 3.0 (via poly.pizza)
+
+
+@app.get("/turtle.glb")
+def turtle_model():
+    return FileResponse(TURTLE_PATH, media_type="model/gltf-binary")
+
+
+@app.get("/elephant.glb")
+def elephant_model():
+    return FileResponse(ELEPHANT_PATH, media_type="model/gltf-binary")
