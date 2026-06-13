@@ -1920,7 +1920,7 @@ float tnoise(vec2 p){vec2 i=floor(p),f=fract(p);float a=thash(i),b=thash(i+vec2(
   try{buildWater(w,h);}catch(e){}                             // water is best-effort — never let it break the terrain
  }
  function buildWater(w,h){                                    // animated SEA as a big ROUND ocean disc (square plane masked to a circle via discard) -> the world reads as a round Disc with water to the rim; land sits above it
-  const R=Math.hypot(w,h)*0.7;                                // ocean radius: round rim comfortably beyond the rectangular land
+  const R=Math.hypot(w,h)*0.53;                               // ocean radius: just past the map corners (diag/2) -> circle almost touches the rectangular map
   const wu={uTime:{value:0},uR:{value:R}};
   const wmat=new T.ShaderMaterial({uniforms:wu,transparent:true,depthWrite:false,
    vertexShader:`uniform float uTime; varying vec3 vW;
@@ -1966,7 +1966,7 @@ void main(){
    ld.load('/elephant.glb',function(eg){                     // four elephants on the dome, shifted along the turtle's long (head<->tail) axis, trunks tilted down ~30deg, facing outward
     const base=eg.scene; base.traverse(function(m){if(m.isMesh&&m.material){m.material=m.material.clone();if(m.material.color)m.material.color.set(0x40256e);m.material.map=null;m.material.vertexColors=false;m.material.needsUpdate=true;}});   // make the elephants dark PURPLE/violet (single mesh: recolour the one material, drop its texture)
     const es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
-    const axisZ=rz>=rx, SGN=1, SHIFT=Math.max(rx,rz)*0.2*SGN;                    // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis. SGN=1 = toward the head; 0.2 (head-ward of centre)
+    const axisZ=rz>=rx, SGN=1, SHIFT=Math.max(rx,rz)*0.1*SGN;                    // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis. SGN=1 = toward the head; 0.1 (slightly head-ward of centre)
     const dx=axisZ?0:SHIFT, dz=axisZ?SHIFT:0;
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
      let u=(p[0]+dx-cx)/rx, v=(p[1]+dz-cz)/rz; const r2=u*u+v*v; if(r2>0.81){const f=0.9/Math.sqrt(r2); u*=f; v*=f;}   // clamp onto the dome -> elephants can never fly off the shell
