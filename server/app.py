@@ -1966,7 +1966,7 @@ void main(){
    ld.load('/elephant.glb',function(eg){                     // four elephants on the dome, shifted along the turtle's long (head<->tail) axis, trunks tilted down ~30deg, facing outward
     const base=eg.scene; base.traverse(function(m){if(m.isMesh&&m.material){m.material=m.material.clone();if(m.material.color)m.material.color.set(0x40256e);m.material.map=null;m.material.vertexColors=false;m.material.needsUpdate=true;}});   // make the elephants dark PURPLE/violet (single mesh: recolour the one material, drop its texture)
     const es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
-    const axisZ=rz>=rx, SGN=-1, SHIFT=Math.max(rx,rz)*0.15*SGN;                  // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis. SGN=-1 = toward the tail; 0.15 (tail-ward of centre; 0.3 was too far)
+    const axisZ=rz>=rx, SGN=-1, SHIFT=Math.max(rx,rz)*0.2*SGN;                   // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis. SGN=-1 = toward the tail; 0.2 (tail-ward of centre; 0.3 was too far)
     const dx=axisZ?0:SHIFT, dz=axisZ?SHIFT:0;
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
      let u=(p[0]+dx-cx)/rx, v=(p[1]+dz-cz)/rz; const r2=u*u+v*v; if(r2>0.81){const f=0.9/Math.sqrt(r2); u*=f; v*=f;}   // clamp onto the dome -> elephants can never fly off the shell
