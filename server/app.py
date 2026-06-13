@@ -1953,15 +1953,17 @@ void main(){
    o.traverse(function(m){if(m.isMesh){const z=new T.Box3().setFromObject(m).getSize(new T.Vector3()),v=z.x*z.y*z.z;if(v>sv){sv=v;shell=m;}}});
    const sb=new T.Box3().setFromObject(shell||tw), cx=(sb.min.x+sb.max.x)/2, cz=(sb.min.z+sb.max.z)/2, rx=Math.max((sb.max.x-sb.min.x)/2,0.001), rz=Math.max((sb.max.z-sb.min.z)/2,0.001), mid=(sb.min.y+sb.max.y)/2, ry=(sb.max.y-sb.min.y)/2;
    function domeY(px,pz){const u=(px-cx)/rx,v=(pz-cz)/rz,d=1-u*u-v*v;return d>0?mid+ry*Math.sqrt(d):sb.min.y;}   // ellipsoid-top height under (px,pz)
-   ld.load('/elephant.glb',function(eg){                     // four elephants — lowered onto the dome + shifted back from the protruding head, trunks tilted down ~30deg, facing outward
+   ld.load('/elephant.glb',function(eg){                     // four elephants on the dome, shifted along the turtle's long (head<->tail) axis, trunks tilted down ~30deg, facing outward
     const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
-    const hl=Math.hypot(cx,cz)+0.001, dx=cx/hl*span*1.2, dz=cz/hl*span*1.2;       // shift toward the tail (away from head): +(cx,cz) is the away-from-head direction (confirmed by eye); magnitude 1.2 per request
+    const axisZ=rz>=rx, SGN=1, SHIFT=Math.max(rx,rz)*0.45*SGN;                   // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis instead. flip SGN if it goes toward the head
+    const dx=axisZ?0:SHIFT, dz=axisZ?SHIFT:0;
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
-     const px=p[0]+dx, pz=p[1]+dz;
+     let u=(p[0]+dx-cx)/rx, v=(p[1]+dz-cz)/rz; const r2=u*u+v*v; if(r2>0.81){const f=0.9/Math.sqrt(r2); u*=f; v*=f;}   // clamp onto the dome -> elephants can never fly off the shell
+     const px=cx+u*rx, pz=cz+v*rz;
      const e=base.clone(true); e.scale.setScalar(k); e.rotation.x=0.52;          // scale + ~30deg trunk-down FIRST, so the bbox is taken post-tilt
      const eb=new T.Box3().setFromObject(e), ew=new T.Group();
      e.position.set(-(eb.min.x+eb.max.x)/2,-eb.min.y,-(eb.min.z+eb.max.z)/2);    // centre xz, LOWEST point (post-tilt) at the wrapper origin
-     ew.add(e); ew.position.set(px,domeY(px,pz)-eleH*0.4,pz); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);   // -eleH*0.4: sink so feet rest on the shell + the tilt-raised rump clears the Disc (raised from 0.5 so rear legs don't sink)
+     ew.add(e); ew.position.set(px,domeY(px,pz)-eleH*0.4,pz); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);   // -eleH*0.4: sink so feet rest on the shell + the tilt-raised rump clears the Disc
     });
    },undefined,function(){});
   },undefined,function(){});
