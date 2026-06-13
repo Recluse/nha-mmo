@@ -1951,11 +1951,18 @@ void main(){
    tw.add(o); tw.position.y=top; sc.add(tw); tw.updateMatrixWorld(true);
    let shell=null,sv=0;                                       // shell = the LARGEST mesh; model its top as an ELLIPSOID dome from the world bbox (smooth + symmetric -> no per-side misses, no head snag)
    o.traverse(function(m){if(m.isMesh){const z=new T.Box3().setFromObject(m).getSize(new T.Vector3()),v=z.x*z.y*z.z;if(v>sv){sv=v;shell=m;}}});
+   if(shell&&shell.geometry){                                 // tint the turtle BODY green but KEEP the carapace: one mesh, so split by local Y -> verts below the rim get a green vertex-colour that multiplies the texture; carapace verts stay white (texture unchanged)
+    const gg=shell.geometry, pp=gg.attributes.position; gg.computeBoundingBox();
+    const y0=gg.boundingBox.min.y, y1=gg.boundingBox.max.y, yt=y0+(y1-y0)*0.46, cc=new Float32Array(pp.count*3);
+    for(let i=0;i<pp.count;i++){const bd=pp.getY(i)<yt; cc[i*3]=bd?0.42:1; cc[i*3+1]=bd?0.95:1; cc[i*3+2]=bd?0.45:1;}
+    gg.setAttribute('color',new T.BufferAttribute(cc,3)); shell.material.vertexColors=true; shell.material.needsUpdate=true;
+   }
    const sb=new T.Box3().setFromObject(shell||tw), cx=(sb.min.x+sb.max.x)/2, cz=(sb.min.z+sb.max.z)/2, rx=Math.max((sb.max.x-sb.min.x)/2,0.001), rz=Math.max((sb.max.z-sb.min.z)/2,0.001), mid=(sb.min.y+sb.max.y)/2, ry=(sb.max.y-sb.min.y)/2;
    function domeY(px,pz){const u=(px-cx)/rx,v=(pz-cz)/rz,d=1-u*u-v*v;return d>0?mid+ry*Math.sqrt(d):sb.min.y;}   // ellipsoid-top height under (px,pz)
    ld.load('/elephant.glb',function(eg){                     // four elephants on the dome, shifted along the turtle's long (head<->tail) axis, trunks tilted down ~30deg, facing outward
-    const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
-    const axisZ=rz>=rx, SGN=-1, SHIFT=Math.max(rx,rz)*0.45*SGN;                  // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis. SGN=-1 = toward the tail (SGN=+1 went to the head)
+    const base=eg.scene; base.traverse(function(m){if(m.isMesh&&m.material){m.material=m.material.clone();if(m.material.color)m.material.color.set(0x2f6fdb);m.material.map=null;m.material.vertexColors=false;m.material.needsUpdate=true;}});   // make the elephants BLUE (single mesh: recolour the one material, drop its texture)
+    const es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
+    const axisZ=rz>=rx, SGN=-1, SHIFT=Math.max(rx,rz)*0.3*SGN;                   // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis. SGN=-1 = toward the tail. 0.3 (0.45 was too far back)
     const dx=axisZ?0:SHIFT, dz=axisZ?SHIFT:0;
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
      let u=(p[0]+dx-cx)/rx, v=(p[1]+dz-cz)/rz; const r2=u*u+v*v; if(r2>0.81){const f=0.9/Math.sqrt(r2); u*=f; v*=f;}   // clamp onto the dome -> elephants can never fly off the shell
