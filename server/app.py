@@ -1955,7 +1955,7 @@ void main(){
    function domeY(px,pz){const u=(px-cx)/rx,v=(pz-cz)/rz,d=1-u*u-v*v;return d>0?mid+ry*Math.sqrt(d):sb.min.y;}   // ellipsoid-top height under (px,pz)
    ld.load('/elephant.glb',function(eg){                     // four elephants on the dome, shifted along the turtle's long (head<->tail) axis, trunks tilted down ~30deg, facing outward
     const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
-    const axisZ=rz>=rx, SGN=1, SHIFT=Math.max(rx,rz)*0.45*SGN;                   // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis instead. flip SGN if it goes toward the head
+    const axisZ=rz>=rx, SGN=-1, SHIFT=Math.max(rx,rz)*0.45*SGN;                  // turtle is ONE mesh -> cx,cz~0 gives no direction; shift along the long axis. SGN=-1 = toward the tail (SGN=+1 went to the head)
     const dx=axisZ?0:SHIFT, dz=axisZ?SHIFT:0;
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
      let u=(p[0]+dx-cx)/rx, v=(p[1]+dz-cz)/rz; const r2=u*u+v*v; if(r2>0.81){const f=0.9/Math.sqrt(r2); u*=f; v*=f;}   // clamp onto the dome -> elephants can never fly off the shell
