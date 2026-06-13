@@ -1919,25 +1919,29 @@ float tnoise(vec2 p){vec2 i=floor(p),f=fract(p);float a=thash(i),b=thash(i+vec2(
   sc.add(new T.Mesh(geo,tmat));
   try{buildWater(w,h);}catch(e){}                             // water is best-effort — never let it break the terrain
  }
- function buildWater(w,h){                                    // animated water: ONE sea-level plane; land sits above it so it only shows where terrain dips below (the water cells)
-  const wu={uTime:{value:0}};
+ function buildWater(w,h){                                    // animated SEA as a big ROUND ocean disc (square plane masked to a circle via discard) -> the world reads as a round Disc with water to the rim; land sits above it
+  const R=Math.hypot(w,h)*0.7;                                // ocean radius: round rim comfortably beyond the rectangular land
+  const wu={uTime:{value:0},uR:{value:R}};
   const wmat=new T.ShaderMaterial({uniforms:wu,transparent:true,depthWrite:false,
    vertexShader:`uniform float uTime; varying vec3 vW;
 void main(){ vec3 p=position;
  float wv=sin(p.x*0.35+uTime*1.2)*0.10+cos(p.z*0.45+uTime*0.9)*0.08+sin((p.x+p.z)*0.7-uTime*1.7)*0.04;
  p.y+=wv; vW=(modelMatrix*vec4(p,1.0)).xyz; gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.0); }`,
-   fragmentShader:`uniform float uTime; varying vec3 vW;
+   fragmentShader:`uniform float uTime; uniform float uR; varying vec3 vW;
 float wh(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
 float wnz(vec2 p){vec2 i=floor(p),f=fract(p);float a=wh(i),b=wh(i+vec2(1.,0.)),c=wh(i+vec2(0.,1.)),d=wh(i+vec2(1.,1.));vec2 u=f*f*(3.-2.*f);return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);}
 void main(){
+ float rr=length(vW.xz); if(rr>uR) discard;                  // ROUND ocean: drop fragments beyond the circular rim
  float r=wnz(vW.xz*0.5+vec2(uTime*0.25,-uTime*0.18));
  float r2=wnz(vW.xz*1.3-vec2(uTime*0.15,uTime*0.2));
  vec3 col=mix(vec3(0.04,0.13,0.36),vec3(0.10,0.40,0.66),r*0.7+r2*0.3);
  float g=pow(max(0.0,sin(vW.x*0.6-uTime*1.0)*sin(vW.z*0.5+uTime*0.7)),12.0);
  col+=vec3(0.7,0.85,1.0)*g*0.6;
  col+=smoothstep(0.78,0.96,r2)*0.16;
+ float edge=smoothstep(uR*0.93,uR,rr); col=mix(col,vec3(0.66,0.83,1.0),edge*0.55);   // bright foam ring at the Disc rim
  gl_FragColor=vec4(col,0.86); }`});
-  const geo=new T.PlaneGeometry(w,h,Math.min(150,w-1),Math.min(150,h-1)); geo.rotateX(-Math.PI/2);
+  const segs=Math.min(200,Math.max(60,Math.floor(R)));
+  const geo=new T.PlaneGeometry(R*2,R*2,segs,segs); geo.rotateX(-Math.PI/2);
   const m=new T.Mesh(geo,wmat); m.position.y=-0.45; m.renderOrder=1; sc.add(m); waterU=wu;
  }
  function buildWorldTurtle(w,h){                              // Great A'Tuin + the four world-elephants below the Disc (models: "Poly by Google", CC-BY 3.0 via poly.pizza)
