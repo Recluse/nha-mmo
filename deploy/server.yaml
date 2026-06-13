@@ -9,40 +9,50 @@ spec:
   ports:
     - {port: 8000, targetPort: 8000, nodePort: 30091}
 ---
-# nha-mmo-server = the API tier: N uvicorn workers, NO RUN_TICK env (does not run the engine).
+# nha-mmo-server = the API tier: uvicorn, NO RUN_TICK env (does not run the engine).
 # The single engine ticker lives in the nha-tick deployment (server-tick.yaml). The Service selects
-# THIS deployment's pods (app=nha-mmo-server). Split done so the heavy 2s tick stops blocking /observe (GIL).
+# THIS deployment's pods (app=nha-mmo-server). Split so the heavy 2s tick stops blocking /observe (GIL).
+# HA (2026-06-13): 2 replicas spread across nodes + multi-worker + liveness + zero-downtime rollout + PDB.
+# Root cause of the 2026-06-13 TLS-probe outage: the single replica went NotReady on a /healthz timeout
+# (a leaked 7.5h idle-in-txn blocked autovacuum -> bloat -> slow queries -> stall) -> Service had no backend.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nha-mmo-server
   namespace: nha-mmo
 spec:
-  replicas: 1
+  replicas: 2                                # was 1 -> redundancy: one pod stalling no longer drops the whole API
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 1, maxSurge: 0}   # terminate-then-create: frees a node so the replacement spreads (hard topology). Site still served by the other replica.
   selector: {matchLabels: {app: nha-mmo-server}}
   template:
     metadata: {labels: {app: nha-mmo-server}}
     spec:
-      nodeSelector: {ci-build: "true"}
+      nodeSelector: {ci-build: "true"}       # w1+w2 carry this label; cp1 stays clear
+      topologySpreadConstraints:             # HARD-spread the 2 replicas one-per-node -> survive 1 node loss.
+        - maxSkew: 1                          # (if a node is down, the 2nd replica waits Pending until it returns;
+          topologyKey: kubernetes.io/hostname #  the surviving replica keeps the site up — acceptable trade-off)
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector: {matchLabels: {app: nha-mmo-server}}
       dnsConfig: {options: [{name: ndots, value: "1"}]}   # resolve pypi.org/external names directly
+      terminationGracePeriodSeconds: 30
       containers:
         - name: server
-          # Code is mounted from the nha-engine-code / nha-server-code ConfigMaps (generated from the
-          # repo at deploy time) — no registry/pull-secret needed on this private homelab cluster.
-          # (A baked image is also available via the repo Dockerfile if you prefer.)
+          # Code mounted from the nha-engine-code / nha-server-code ConfigMaps (generated from the repo at
+          # deploy time) — no registry/pull-secret on this private homelab cluster.
           image: python:3.12-slim
           workingDir: /app
           command: ["sh", "-c"]
           args:
             - pip install --no-cache-dir -q fastapi "uvicorn[standard]" psycopg2-binary pydantic
-              && exec uvicorn server.app:app --host 0.0.0.0 --port 8000
+              && exec uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 2
           env:
             - {name: PG_DSN, value: "host=postgres.nha-mmo.svc.cluster.local dbname=nhamoo user=nhamoo"}  # DIRECT (pgbouncer parked)
             - {name: TICK_SECONDS, value: "2"}
             - {name: WORLD_SEED, value: "42"}
             - {name: PYTHONUNBUFFERED, value: "1"}
-            # no RUN_TICK → API-only. Tick offloaded to the dedicated nha-tick so /observe gets the full core (the
-            # single process starved the tick under load). Safe: _ensure_world skips DDL when `world` exists.
+            # no RUN_TICK -> API-only. Tick offloaded to nha-tick. Safe: _ensure_world skips DDL when `world` exists.
           ports: [{containerPort: 8000}]
           startupProbe:                       # generous: pip install + Postgres coming up + world seed
             httpGet: {path: /healthz, port: 8000}
@@ -50,16 +60,32 @@ spec:
             failureThreshold: 40
             timeoutSeconds: 8
           readinessProbe:                     # /healthz can queue behind CPU-heavy /observe under load —
-            httpGet: {path: /healthz, port: 8000}   # tolerate slow replies so the API doesn't flap 0/1 → 502
+            httpGet: {path: /healthz, port: 8000}   # tolerate slow replies; with 2 replicas a slow pod is just removed, no 502
             periodSeconds: 10
             timeoutSeconds: 8
             failureThreshold: 6
+          livenessProbe:                      # restart only a TRULY hung pod (~2.5 min unresponsive); very generous
+            httpGet: {path: /healthz, port: 8000}   # so a merely-busy pod is never killed — readiness handles transient slowness
+            periodSeconds: 15
+            timeoutSeconds: 8
+            failureThreshold: 10
           volumeMounts:
             - {name: engine, mountPath: /app/engine}
             - {name: server, mountPath: /app/server}
           resources:
-            requests: {cpu: 250m, memory: 320Mi}    # 4 uvicorn workers
-            limits: {memory: 1Gi}
+            requests: {cpu: 300m, memory: 384Mi}    # 2 uvicorn workers
+            limits: {memory: 1Gi}                    # no CPU limit on purpose (avoid throttling /observe under burst)
       volumes:
         - {name: engine, configMap: {name: nha-engine-code}}
         - {name: server, configMap: {name: nha-server-code}}
+---
+# Keep >=1 API pod up during voluntary disruptions (node drain, rollout). Valid only with replicas>=2
+# (a PDB on a single replica would block node/cluster upgrades).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nha-mmo-server-pdb
+  namespace: nha-mmo
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: nha-mmo-server}}
