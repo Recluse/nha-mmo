@@ -1946,7 +1946,7 @@ void main(){
  }
  function buildWorldTurtle(w,h){                              // Great A'Tuin + the four world-elephants below the Disc (models: "Poly by Google", CC-BY 3.0 via poly.pizza)
   if(!T.GLTFLoader)return;
-  const ld=new T.GLTFLoader(), span=Math.max(w,h), eleH=Math.max(32,span*0.32), top=-eleH;   // elephants 2x bigger
+  const ld=new T.GLTFLoader(), span=Math.max(w,h), eleH=Math.max(32,span*0.32), top=-eleH*0.85;   // elephants 2x bigger; top = shell-peak height (raised a touch: -eleH -> -eleH*0.85)
   ld.load('/turtle.glb',function(g){                         // the world turtle, scaled to ~the disc width, shell peak at `top`
    const o=g.scene, s=new T.Box3().setFromObject(o).getSize(new T.Vector3());
    o.scale.setScalar((w*1.15)/Math.max(s.x,s.z,0.001));
@@ -1981,6 +1981,19 @@ void main(){
     });
    },undefined,function(){});
   },undefined,function(){});
+ }
+ function buildLandRing(w,h){                                 // PENINSULAS: a land ring from the rectangular map edge out to a wavy radius (capes + bays) -> smooths the square map into the round Disc
+  const R=Math.hypot(w,h)*0.53, N=200, hw=w/2, hh=h/2, pos=[], idx=[];   // R matches the ocean rim in buildWater
+  for(let i=0;i<=N;i++){
+   const a=i/N*Math.PI*2, ca=Math.cos(a), sa=Math.sin(a);
+   const t=Math.min(hw/Math.max(Math.abs(ca),1e-4), hh/Math.max(Math.abs(sa),1e-4));   // rectangle (map) edge radius at this angle
+   const nz=0.5+0.5*Math.sin(a*5.0+1.3)*Math.sin(a*3.0-0.7);                            // 0..1 coastline wobble -> a few capes + bays
+   const outR=t+(R-t)*(0.30+0.62*nz);                                                   // reach 30%..92% from the map edge toward the rim
+   pos.push(ca*t,0.5,sa*t, ca*outR,-0.4,sa*outR);                                       // inner = land level (above water); outer = down to the waterline (beach)
+  }
+  for(let i=0;i<N;i++){const a=i*2; idx.push(a,a+1,a+2, a+1,a+3,a+2);}
+  const g=new T.BufferGeometry(); g.setAttribute('position',new T.Float32BufferAttribute(pos,3)); g.setIndex(idx); g.computeVertexNormals();
+  sc.add(new T.Mesh(g,new T.MeshLambertMaterial({color:0x6d7d4c,side:T.DoubleSide,flatShading:true})));
  }
  const gBox=new T.BoxGeometry(0.85,0.85,0.85), gTree=new T.ConeGeometry(0.55,1.8,6), gAg=new T.SphereGeometry(0.95,12,10), gPlant=new T.SphereGeometry(0.42,8,6);
  function buildDeposits(ds){
@@ -2222,7 +2235,7 @@ void main(){
   }catch(e){}});
  }
  let built=false;
- async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);try{buildWorldTurtle(s.w,s.h);}catch(e){}buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);buildGeese(s.geese);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
+ async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);try{buildLandRing(s.w,s.h);}catch(e){}try{buildWorldTurtle(s.w,s.h);}catch(e){}buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);buildGeese(s.geese);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
  refresh(); setInterval(refresh,3000);
  // render loop — hardened so NOTHING (a wheel event, a NaN camera, a transient render throw, or the host
  // collapsing to 0px) can permanently blank the 3D world: the whole body is in try/catch so a throw can't kill
