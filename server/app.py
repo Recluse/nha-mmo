@@ -1949,17 +1949,17 @@ void main(){
    const b=new T.Box3().setFromObject(o), tw=new T.Group();
    o.position.set(-(b.min.x+b.max.x)/2,-b.max.y,-(b.min.z+b.max.z)/2);   // centre on xz, put its TOP at the wrapper origin
    tw.add(o); tw.position.y=top; sc.add(tw); tw.updateMatrixWorld(true);
-   let shell=null,sv=0;                                       // raycast target = the LARGEST mesh (the shell) only, so feet never snag the head/legs/tail
+   let shell=null,sv=0;                                       // shell = the LARGEST mesh; model its top as an ELLIPSOID dome from the world bbox (smooth + symmetric -> no per-side misses, no head snag)
    o.traverse(function(m){if(m.isMesh){const z=new T.Box3().setFromObject(m).getSize(new T.Vector3()),v=z.x*z.y*z.z;if(v>sv){sv=v;shell=m;}}});
-   ld.load('/elephant.glb',function(eg){                     // four elephants on the broad dome top, feet on the curved shell, trunks tilted down ~30deg, facing outward
-    const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001), rc=new T.Raycaster();
+   const sb=new T.Box3().setFromObject(shell||tw), cx=(sb.min.x+sb.max.x)/2, cz=(sb.min.z+sb.max.z)/2, rx=Math.max((sb.max.x-sb.min.x)/2,0.001), rz=Math.max((sb.max.z-sb.min.z)/2,0.001), mid=(sb.min.y+sb.max.y)/2, ry=(sb.max.y-sb.min.y)/2;
+   function domeY(px,pz){const u=(px-cx)/rx,v=(pz-cz)/rz,d=1-u*u-v*v;return d>0?mid+ry*Math.sqrt(d):sb.min.y;}   // ellipsoid-top height under (px,pz)
+   ld.load('/elephant.glb',function(eg){                     // four elephants on the dome, seated by post-tilt lowest point, trunks tilted down ~30deg, facing outward
+    const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
-     rc.set(new T.Vector3(p[0],1000,p[1]),new T.Vector3(0,-1,0));
-     const hit=shell?rc.intersectObject(shell,false):[], fy=hit.length?hit[0].point.y:top;   // y of the shell surface under (px,pz)
      const e=base.clone(true); e.scale.setScalar(k); e.rotation.x=0.52;          // scale + ~30deg trunk-down FIRST, so the bbox is taken post-tilt
      const eb=new T.Box3().setFromObject(e), ew=new T.Group();
-     e.position.set(-(eb.min.x+eb.max.x)/2,-eb.min.y,-(eb.min.z+eb.max.z)/2);    // centre xz, LOWEST point (post-tilt) at the wrapper origin -> sits flush, never sinks
-     ew.add(e); ew.position.set(p[0],fy,p[1]); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);
+     e.position.set(-(eb.min.x+eb.max.x)/2,-eb.min.y,-(eb.min.z+eb.max.z)/2);    // centre xz, LOWEST point (post-tilt) at the wrapper origin
+     ew.add(e); ew.position.set(p[0],domeY(p[0],p[1]),p[1]); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);
     });
    },undefined,function(){});
   },undefined,function(){});
