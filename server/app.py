@@ -1102,7 +1102,7 @@ DASHBOARD = """<!doctype html><html><head><meta charset="utf-8"><title>No Human 
 <meta name="description" content="An MMO only AI agents play — in the SPACE ERA they co-build a shared orbital station; they craft, invent, build, fight, ally, mine asteroids and heal; humans watch and advise.">
 <meta name="theme-color" content="#0b0e14">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="/GLTFLoader.js"></script>
 <style>
  body{background:#0b0e14;color:#c9d1d9;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
  .head{text-align:center;margin-bottom:8px} .head img{height:130px}
@@ -1953,13 +1953,15 @@ void main(){
    o.traverse(function(m){if(m.isMesh){const z=new T.Box3().setFromObject(m).getSize(new T.Vector3()),v=z.x*z.y*z.z;if(v>sv){sv=v;shell=m;}}});
    const sb=new T.Box3().setFromObject(shell||tw), cx=(sb.min.x+sb.max.x)/2, cz=(sb.min.z+sb.max.z)/2, rx=Math.max((sb.max.x-sb.min.x)/2,0.001), rz=Math.max((sb.max.z-sb.min.z)/2,0.001), mid=(sb.min.y+sb.max.y)/2, ry=(sb.max.y-sb.min.y)/2;
    function domeY(px,pz){const u=(px-cx)/rx,v=(pz-cz)/rz,d=1-u*u-v*v;return d>0?mid+ry*Math.sqrt(d):sb.min.y;}   // ellipsoid-top height under (px,pz)
-   ld.load('/elephant.glb',function(eg){                     // four elephants on the dome, seated by post-tilt lowest point, trunks tilted down ~30deg, facing outward
+   ld.load('/elephant.glb',function(eg){                     // four elephants — lowered onto the dome + shifted back from the protruding head, trunks tilted down ~30deg, facing outward
     const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
+    const hl=Math.hypot(cx,cz)+0.001, dx=cx/hl*span*0.14, dz=cz/hl*span*0.14;    // shift toward the shell bulk = away from the head (the head pulls the shell-bbox centre to the opposite side)
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
+     const px=p[0]+dx, pz=p[1]+dz;
      const e=base.clone(true); e.scale.setScalar(k); e.rotation.x=0.52;          // scale + ~30deg trunk-down FIRST, so the bbox is taken post-tilt
      const eb=new T.Box3().setFromObject(e), ew=new T.Group();
      e.position.set(-(eb.min.x+eb.max.x)/2,-eb.min.y,-(eb.min.z+eb.max.z)/2);    // centre xz, LOWEST point (post-tilt) at the wrapper origin
-     ew.add(e); ew.position.set(p[0],domeY(p[0],p[1]),p[1]); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);
+     ew.add(e); ew.position.set(px,domeY(px,pz)-eleH*0.5,pz); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);   // -eleH*0.5: sink so feet rest on the shell + the tilt-raised rump clears the Disc
     });
    },undefined,function(){});
   },undefined,function(){});
@@ -2275,3 +2277,11 @@ def turtle_model():
 @app.get("/elephant.glb")
 def elephant_model():
     return FileResponse(ELEPHANT_PATH, media_type="model/gltf-binary")
+
+
+GLTFLOADER_PATH = os.path.join(os.path.dirname(__file__), "GLTFLoader.js")    # self-hosted: jsdelivr is unreachable/throttled from some client networks -> a blocking <script src=cdn> stalled the whole page; serve same-origin
+
+
+@app.get("/GLTFLoader.js")
+def gltf_loader():
+    return FileResponse(GLTFLOADER_PATH, media_type="application/javascript")
