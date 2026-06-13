@@ -1955,7 +1955,7 @@ void main(){
    function domeY(px,pz){const u=(px-cx)/rx,v=(pz-cz)/rz,d=1-u*u-v*v;return d>0?mid+ry*Math.sqrt(d):sb.min.y;}   // ellipsoid-top height under (px,pz)
    ld.load('/elephant.glb',function(eg){                     // four elephants — lowered onto the dome + shifted back from the protruding head, trunks tilted down ~30deg, facing outward
     const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001);
-    const hl=Math.hypot(cx,cz)+0.001, dx=-cx/hl*span*0.2, dz=-cz/hl*span*0.2;     // shift AWAY from the head toward the tail: the shell-bbox centre (cx,cz) points TOWARD the head, so negate
+    const hl=Math.hypot(cx,cz)+0.001, dx=-cx/hl*span*0.5, dz=-cz/hl*span*0.5;     // shift AWAY from the head toward the tail: the shell-bbox centre (cx,cz) points TOWARD the head, so negate. 0.5 = deliberately large to read the direction
     [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
      const px=p[0]+dx, pz=p[1]+dz;
      const e=base.clone(true); e.scale.setScalar(k); e.rotation.x=0.52;          // scale + ~30deg trunk-down FIRST, so the bbox is taken post-tilt
