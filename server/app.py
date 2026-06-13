@@ -1949,15 +1949,16 @@ void main(){
    const b=new T.Box3().setFromObject(o), tw=new T.Group();
    o.position.set(-(b.min.x+b.max.x)/2,-b.max.y,-(b.min.z+b.max.z)/2);   // centre on xz, put its TOP at the wrapper origin
    tw.add(o); tw.position.y=top; sc.add(tw); tw.updateMatrixWorld(true);
-   ld.load('/elephant.glb',function(eg){                     // four elephants — RAYCAST onto the DOMED shell so feet sit on the curved surface (no floating), trunks tilted down ~30deg, facing outward
+   let shell=null,sv=0;                                       // raycast target = the LARGEST mesh (the shell) only, so feet never snag the head/legs/tail
+   o.traverse(function(m){if(m.isMesh){const z=new T.Box3().setFromObject(m).getSize(new T.Vector3()),v=z.x*z.y*z.z;if(v>sv){sv=v;shell=m;}}});
+   ld.load('/elephant.glb',function(eg){                     // four elephants on the broad dome top, feet on the curved shell, trunks tilted down ~30deg, facing outward
     const base=eg.scene, es=new T.Box3().setFromObject(base).getSize(new T.Vector3()), k=eleH/Math.max(es.y,0.001), rc=new T.Raycaster();
-    [[-w*0.26,-h*0.26],[w*0.26,-h*0.26],[-w*0.26,h*0.26],[w*0.26,h*0.26]].forEach(function(p){
+    [[-w*0.2,-h*0.2],[w*0.2,-h*0.2],[-w*0.2,h*0.2],[w*0.2,h*0.2]].forEach(function(p){
      rc.set(new T.Vector3(p[0],1000,p[1]),new T.Vector3(0,-1,0));
-     const hit=rc.intersectObject(tw,true), fy=hit.length?hit[0].point.y:top;   // y of the actual shell surface under (px,pz)
-     const e=base.clone(true); e.scale.setScalar(k);
+     const hit=shell?rc.intersectObject(shell,false):[], fy=hit.length?hit[0].point.y:top;   // y of the shell surface under (px,pz)
+     const e=base.clone(true); e.scale.setScalar(k); e.rotation.x=0.52;          // scale + ~30deg trunk-down FIRST, so the bbox is taken post-tilt
      const eb=new T.Box3().setFromObject(e), ew=new T.Group();
-     e.position.set(-(eb.min.x+eb.max.x)/2,-eb.min.y,-(eb.min.z+eb.max.z)/2);   // centre on xz, feet at the wrapper origin
-     e.rotation.x=0.52;                                                          // ~30deg trunk-down lean
+     e.position.set(-(eb.min.x+eb.max.x)/2,-eb.min.y,-(eb.min.z+eb.max.z)/2);    // centre xz, LOWEST point (post-tilt) at the wrapper origin -> sits flush, never sinks
      ew.add(e); ew.position.set(p[0],fy,p[1]); ew.rotation.y=Math.atan2(p[0],p[1]); sc.add(ew);
     });
    },undefined,function(){});
