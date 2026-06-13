@@ -629,6 +629,7 @@ def apply_intent(it, ents, cur, t, events):
             if alt >= tier_alt and level < idx:
                 level = idx; a["attrs"]["space_level"] = idx
                 if tier_alt >= ATMOSPHERE_TOP:
+                    if not a["attrs"].get("in_space"): a["attrs"]["atuin_seed"] = t   # new spaceflight -> /observe re-rolls the A'Tuin sex reading for this trip
                     a["attrs"]["in_space"] = True
                 cur.execute("SELECT 1 FROM events WHERE kind='escape' AND COALESCE(data->>'milestone','space')=%s LIMIT 1", (label,))
                 first = cur.fetchone() is None
@@ -947,6 +948,7 @@ def apply_intent(it, ents, cur, t, events):
         if not row:
             return "rejected", "no completed orbital elevator on this cell (stand at its base)"
         a["attrs"]["altitude"] = max(int(a["attrs"].get("altitude", 0)), min(SKY_TOP, row["h"]))
+        if not a["attrs"].get("in_space"): a["attrs"]["atuin_seed"] = t   # new spaceflight -> /observe re-rolls the A'Tuin sex reading for this trip
         a["attrs"]["in_space"] = True
         a["attrs"]["space_level"] = max(int(a["attrs"].get("space_level", 0)), 1)
         return "applied", f"rode the orbital elevator to space (altitude {a['attrs']['altitude']}) — no rocket needed!"
@@ -1563,20 +1565,27 @@ SPACE_ERA_DECREE = ("🛰 THE SPACE ERA — THE UNIVERSE DECREES: reach for orbi
                     "all 6 modules to complete the Station. Rewards split by contribution; the top funder becomes the STATION "
                     "ARCHITECT and every builder earns the COSMONAUT title. Check GET /observe for the live module bill. To the stars — together!")
 
+ATUIN_QUESTION = ("🐢 THE GREAT QUESTION — THE UNIVERSE PONDERS: beneath the Disc swims the Great A'Tuin, the world-turtle who "
+                  "carries us all upon its back. But what is A'Tuin's SEX? From orbit every cosmonaut's instruments read it "
+                  "differently — and re-read it anew on each flight. This is the Disc's oldest unsettled debate. Cosmonauts: "
+                  "broadcast your reading (say) and ARGUE — is the Great A'Tuin male or female?")
+
 def universe_broadcast(ents, cur, t, events):
-    """The Universe re-broadcasts its standing decree into the world chat once an hour (1800 ticks at 2s/tick) so spectators
-    and agents are reminded without spam. The decree tracks the active era (world.era). Deterministic (tick-gated); self-heals."""
-    if t % 1800 != 0:
+    """The Universe re-broadcasts its standing decree into the world chat each hour (1800 ticks at 2s/tick), and — in the SPACE
+    ERA — poses the Great A'Tuin Question on the half-hour offset so cosmonauts bicker. Decree tracks world.era. Deterministic
+    (tick-gated); self-heals."""
+    if t % 900 != 0:
         return
     cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # to_jsonb → NULL (not error) if the era column is absent on a restored DB
     erow = cur.fetchone()
-    decree = SPACE_ERA_DECREE if (erow and (erow.get("era") or "") == "space") else GIGACHRUSCH_DECREE
+    is_space = bool(erow and (erow.get("era") or "") == "space")
     uni = next((e for e in ents.values() if e["type"] == "universe"), None)
-    if uni:
-        uid = uni["id"]
-    else:
-        uid = new_entity(ents, cur, "universe", 0, 0, None, {"name": "🌌 THE UNIVERSE"})
-    cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, decree))
+    uid = uni["id"] if uni else new_entity(ents, cur, "universe", 0, 0, None, {"name": "🌌 THE UNIVERSE"})
+    if t % 1800 == 0:                                          # the standing decree, hourly (unchanged cadence)
+        decree = SPACE_ERA_DECREE if is_space else GIGACHRUSCH_DECREE
+        cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, decree))
+    elif is_space:                                             # offset +900: the Great A'Tuin Question (space era only) — kicks off the cosmonauts' debate
+        cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, ATUIN_QUESTION))
 
 def grow_trees(ents, t):
     """Trees (wood deposits) slowly regrow toward maturity → renewable forestry. Deterministic (staggered by id),

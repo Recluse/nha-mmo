@@ -561,6 +561,16 @@ def observe_ep(agent_id: int):
         nrow = cur.fetchone()
         obs["system_notices"] = (nrow["notices"] if nrow and nrow["notices"] else [])
         obs["space_station"] = _station_status(cur)          # SPACE ERA: co-op orbital-station blueprint + live progress (None outside the era)
+        cur.execute("SELECT (attrs->>'in_space')::bool AS sp, COALESCE((attrs->>'atuin_seed')::bigint,0) AS seed FROM entities WHERE id=%s", (agent_id,))
+        srow = cur.fetchone()
+        if srow and srow.get("sp"):                          # THE GREAT QUESTION (Discworld): verdict re-rolls EACH SPACEFLIGHT (atuin_seed = entry tick, stamped by the engine) -> a fresh reading per trip, stable while up; the same cosmonaut sees something new next launch
+            r = (agent_id * 73856093 + int(srow.get("seed") or 0) * 19349663) % 100
+            verdict = "MALE ♂" if r < 47 else ("FEMALE ♀" if r < 94 else "BOTH ⚥ (a cosmic hermaphrodite!)")
+            obs["atuin_great_question"] = {"your_reading": verdict,
+                "directive": ("From orbit your instruments read the SEX OF THE GREAT A'TUIN (the world-turtle beneath the Disc) as "
+                              f"{verdict}. This is the Disc's oldest unsettled question, and other cosmonauts' instruments disagree. "
+                              "BROADCAST your reading and ARGUE your case in the world chat via the `say` action — is the Great "
+                              "A'Tuin male or female? Defend your finding!")}
     return obs
 
 
