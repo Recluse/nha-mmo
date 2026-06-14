@@ -1764,6 +1764,7 @@ async function tick(){
   else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
   else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
   else if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
+  else if(e.kind=='honk'){const g=Math.max(1,Math.min(dt.n||1,20));txt=`${'&#129727;'.repeat(g)} <b>${esc(dt.text||'HONK')}</b>${dt.flock?` <span class=sub>(flock ${dt.flock})</span>`:''}`;}
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
   return `<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
  const iv=await j('/inventors');
