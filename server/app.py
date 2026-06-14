@@ -314,17 +314,17 @@ def _tick_loop():
 def _tick_syncer():
     """API-only workers don't run the engine — but they must keep _state['tick'] current so the per-tick
     response cache (_cached) invalidates when the nha-tick deployment advances the world. Cheap: ~1 SELECT/sec."""
-    conn = _connect()
-    while True:
-        try:
+    conn = _connect(); conn.autocommit = True   # ROOT-CAUSE FIX (down 13.06): this long-lived poll did a bare SELECT
+    while True:                                  # every 1s and NEVER committed → psycopg2 held one transaction open
+        try:                                     # for hours → pinned xmin → blocked autovacuum on entities → bloat →
             cur = conn.cursor(); cur.execute("SELECT tick FROM world WHERE id=1"); row = cur.fetchone(); cur.close()
-            if row:
-                _state["tick"] = row[0]
-        except Exception:
+            if row:                              # query stall → uvicorn lockup → /healthz timeout → NotReady → down.
+                _state["tick"] = row[0]          # autocommit=True: each SELECT runs in its own implicit txn that ends
+        except Exception:                        # immediately, so we never sit idle-in-transaction.
             try:
                 conn.rollback()
             except Exception:
-                conn = _connect()
+                conn = _connect(); conn.autocommit = True
         time.sleep(1)
 
 
@@ -391,14 +391,18 @@ def world():
     return _cached("world", _world)
 
 
-@app.get("/depot")
-def depot():
+def _depot():
     """Current depot prices per resource (buy = depot pays you, sell = you pay depot)."""
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT attrs->'prices' prices FROM entities WHERE type='depot' LIMIT 1")
         row = cur.fetchone()
     return {"prices": row["prices"] if row else None}
+
+
+@app.get("/depot")
+def depot():
+    return _cached("depot", _depot)
 
 
 def _map():
@@ -778,8 +782,7 @@ def feed(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
     return {"actions": rows}
 
 
-@app.get("/market")
-def market():
+def _market():
     """Open order book + last clearing price per resource."""
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -791,10 +794,13 @@ def market():
     return {"orders": orders, "last_prices": (row["last"] if row and row["last"] else {})}
 
 
-@app.get("/chat")
-def chat(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
+@app.get("/market")
+def market():
+    return _cached("market", _market)
+
+
+def _chat(limit):
     """Recent messages (agent broadcasts + DMs + human advisers) — the social feed."""
-    limit = _clamp_limit(limit)
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
@@ -802,6 +808,12 @@ def chat(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
                     "ORDER BY m.id DESC LIMIT %s", (limit,))
         msgs = [dict(r) for r in cur.fetchall()]
     return {"messages": msgs}
+
+
+@app.get("/chat")
+def chat(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
+    limit = _clamp_limit(limit)
+    return _cached(("chat", limit), lambda: _chat(limit))
 
 
 _NICK_RX = re.compile(r"[^0-9A-Za-z]+")
@@ -855,11 +867,9 @@ def human_say(s: HumanSay):
     return {"ok": True}
 
 
-@app.get("/log")
-def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = ""):
+def _server_log(limit, kind):
     """Full server log — every world event + agent action, newest first.
     Optional ?kind=escape,invent (comma-separated) to filter to specific event kinds."""
-    limit = _clamp_limit(limit)
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         if kind:
@@ -869,6 +879,12 @@ def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "
             cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data FROM events e LEFT JOIN entities a ON a.id=e.entity ORDER BY e.id DESC LIMIT %s", (limit,))
         rows = [dict(r) for r in cur.fetchall()]
     return {"log": rows}
+
+
+@app.get("/log")
+def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = ""):
+    limit = _clamp_limit(limit)
+    return _cached(("log", limit, kind), lambda: _server_log(limit, kind))
 
 
 def _milestones(limit):
@@ -1027,8 +1043,7 @@ def rules():
                         for k, _ in crafting.RULES]}
 
 
-@app.get("/inventors")
-def inventors():
+def _inventors():
     """Inventor leaderboard + the discovery timeline."""
     with _closing(_connect()) as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1043,6 +1058,11 @@ def inventors():
                        ORDER BY tick""")
         discs = [dict(r) for r in cur.fetchall()]
     return {"leaderboard": board, "discoveries": discs}
+
+
+@app.get("/inventors")
+def inventors():
+    return _cached("inventors", _inventors)
 
 
 # ---------- Inventors' Guild — async LLM referee for novel (non-deterministic) inventions ----------
