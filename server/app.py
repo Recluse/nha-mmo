@@ -1779,7 +1779,7 @@ async function tick(){
  if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;
  const lg=await j('/log');
  if(lg)$('log').innerHTML=lg.log.map(e=>{const dt=e.data||{};let txt;
-  if(e.kind=='act')txt=`<b>${dt.verb}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
+  if(e.kind=='act')txt=`<b>${esc(String(dt.verb||''))}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
   else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
   else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
   else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
