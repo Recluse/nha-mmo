@@ -1766,7 +1766,8 @@ async function tick(){
   else if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
   else if(e.kind=='honk'){const g=Math.max(1,Math.min(dt.n||1,20));txt=`${'&#129727;'.repeat(g)} <b>${esc(dt.text||'HONK')}</b>${dt.flock?` <span class=sub>(flock ${dt.flock})</span>`:''}`;}
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
-  return `<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
+  const who=e.kind=='honk'?`<span class=pill>GUSE</span>`:(e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:''));
+  return `<div><span class=sub>t${e.tick}</span> ${who}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
  const iv=await j('/inventors');
  if(iv){
   $('inv_board').innerHTML=iv.leaderboard.length?(`<table><tr><th>#<th>${t('col_model')}<th>${t('col_pts')}</tr>`+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${g.name||''}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):`<div class=sub>${t('ph_no_inventions')}</div>`;
