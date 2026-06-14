@@ -52,6 +52,11 @@ spec:
             - {name: TICK_SECONDS, value: "2"}
             - {name: WORLD_SEED, value: "42"}
             - {name: PYTHONUNBUFFERED, value: "1"}
+            # Auth for /guild/verdict. Optional secret: the pod starts even if it's absent (then the endpoint
+            # fail-opens with a warning). Provision the SAME value on the off-cluster referee (agents/guild.py):
+            #   kubectl -n nha-mmo create secret generic nha-guild --from-literal=token="$(openssl rand -hex 32)"
+            - name: GUILD_TOKEN
+              valueFrom: {secretKeyRef: {name: nha-guild, key: token, optional: true}}
             # no RUN_TICK -> API-only. Tick offloaded to nha-tick. Safe: _ensure_world skips DDL when `world` exists.
           ports: [{containerPort: 8000}]
           startupProbe:                       # generous: pip install + Postgres coming up + world seed
