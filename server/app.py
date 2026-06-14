@@ -24,12 +24,16 @@ from play import observe  # noqa: E402  — curated per-agent observation
 
 import psycopg2                                       # noqa: E402
 from psycopg2.extras import RealDictCursor, Json      # noqa: E402
-from fastapi import FastAPI, HTTPException, Request, Response, Query   # noqa: E402
+from fastapi import FastAPI, HTTPException, Request, Response, Query, Header   # noqa: E402
+import hmac                                            # noqa: E402  — constant-time guild-token compare
 from fastapi.responses import HTMLResponse, FileResponse   # noqa: E402
-from pydantic import BaseModel                        # noqa: E402
+from pydantic import BaseModel, field_validator       # noqa: E402
 import uuid                                            # noqa: E402  — per-browser registration cookie id
 
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
+GUILD_TOKEN  = os.environ.get("GUILD_TOKEN", "")    # if set, /guild/verdict requires a matching X-Guild-Token header.
+                                                    # Provision the SAME value on this server AND on the off-cluster
+                                                    # referee (agents/guild.py). Unset = fail-open (logs a warning).
 TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
 ONLINE_TICKS = int(os.environ.get("ONLINE_TICKS", "180"))   # "online" = acted within this many ticks (~6 min @2s/tick) — covers the ~2-min cloud cadence + the odd 429-skip
 WORLD_W      = int(os.environ.get("WORLD_W", "220"))   # season 3: grown 156->220 (square) — non-wipe frontier expansion
@@ -51,7 +55,8 @@ _FRONTIER_Y = WORLD_H
 # that is wasteful for spectator polling. Cache payloads for a short TTL (< one tick) so bursts of viewers
 # share one DB read. Guarded by the world tick: a new tick invalidates everything (so data is never staler
 # than one tick). POST / observe / intent are NEVER cached.
-_CACHE_TTL   = float(os.environ.get("READ_CACHE_TTL", "1.5"))
+_CACHE_TTL   = float(os.environ.get("READ_CACHE_TTL", "3.0"))   # > the 2s dashboard poll interval, so the per-tick
+                                                                # invalidation (not the TTL) bounds staleness — fewer misses
 _cache       = {}                       # key -> (monotonic_ts, world_tick, payload)
 _cache_lock  = threading.Lock()
 
@@ -83,7 +88,7 @@ def _grid(block=True):
     if _GRID is not None:
         return _GRID
     try:                                                 # the grid is deterministic — load the persisted copy (~ms)
-        with _closing(_connect()) as conn:               # rather than re-running the ~12-30s pure-python noise gen,
+        with _db() as conn:               # rather than re-running the ~12-30s pure-python noise gen,
             cur = conn.cursor()                          # which gets GIL-starved by request load in the serving process.
             cur.execute("SELECT grid FROM world_grid WHERE seed=%s AND fx=%s AND fy=%s", (WORLD_SEED, _FRONTIER_X, _FRONTIER_Y))
             row = cur.fetchone()
@@ -98,7 +103,7 @@ def _grid(block=True):
         if _GRID is None:                                # double-check: another thread may have finished while we waited
             _GRID, _ = worldgen.generate(WORLD_W, WORLD_H, WORLD_SEED, min_x=_FRONTIER_X, min_y=_FRONTIER_Y)
             try:                                         # persist for every other pod/restart (idempotent)
-                with _closing(_connect()) as conn:
+                with _db() as conn:
                     cur = conn.cursor()
                     cur.execute("INSERT INTO world_grid(seed,fx,fy,grid) VALUES(%s,%s,%s,%s) ON CONFLICT (seed,fx,fy) DO NOTHING",
                                 (WORLD_SEED, _FRONTIER_X, _FRONTIER_Y, Json(_GRID)))
@@ -109,7 +114,8 @@ def _grid(block=True):
 
 
 def _connect(retries=30):
-    """Connect to Postgres, tolerating a not-yet-ready database on first boot."""
+    """Connect to Postgres, tolerating a not-yet-ready database on first boot.
+    Used for the long-lived background loops (tick/syncer) and startup; request handlers use the pool (_db)."""
     last = None
     for _ in range(retries):
         try:
@@ -117,6 +123,51 @@ def _connect(retries=30):
         except psycopg2.OperationalError as e:
             last = e; time.sleep(2)
     raise last
+
+
+# ---------- request-path connection pool ----------
+# Every read/write handler used to open a FRESH psycopg2 connection (TCP + auth + backend fork, ~5-30ms each).
+# A per-process pool reuses warm connections. A semaphore bounds concurrent borrowers to the pool size so
+# getconn() can never raise "pool exhausted" (FastAPI runs sync handlers on a ~40-thread pool); excess callers
+# queue on the semaphore instead. Connections are ALWAYS returned rolled-back, so one can never go back
+# idle-in-transaction (the class of bug that took the site down on 13.06).
+from psycopg2.pool import ThreadedConnectionPool   # noqa: E402
+from contextlib import contextmanager as _contextmanager   # noqa: E402
+
+_POOL_MAX = int(os.environ.get("PG_POOL_MAX", "8"))
+_POOL = None
+_POOL_LOCK = threading.Lock()
+_POOL_SEM = threading.Semaphore(_POOL_MAX)
+
+
+def _pool():
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                _POOL = ThreadedConnectionPool(1, _POOL_MAX, DSN)
+    return _POOL
+
+
+@_contextmanager
+def _db():
+    """Borrow a pooled connection; always return it rolled-back and never idle-in-transaction."""
+    _POOL_SEM.acquire()
+    conn = None
+    try:
+        conn = _pool().getconn()
+        yield conn
+    finally:
+        if conn is not None:
+            try:
+                conn.rollback()                  # end any read txn / leftovers (no-op right after an explicit commit)
+                _pool().putconn(conn)
+            except Exception:
+                try:
+                    _pool().putconn(conn, close=True)   # broken conn → discard it, don't poison the pool
+                except Exception:
+                    pass
+        _POOL_SEM.release()
 
 
 # ---------- shared read-endpoint guards (limit clamp + connection-leak guard) ----------
@@ -356,8 +407,10 @@ async def _count_visitor(request, call_next):
             ip = (xff.split(",")[0].strip() if xff else "") or (request.client.host if request.client else "")
             h = hashlib.sha256(ip.encode()).hexdigest()[:16] if ip else ""
             if h and h not in _seen_ips:
+                if len(_seen_ips) > 50000:       # bound memory: the INSERT is ON CONFLICT DO NOTHING, so a reset
+                    _seen_ips.clear()             # only costs at most one extra (idempotent) DB touch per IP afterwards
                 _seen_ips.add(h)
-                with _closing(_connect()) as conn:        # Fix #4: don't leak the conn if the INSERT raises
+                with _db() as conn:        # Fix #4: don't leak the conn if the INSERT raises
                     cur = conn.cursor()
                     cur.execute("INSERT INTO visitors(ip_hash) VALUES(%s) ON CONFLICT DO NOTHING", (h,))
                     conn.commit()
@@ -374,7 +427,7 @@ async def healthz():                                     # async + lightweight �
 
 
 def _world():
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
         cur.execute("SELECT type, count(*) c FROM entities GROUP BY type ORDER BY type")
@@ -393,7 +446,7 @@ def world():
 
 def _depot():
     """Current depot prices per resource (buy = depot pays you, sell = you pay depot)."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT attrs->'prices' prices FROM entities WHERE type='depot' LIMIT 1")
         row = cur.fetchone()
@@ -410,7 +463,7 @@ def _map():
     biome_grid = _grid(block=False)                      # don't queue behind the ~12s biome build → return "loading"
     if biome_grid is None:                               # (NB: NOT `g` — _map reuses `g` below as the agent-glyph var!)
         return {"seed": WORLD_SEED, "w": WORLD_W, "h": WORLD_H, "ascii": None, "agents": [], "loading": True}
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT x, y, attrs->>'resource' res FROM entities "
                     "WHERE type='deposit' AND attrs->>'gen_seed'=%s", (str(WORLD_SEED),))
@@ -456,7 +509,7 @@ def _scene():
     if grid is None:
         return {"w": WORLD_W, "h": WORLD_H, "rows": [], "deposits": [], "agents": [], "loading": True}
     rows = ["".join(_BIOME_CODE.get(c, ".") for c in row) for row in grid]
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT x, y, attrs->>'resource' res FROM entities WHERE type='deposit' "
                     "AND attrs->>'gen_seed'=%s AND (attrs->>'amount')::int > 0", (str(WORLD_SEED),))
@@ -510,7 +563,7 @@ def scene():
 def _relations():
     """Diplomacy graph — alliances / wars / pending offers between agents (season-3 'relation' entities;
     'peace' rows are just re-declare cooldowns, so they're skipped)."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT r.attrs->>'state' state, (r.attrs->>'a')::int a, (r.attrs->>'b')::int b, "
                     "(r.attrs->>'since')::int since, (r.attrs->>'proposer')::int proposer, "
@@ -555,7 +608,7 @@ def _station_status(cur):
 
 @app.get("/observe/{agent_id}")
 def observe_ep(agent_id: int):
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT 1 FROM entities WHERE id=%s AND type='agent'", (agent_id,))
         if not cur.fetchone():
@@ -586,7 +639,7 @@ def station_ep():
     now = time.monotonic()
     if now - _station_cache["t"] < 4.0:
         return _station_cache["v"]
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         v = _station_status(cur) or {}
     _station_cache["t"] = now; _station_cache["v"] = v   # benign race under the GIL — worst case two threads recompute once
@@ -647,7 +700,7 @@ def _reg_rate_exceeded(cid):
 @app.post("/agents")
 def register_agent(a: AgentIn, request: Request, response: Response):
     """Spawn a fresh agent with starting materials → returns its id (use it for observe/intent)."""
-    with _closing(_connect()) as conn:                    # Fix #4: never leak the connection on any raise/return path
+    with _db() as conn:                    # Fix #4: never leak the connection on any raise/return path
         cur = conn.cursor()
         tok = (a.token or "").strip()[:64]
         if a.reuse:                                       # idempotent: keep one agent per name across restarts
@@ -720,11 +773,21 @@ class IntentIn(BaseModel):
     args: dict = {}
     token: str = ""                                   # required only if the agent bound one at register
 
+    @field_validator("verb")
+    @classmethod
+    def _verb_shape(cls, v):
+        # every real engine verb is lowercase letters + underscore; reject anything else at the door so junk
+        # (and markup like "<img onerror=...>") never reaches the intents table or the spectator log. Defence in
+        # depth behind the log's esc(): an unknown-but-well-formed verb is still rejected later by apply_intent.
+        if not re.fullmatch(r"[a-z_]{1,40}", v or ""):
+            raise ValueError("verb must be 1-40 lowercase letters/underscores")
+        return v
+
 
 @app.post("/intent")
 def submit_intent(it: IntentIn):
     """Enqueue an agent action. Applied (or loop-guarded) on the next tick — the world is authoritative."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT attrs->>'token' t FROM entities WHERE id=%s AND type='agent'", (it.agent,))
         row = cur.fetchone()
@@ -743,7 +806,7 @@ def submit_intent(it: IntentIn):
 
 # ---------- spectator surface (watch the agents play) ----------
 def _list_agents():
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
         cur.execute("""
@@ -772,7 +835,7 @@ def list_agents():
 def feed(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
     """Recent agent actions (newest first) — the spectator activity stream."""
     limit = _clamp_limit(limit)
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             SELECT i.id, i.agent, a.attrs->>'name' agent_name, i.verb, i.args, i.status, i.result
@@ -784,7 +847,7 @@ def feed(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
 
 def _market():
     """Open order book + last clearing price per resource."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT id,agent,side,resource,qty,price FROM market_orders "
                     "WHERE status='open' ORDER BY resource, side, price DESC, id")
@@ -801,7 +864,7 @@ def market():
 
 def _chat(limit):
     """Recent messages (agent broadcasts + DMs + human advisers) — the social feed."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
                     "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
@@ -851,7 +914,7 @@ def human_say(s: HumanSay):
     text = clean_text(s.text)
     if not nick or not text:
         raise HTTPException(400, "nick must be letters/digits and text must be non-empty")
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT id FROM entities WHERE type='human' AND attrs->>'name'=%s LIMIT 1", (nick,))
         row = cur.fetchone()
@@ -870,7 +933,7 @@ def human_say(s: HumanSay):
 def _server_log(limit, kind):
     """Full server log — every world event + agent action, newest first.
     Optional ?kind=escape,invent (comma-separated) to filter to specific event kinds."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         if kind:
             kinds = [k.strip() for k in kind.split(",") if k.strip()]
@@ -893,7 +956,7 @@ def _milestones(limit):
     milestone-worthy war/peace/attune/destroyed events (the high-frequency damage/theft/attack/dock/mine
     firehose stays in /log only)."""
     limit = _clamp_limit(limit)
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name', "
                     "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
@@ -914,7 +977,7 @@ def milestones(limit: int = Query(40, ge=LIMIT_MIN, le=LIMIT_MAX)):
 def _records():
     """Hall of fame — firsts and bests across the world (cheap aggregate snapshot)."""
     out = {}
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT e.tick, a.attrs->>'name' name, (e.data->>'twr')::float twr "
                     "FROM events e LEFT JOIN entities a ON a.id = e.entity "
@@ -960,7 +1023,7 @@ def records():
 @app.get("/agent/{agent_id}")
 def agent_profile(agent_id: int):
     """One agent's full story — stats, inventory, vehicles, discoveries and its milestone timeline."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT id, x, y, buffers, attrs FROM entities WHERE id=%s AND type='agent'", (agent_id,))
         a = cur.fetchone()
@@ -986,7 +1049,7 @@ def _timeline(limit):
     """Chronological milestone history — discoveries, escapes, landings, elevator completions, attunements
     (oldest first)."""
     limit = _clamp_limit(limit)
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT e.tick, e.kind, COALESCE(a.attrs->>'name', "
                     "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
@@ -1006,7 +1069,7 @@ def timeline(limit: int = Query(150, ge=LIMIT_MIN, le=LIMIT_MAX)):
 
 def _roster():
     """Every agent (online + offline) for the Profile browser — id, name, points, in_space, online flag."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
         cur.execute("""SELECT e.id, e.attrs->>'name' name, e.attrs->>'title' title, (e.attrs->>'inventor_points')::int pts,
@@ -1027,7 +1090,7 @@ def roster():
 @app.get("/rules")
 def rules():
     """Crafting Codex — resources + properties, the formation patterns, and who discovered each."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT d.rule_key, d.name, COALESCE(a.attrs->>'name', d.discoverer_name) discoverer, d.points "
                     "FROM discoveries d LEFT JOIN entities a ON a.id = d.discoverer")
@@ -1045,7 +1108,7 @@ def rules():
 
 def _inventors():
     """Inventor leaderboard + the discovery timeline."""
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT id, attrs->>'name' name, (attrs->>'inventor_points')::int pts FROM entities "
                     "WHERE type='agent' AND (attrs->>'inventor_points')::int > 0 ORDER BY pts DESC")
@@ -1070,7 +1133,7 @@ def inventors():
 def guild_pending(limit: int = Query(15, ge=LIMIT_MIN, le=LIMIT_MAX)):
     """Open invention proposals awaiting a ruling, each with its ingredients' physics for the referee."""
     limit = _clamp_limit(limit)
-    with _closing(_connect()) as conn:
+    with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT p.id, p.agent, a.attrs->>'name' agent_name, p.ings, p.proposed_name, p.sig "
                     "FROM proposals p LEFT JOIN entities a ON a.id = p.agent "
@@ -1095,9 +1158,15 @@ class Verdict(BaseModel):
 
 
 @app.post("/guild/verdict")
-def guild_verdict(v: Verdict):
-    """The Guild referee records its ruling here; the tick loop applies it (mint rule / grant / refund)."""
-    with _closing(_connect()) as conn:
+def guild_verdict(v: Verdict, x_guild_token: str = Header("")):
+    """The Guild referee records its ruling here; the tick loop applies it (mint rule / grant / refund).
+    Auth: if GUILD_TOKEN is configured, the X-Guild-Token header must match it (constant-time)."""
+    if GUILD_TOKEN:
+        if not hmac.compare_digest(x_guild_token or "", GUILD_TOKEN):
+            raise HTTPException(403, "bad or missing guild token")
+    else:
+        print("WARN: /guild/verdict is UNAUTHENTICATED — set GUILD_TOKEN on the server and the referee", flush=True)
+    with _db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT status, ings FROM proposals WHERE id=%s", (v.proposal_id,))
         row = cur.fetchone()

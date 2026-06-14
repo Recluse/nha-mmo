@@ -14,6 +14,7 @@ GUILD_MODEL, GUILD_INTERVAL.
 import os, json, time, urllib.request, urllib.error
 
 SERVER   = os.environ.get("SERVER_URL", "https://nha.recluse.ru")
+GUILD_TOKEN = os.environ.get("GUILD_TOKEN", "")    # must match the server's GUILD_TOKEN; sent as X-Guild-Token on verdicts
 URL      = os.environ.get("GUILD_URL", "https://models.github.ai/inference/chat/completions")
 KEY      = os.environ["GUILD_KEY"]
 MODEL    = os.environ.get("GUILD_MODEL", "openai/gpt-4.1-mini")
@@ -86,7 +87,8 @@ def main():
                     verdict = {"proposal_id": p["id"], "approved": bool(v.get("approved")),
                                "item_key": str(v.get("item_key", "")), "name": str(v.get("name", "")),
                                "props": v.get("props") or {}, "reason": str(v.get("reason", ""))[:200]}
-                http("POST", SERVER + "/guild/verdict", verdict)
+                http("POST", SERVER + "/guild/verdict", verdict,
+                     headers={"x-guild-token": GUILD_TOKEN} if GUILD_TOKEN else None)
                 tag = ("APPROVED " + verdict["item_key"]) if verdict["approved"] else "rejected"
                 print(f"#{p['id']} {p.get('proposed_name') or p['sig']} -> {tag} :: {verdict['reason'][:70]}", flush=True)
             except Exception as e:
