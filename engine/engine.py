@@ -162,6 +162,7 @@ CREATE INDEX IF NOT EXISTS intents_agent_idx ON intents(agent, id);
 CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, tick int NOT NULL,
   entity bigint, kind text NOT NULL, data jsonb NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS events_kind_tick_idx ON events(kind, tick);
+CREATE INDEX IF NOT EXISTS events_entity_kind_tick_idx ON events(entity, kind, tick);   -- per-agent EXISTS/max(tick) subqueries in /agents,/scene,/roster (filter by entity+kind, order by tick)
 CREATE TABLE IF NOT EXISTS tick_hashes (tick int PRIMARY KEY, hash text NOT NULL);
 CREATE TABLE IF NOT EXISTS market_orders (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   side text NOT NULL, resource text NOT NULL, qty int NOT NULL, price int NOT NULL,
@@ -291,7 +292,7 @@ def apply_intent(it, ents, cur, t, events):
         if n < 1:
             return "rejected", "quantity must be positive"   # guard: negative n would reverse the flow (dupe/steal)
         if get(a, r) >= n:
-            return "applied", f"deposit {n} {r}"
+            return "applied", f"stashed {n} {r} (self-scoped no-op — your balance is unchanged)"
         return "rejected", "insufficient"
     if verb == "build":                                  # craft one part, optionally upgraded with crafted items
         part = args.get("part"); cost = vehicles.BUILD_COST.get(part)
@@ -1847,7 +1848,11 @@ def move_geese(ents, cur, t, events):
     for a in ents.values():
         if a["type"] != "agent" or int(a["attrs"].get("downed_until", 0)) > t:
             continue
-        near = geese_at(ents, a["x"], a["y"], 1)            # geese on/adjacent, grouped by flock
+        near = {}                                           # geese on/adjacent, grouped by flock — scan the small
+        ax_, ay_ = int(a["x"]), int(a["y"])                 # precomputed `geese` list (~dozens), NOT all ~8k ents
+        for g in geese:                                     # (result-identical to geese_at(ents,...,1), just cheaper)
+            if max(abs(int(g["x"]) - ax_), abs(int(g["y"]) - ay_)) <= 1:
+                near.setdefault(g["attrs"].get("flock"), []).append(g)
         best_fid, cluster = None, 0
         for fid, gs in sorted(near.items(), key=lambda kv: (kv[0] is None, kv[0])):
             if fid is not None and len(gs) > cluster:
@@ -2001,9 +2006,9 @@ def _tick_body(conn):
     # (_load_world + the merge), excluded from state_hash, and re-attached HERE from the live DB row — never change one half alone.
     # dirty write-back: ONLY entities changed this tick (was rewriting all ~8k incl 7715 static deposits every tick →
     # >12s stall + a postgres hammer that flapped the API). New rows are INSERTed elsewhere; deletes via DELETE.
-    for (tk, eid, kind, data) in events:
-        cur.execute("INSERT INTO events(tick, entity, kind, data) VALUES(%s,%s,%s,%s)",
-                    (tk, eid, kind, Json(data)))
+    if events:                                            # one round-trip instead of N (was a per-event INSERT)
+        execute_batch(cur, "INSERT INTO events(tick, entity, kind, data) VALUES(%s,%s,%s,%s)",
+                      [(tk, eid, kind, Json(data)) for (tk, eid, kind, data) in events], page_size=500)
     cur.execute("INSERT INTO tick_hashes(tick, hash) VALUES(%s,%s) "
                 "ON CONFLICT (tick) DO UPDATE SET hash=EXCLUDED.hash", (t, state_hash(ents)))
     if t % 200 == 0:                                      # bound the log tables periodically (cheap, not every tick)
