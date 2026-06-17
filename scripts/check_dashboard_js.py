@@ -17,10 +17,15 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "..", "server", "app.py")
+DASHBOARD_HTML = os.path.join(HERE, "..", "server", "dashboard.html")
 
 
 def _dashboard_source(path):
-    """Pull the DASHBOARD = \"\"\"...\"\"\" assignment out of app.py via the AST (no import / no DB)."""
+    """The dashboard now lives in server/dashboard.html (served via a file read in app.py). Read it directly;
+    fall back to the old inline DASHBOARD = \"\"\"...\"\"\" literal in app.py for older revisions."""
+    if os.path.exists(DASHBOARD_HTML):
+        with open(DASHBOARD_HTML, "r", encoding="utf-8") as f:
+            return f.read()
     with open(path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename=path)
     for node in ast.walk(tree):

@@ -568,10 +568,16 @@ function drawLangPicker(){const FL={en:'\uD83C\uDDEC\uD83C\uDDE7',uk:'\uD83C\uDD
 }
 const TABS=["Agents","Station","Profile","Records","Timeline","Map","World","Inventors","Codex","Diplomacy","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
+// Tab-gated polling: tick() fetches ONLY the endpoints the active tab renders (plus /world + /roster, always).
+// Cuts a viewer from ~15 endpoints/2s to 1-4. Panels for other tabs keep their last content until you switch.
+const TAB_EP={Agents:['/map','/agents','/depot','/market'],Map:['/map'],Records:['/records','/milestones'],
+  Timeline:['/timeline'],Inventors:['/inventors'],Station:['/station'],Codex:['/rules'],
+  Diplomacy:['/relations'],Chat:['/chat'],Log:['/log']};   // World→/scene via refresh(); Profile/Connect/About→none
+function need(ep){return (TAB_EP[active]||[]).includes(ep);}
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(tk=>`<span class="tab${tk==active?' active':''}" data-t="${tk}">${t('tab_'+tk)}</span>`).join('');
  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab==active));
- document.querySelectorAll('.tab').forEach(el=>el.onclick=()=>{active=el.dataset.t;localStorage.setItem('nha_tab',active);drawTabs();fitMap();if(active=='World')setTimeout(initWorld3D,60);});
+ document.querySelectorAll('.tab').forEach(el=>el.onclick=()=>{active=el.dataset.t;localStorage.setItem('nha_tab',active);drawTabs();fitMap();tick();if(active=='World')setTimeout(initWorld3D,60);});
 }
 applyI18n();
 drawTabs();
@@ -618,11 +624,17 @@ function fitMap(){const el=$('map'); if(!el||!el.dataset.w)return;          // s
 window.addEventListener('resize',fitMap);
 async function j(p){try{const r=await fetch(p);return r.ok?await r.json():null;}catch(e){return null;}}
 async function tick(){
+ if(document.hidden)return;                                    // parked/background tab: skip the whole poll (resumes on focus)
  const w=await j('/world'); if(!w)return;
  $('hdr').innerHTML=`tick <b>${w.tick}</b> &middot; ${w.tick_seconds}s/tick &middot; hash <code>${w.last_state_hash||'-'}</code> &middot; `+Object.entries(w.entities).map(([k,v])=>`${k}:${v}`).join(' ')+` &middot; <span style="color:#58a6ff" title="${t('ttl_visitors')}">&#128065; ${w.visitors||0} ${t('lbl_visitors')}</span>`;
- const m=await j('/map'); const by={}; const tn=id=>{if(id==null)return '?';const a=by[id];return a&&a.name?esc(a.name):'#'+id;};
- if(m){$('map').innerHTML=colorize(m.ascii); $('map').dataset.w=m.w; $('map').dataset.h=m.h; fitMap(); (m.agents||[]).forEach(x=>by[x.id]=x);}
- const a=await j('/agents');
+ const by={},names={};                                         // by: glyph/pos from /map (Map+Agents); names: id->name from /roster (always)
+ const tn=id=>{if(id==null)return '?';const a=by[id];const nm=(a&&a.name)||names[id];return nm?esc(nm):'#'+id;};
+ const ro=await j('/roster');                                  // ALWAYS (cheap): feeds tn() on every tab + the roster panel
+ if(ro){ro.agents.forEach(a=>{names[a.id]=a.name;});const on=ro.agents.filter(a=>a.online).length;
+  $('roster').innerHTML=`<span class=sub>${on} ${t('lbl_online_of')} / ${ro.agents.length} ${t('lbl_total')} &mdash; </span>`+ro.agents.map(a=>`<a style="cursor:pointer;color:${a.online?'#3fb950':'#7d8590'}" onclick="loadProfile(${a.id})">${a.id} ${esc(a.name||'?')}${a.title?' <span style="color:#b9a3ff" title="prestige title">&#127894;'+esc(a.title)+'</span>':''}${a.in_space?' ['+t('lbl_space_tag')+']':''}</a>`).join(' &middot; ')||`<span class=sub>${t('ph_no_agents_short')}</span>`;}
+ if(need('/map')){const m=await j('/map');
+  if(m){$('map').innerHTML=colorize(m.ascii); $('map').dataset.w=m.w; $('map').dataset.h=m.h; fitMap(); (m.agents||[]).forEach(x=>by[x.id]=x);}}
+ if(need('/agents')){const a=await j('/agents');
  if(a){
   const inSpace=a.agents.filter(g=>g.in_space).map(g=>g.name);
   const climbing=a.agents.filter(g=>!g.in_space&&(g.altitude||0)>0).sort((x,y)=>(y.altitude||0)-(x.altitude||0));
@@ -644,16 +656,16 @@ async function tick(){
    const ttl=g.title?` <span title="prestige title" style="background:#3a2d6b;color:#d9c6ff;border-radius:4px;padding:0 5px;font-size:11px;font-weight:bold;white-space:nowrap">&#127894; ${esc(g.title)}</span>`:'';   // 🏆 monument-builder prestige title badge
    return `<tr${g.online?'':' style="opacity:.5"'}><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${dot} ${g.name||''}${ttl}${seen}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td><span class=AG>${g.kills||0}</span>/${g.deaths||0}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
   }).join('')||`<tr><td colspan=10 class=sub>${t('ph_no_agents')}</td></tr>`;
- }
- const d=await j('/depot');
- if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';
- const mk=await j('/market');
+ }}
+ if(need('/depot')){const d=await j('/depot');
+ if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';}
+ if(need('/market')){const mk=await j('/market?limit=50');
  if(mk){const lp=Object.entries(mk.last_prices||{}).map(([r,p])=>`<span class=price>${r} <b>@${p}</b></span>`).join('')||`<span class=sub>${t('ph_no_trades')}</span>`;
   const ob=(mk.orders||[]).slice(0,16).map(o=>`<div>${tn(o.agent)} <span class=${o.side=='sell'?'O':'F'}>${o.side}</span> ${o.qty} ${o.resource} @ ${o.price}</div>`).join('');
-  $('market').innerHTML=`<div style="margin-bottom:6px">${t('lbl_last')} ${lp}</div>${ob||`<span class=sub>${t('ph_orderbook_empty')}</span>`}`;}
- const ch=await j('/chat');
- if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;
- const lg=await j('/log');
+  $('market').innerHTML=`<div style="margin-bottom:6px">${t('lbl_last')} ${lp}</div>${ob||`<span class=sub>${t('ph_orderbook_empty')}</span>`}`;}}
+ if(need('/chat')){const ch=await j('/chat');
+ if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;}
+ if(need('/log')){const lg=await j('/log');
  if(lg)$('log').innerHTML=lg.log.map(e=>{const dt=e.data||{};let txt;
   if(e.kind=='act')txt=`<b>${esc(String(dt.verb||''))}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
   else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
@@ -663,13 +675,13 @@ async function tick(){
   else if(e.kind=='honk'){const g=Math.max(1,Math.min(dt.n||1,20));txt=`${'&#129727;'.repeat(g)} <b>${esc(dt.text||'HONK')}</b>${dt.flock?` <span class=sub>(flock ${dt.flock})</span>`:''}`;}
   else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
   const who=e.kind=='honk'?`<span class=pill>GUSE</span>`:(e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:''));
-  return `<div><span class=sub>t${e.tick}</span> ${who}${txt}</div>`;}).join('')||'<div class=sub>-</div>';
- const iv=await j('/inventors');
+  return `<div><span class=sub>t${e.tick}</span> ${who}${txt}</div>`;}).join('')||'<div class=sub>-</div>';}
+ if(need('/inventors')){const iv=await j('/inventors');
  if(iv){
   $('inv_board').innerHTML=iv.leaderboard.length?(`<table><tr><th>#<th>${t('col_model')}<th>${t('col_pts')}</tr>`+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${g.name||''}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):`<div class=sub>${t('ph_no_inventions')}</div>`;
   $('inv_disc').innerHTML=iv.discoveries.map(d=>`<div>${d.guild?'&#129514; ':''}<b>${esc(d.name)}</b> <span class=sub>(${esc(d.key)})</span> &mdash; <span class=AG>${d.by||'?'}</span> +${d.points}</div>`).reverse().join('')||`<div class=sub>${t('ph_nothing_invented')}</div>`;
- }
- const st=await j('/station');
+ }}
+ if(need('/station')){const st=await j('/station');
  try{
   if(!st){$('station_panel').innerHTML=`<div class=sub><i>connecting to /station&hellip;</i></div>`;}
   else if(!st.modules){$('station_panel').innerHTML=`<div class=sub>${t('station_dormant')}</div>`;}
@@ -681,8 +693,8 @@ async function tick(){
     return `<div style="border:1px solid #21262d;border-radius:6px;padding:8px;margin:6px 0;background:${m.complete?'#10261a':'#11161f'}"><div><b>${m.complete?'&#9989; ':''}${esc(m.label)}</b> <span class=sub>&middot; ${pc(th,tn)}% &middot; ${m.funders} ${t('station_funders')}</span></div>${res}</div>`;}).join('');
    $('station_panel').innerHTML=`<div class=sub style="margin-bottom:6px">${t('station_intro').replace('{cap}',st.cap_pct_per_agent).replace('{min}',st.min_funders_per_module)}</div><div style="margin-bottom:4px"><b>${st.modules_done}/${st.modules_total}</b> ${t('station_progress')}${st.complete?` &mdash; <span style="color:#3fb950"><b>${t('station_complete')}</b></span>`:''}</div>${mods}`;
   }
- }catch(e){if($('station_panel'))$('station_panel').innerHTML=`<div class=rej>station render error: ${esc(String((e&&e.message)||e))}</div>`;}
- const rc=await j('/records');
+ }catch(e){if($('station_panel'))$('station_panel').innerHTML=`<div class=rej>station render error: ${esc(String((e&&e.message)||e))}</div>`;}}
+ if(need('/records')){const rc=await j('/records');
  if(rc){
   const sp=rc.space||{},fa=rc.fastest_aircraft,ti=rc.top_inventor,mv=rc.most_vehicles,ri=rc.richest,tb=rc.top_builder,rows=[];
   rows.push([t('rec_first_space'), sp.first?`<span class=AG>${esc(sp.first.name)}</span> &middot; tick ${sp.first.tick} &middot; twr ${sp.first.twr}`:t('rec_nobody_yet')]);
@@ -698,30 +710,28 @@ async function tick(){
   wo.forEach(w=>rows.push([`&#127894; ${esc(w.title)}`, `<span class=AG>${esc(w.name)}</span>`]));
   if(!wo.length)rows.push(['', `<span class=sub>${t('rec_none_yet')}</span>`]);
   $('records').innerHTML='<table>'+rows.map(r=>`<tr><td>${r[0]}<td>${r[1]}</tr>`).join('')+'</table>';
- }
- const ms=await j('/milestones');
- if(ms)$('milestones').innerHTML=ms.milestones.map(e=>`<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_no_milestones')}</div>`;
- const dp=await j('/relations');
+ }}
+ if(need('/milestones')){const ms=await j('/milestones');
+ if(ms)$('milestones').innerHTML=ms.milestones.map(e=>`<div><span class=sub>t${e.tick}</span> ${e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:'')}${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_no_milestones')}</div>`;}
+ if(need('/relations')){const dp=await j('/relations');
  if(dp){const R=dp.relations||[],nm=(id,n)=>esc(n||('#'+id));
   const A=R.filter(x=>x.state=='ally'),W=R.filter(x=>x.state=='war'),O=R.filter(x=>x.state=='offer');
   $('dipl_ally').innerHTML=A.map(x=>`<div>&#129309; <span class=AG>${nm(x.a,x.a_name)}</span> &amp; <span class=AG>${nm(x.b,x.b_name)}</span> <span class=sub>since t${x.since}</span></div>`).join('')||`<div class=sub>${t('ph_no_alliances')}</div>`;
   $('dipl_war').innerHTML=W.map(x=>`<div>&#9876;&#65039; <span class=O>${nm(x.a,x.a_name)}</span> vs <span class=O>${nm(x.b,x.b_name)}</span> <span class=sub>since t${x.since}</span></div>`).join('')||`<div class=sub>${t('ph_no_wars')}</div>`;
   $('dipl_offer').innerHTML=O.map(x=>{const pn=x.proposer==x.b?nm(x.b,x.b_name):nm(x.a,x.a_name),on=x.proposer==x.b?nm(x.a,x.a_name):nm(x.b,x.b_name);return `<div>&#9995; ${pn} &rarr; ${on} <span class=sub>(${t('lbl_pending')})</span></div>`;}).join('')||`<div class=sub>${t('ph_no_offers')}</div>`;
- }
- const tl=await j('/timeline');
+ }}
+ if(need('/timeline')){const tl=await j('/timeline');
  if(tl){
-  $('timeline').innerHTML=tl.timeline.map(e=>`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}
- const ro=await j('/roster');
- if(ro){const on=ro.agents.filter(a=>a.online).length;
-  $('roster').innerHTML=`<span class=sub>${on} ${t('lbl_online_of')} / ${ro.agents.length} ${t('lbl_total')} &mdash; </span>`+ro.agents.map(a=>`<a style="cursor:pointer;color:${a.online?'#3fb950':'#7d8590'}" onclick="loadProfile(${a.id})">${a.id} ${esc(a.name||'?')}${a.title?' <span style="color:#b9a3ff" title="prestige title">&#127894;'+esc(a.title)+'</span>':''}${a.in_space?' ['+t('lbl_space_tag')+']':''}</a>`).join(' &middot; ')||`<span class=sub>${t('ph_no_agents_short')}</span>`;}
- const rl=await j('/rules');
+  $('timeline').innerHTML=tl.timeline.map(e=>`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}}
+ if(need('/rules')){const rl=await j('/rules');
  if(rl){
   $('codex_rec').innerHTML=`<table><tr><th>${t('col_item')}<th>${t('col_recipe_phys')}<th>${t('col_inventor')}</tr>`+rl.recipes.map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:`<span class=sub>${t('lbl_undiscovered')}</span>`}</tr>`).join('')+'</table>';
   $('codex_pending').textContent=rl.pending||0;
   $('codex_dyn').innerHTML=(rl.dynamic&&rl.dynamic.length)?(`<table><tr><th>${t('col_invention')}<th>${t('col_recipe_ing')}<th>${t('col_properties')}<th>${t('col_inventor')}</tr>`+rl.dynamic.map(x=>`<tr><td><b>${esc(x.name)}</b> <span class=sub>(${esc(x.item_key)})</span><td class=sub>${esc(x.sig)}<td class=sub>${Object.entries(x.props||{}).map(([k,v])=>k+' '+v).join(', ')}<td><span class=AG>${x.by||'?'}</span> +${x.points}</tr>`).join('')+'</table>'):`<span class=sub>${t('ph_no_guild_inv')}</span>`;
   $('codex_res').innerHTML=`<table><tr><th>${t('col_resource')}<th>${t('col_properties')}</tr>`+Object.entries(rl.resources).map(([r,p])=>`<tr><td><b>${r}</b><td class=sub>${Object.entries(p).map(([k,v])=>k+' '+v).join(', ')}</tr>`).join('')+'</table>';
- }
+ }}
 }
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)tick();});   // refresh immediately when the tab regains focus
 // ---------- 3D world (three.js, lazy-initialised when the World tab opens) ----------
 let S3=null;
 function initWorld3D(){
@@ -1143,7 +1153,8 @@ void main(){
   }catch(e){}});
  }
  let built=false;
- async function refresh(){const s=await j('/scene');if(!s)return;if(!built){buildTerrain(s.biomes,s.w,s.h);try{buildLandRing(s.w,s.h);}catch(e){}try{buildWorldTurtle(s.w,s.h);}catch(e){}buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);buildGeese(s.geese);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
+ async function refresh(){if(active!=='World'||document.hidden)return;             // only poll /scene while the 3D tab is open & visible
+  const s=await j('/scene'+(built?'?static=0':''));if(!s||s.loading)return;if(!built){buildTerrain(s.biomes,s.w,s.h);try{buildLandRing(s.w,s.h);}catch(e){}try{buildWorldTurtle(s.w,s.h);}catch(e){}buildDeposits(s.deposits);built=true;}buildAgents(s.agents);buildVehicles(s.vehicles);buildStructures(s.structures);buildAsteroids(s.asteroids);buildArtifacts(s.artifacts);buildGeese(s.geese);if(s.storm){const sp=P(s.storm.x,s.storm.y);stormMesh.position.set(sp[0],sp[1]+8,sp[2]);stormMesh.visible=true;}else stormMesh.visible=false;}
  refresh(); setInterval(refresh,3000);
  // render loop — hardened so NOTHING (a wheel event, a NaN camera, a transient render throw, or the host
  // collapsing to 0px) can permanently blank the 3D world: the whole body is in try/catch so a throw can't kill

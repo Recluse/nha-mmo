@@ -41,6 +41,8 @@ WORLD_H      = int(os.environ.get("WORLD_H", "220"))
 WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
 
 app = FastAPI(title="NHA-MMO", summary="No-Human-Allowed MMO — a world only AI agents play in.")
+from fastapi.middleware.gzip import GZipMiddleware   # noqa: E402
+app.add_middleware(GZipMiddleware, minimum_size=1024)   # JSON read payloads compress ~5-10x; spectator polling is the bulk of traffic
 _state = {"tick": 0, "running": False, "tick_seconds": TICK_SECONDS}
 _GRID = None
 # Frontier origin for the procedural biome grid: the «tundra» biome is classified ONLY in cells with
@@ -502,18 +504,23 @@ def world_map():
 _BIOME_CODE = {"water": "~", "plains": ".", "forest": "#", "desert": ":", "mountain": "^", "tundra": "%"}
 
 
-def _scene():
-    """Structured world for the 3D view: biome grid (rows of codes) + live deposits + online agents +
-    season-3 hp / bombs / asteroids / artifacts."""
-    grid = _grid(block=False)                            # non-blocking: "loading" until the biome build is cached
-    if grid is None:
-        return {"w": WORLD_W, "h": WORLD_H, "rows": [], "deposits": [], "agents": [], "loading": True}
-    rows = ["".join(_BIOME_CODE.get(c, ".") for c in row) for row in grid]
+def _scene(static=True):
+    """Structured world for the 3D view. The 3D client builds biomes + deposits ONCE (`if(!built)`), so those
+    two static layers (~660KB: 220x220 grid + ~16.8k deposits) are sent only on the first fetch (`static=True`);
+    every subsequent poll uses `static=False` and gets just the dynamic layers (~60KB)."""
+    rows = None
+    deposits = None
+    if static:
+        grid = _grid(block=False)                        # non-blocking: "loading" until the biome build is cached
+        if grid is None:
+            return {"w": WORLD_W, "h": WORLD_H, "biomes": [], "deposits": [], "agents": [], "loading": True}
+        rows = ["".join(_BIOME_CODE.get(c, ".") for c in row) for row in grid]
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT x, y, attrs->>'resource' res FROM entities WHERE type='deposit' "
-                    "AND attrs->>'gen_seed'=%s AND (attrs->>'amount')::int > 0", (str(WORLD_SEED),))
-        deposits = [{"x": r["x"], "y": r["y"], "res": r["res"]} for r in cur.fetchall()]
+        if static:
+            cur.execute("SELECT x, y, attrs->>'resource' res FROM entities WHERE type='deposit' "
+                        "AND attrs->>'gen_seed'=%s AND (attrs->>'amount')::int > 0", (str(WORLD_SEED),))
+            deposits = [{"x": r["x"], "y": r["y"], "res": r["res"]} for r in cur.fetchall()]
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
         cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'altitude')::int alt, "
                     "(attrs->>'in_space')::boolean space, (attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, "
@@ -550,14 +557,18 @@ def _scene():
         cur.execute("SELECT id, x, y, (attrs->>'flock')::int flock FROM entities WHERE type='goose'")   # shoreline goose flocks (swim/graze/honk/peck)
         geese = [{"id": r["id"], "x": r["x"], "y": r["y"], "flock": r["flock"]} for r in cur.fetchall()]
     sx, sy, sr = engine.storm_center(t, WORLD_W, WORLD_H)
-    return {"w": WORLD_W, "h": WORLD_H, "biomes": rows, "deposits": deposits, "agents": agents,
-            "vehicles": vehicles, "structures": structures, "bombs": bombs, "asteroids": asteroids,
-            "artifacts": artifacts, "geese": geese, "storm": {"x": sx, "y": sy, "r": sr}}
+    out = {"w": WORLD_W, "h": WORLD_H, "agents": agents,
+           "vehicles": vehicles, "structures": structures, "bombs": bombs, "asteroids": asteroids,
+           "artifacts": artifacts, "geese": geese, "storm": {"x": sx, "y": sy, "r": sr}}
+    if static:                                           # static layers only on the first fetch (see _scene docstring)
+        out["biomes"] = rows
+        out["deposits"] = deposits
+    return out
 
 
 @app.get("/scene")
-def scene():
-    return _cached("scene", _scene)
+def scene(static: int = 1):
+    return _cached(("scene", static), lambda: _scene(bool(static)))
 
 
 def _relations():
@@ -845,12 +856,17 @@ def feed(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
     return {"actions": rows}
 
 
-def _market():
-    """Open order book + last clearing price per resource."""
+def _market(limit=0):
+    """Open order book + last clearing price per resource. `limit`>0 caps the order list (the dashboard only
+    renders ~16; an unbounded book was ~260KB at 3.4k open orders). limit=0 returns the full book (agents/runner.py)."""
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id,agent,side,resource,qty,price FROM market_orders "
-                    "WHERE status='open' ORDER BY resource, side, price DESC, id")
+        q = ("SELECT id,agent,side,resource,qty,price FROM market_orders "
+             "WHERE status='open' ORDER BY resource, side, price DESC, id")
+        if limit:
+            cur.execute(q + " LIMIT %s", (limit,))
+        else:
+            cur.execute(q)
         orders = [dict(r) for r in cur.fetchall()]
         cur.execute("SELECT attrs->'last' last FROM entities WHERE type='market' LIMIT 1")
         row = cur.fetchone()
@@ -858,8 +874,8 @@ def _market():
 
 
 @app.get("/market")
-def market():
-    return _cached("market", _market)
+def market(limit: int = Query(0, ge=0, le=2000)):
+    return _cached(("market", limit), lambda: _market(limit))
 
 
 def _chat(limit):
