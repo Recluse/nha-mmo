@@ -109,3 +109,75 @@ query server-side to the top N per (resource, side) — e.g. best 25 each — pl
 gzip alone: ~418 → ~65 KB/s per viewer. Plus scene-split + tab-gating: a viewer on a non-3D tab drops to a few
 KB/s (`/world` + one small tab endpoint, gzipped) — a **>98% reduction**, with the heavy 3D path paid only by
 viewers actually watching the 3D world, and even then ~10× smaller.
+
+---
+
+# Architecture — how to do this *properly* (analysis, 2026-06-17)
+
+The quick wins above attacked **bytes per response**. They don't change the *shape*: every viewer still
+opens its own HTTP connections and pulls the world on a timer. To know what to build next, start from the one
+structural fact this system has:
+
+> **Within a tick, the data is identical for every viewer.** The read cache (`_cached`) is keyed on the world
+> tick *only* — not on the user. So at tick T there is exactly **one** correct payload per endpoint, and all N
+> spectators are asking for the same bytes. Today the origin recomputes/sends them per viewer.
+
+Two independent cost axes fall out of that, and they want different fixes:
+
+| axis | cost grows with | current | the right lever |
+|---|---|---|---|
+| **origin work** (DB + CPU) | N viewers × endpoints × ticks | per-viewer build (cache helps within a tick, per replica) | **shared edge cache** → O(1) in N |
+| **wire bytes** | N viewers × payload | full payload every poll | **push + delta** → payload ≈ what changed |
+
+## Option A — Edge micro-cache (do this first; near-zero effort, biggest scaling win)
+Put a 1–2 s `proxy_cache` in the gw-public nginx in front of the JSON read endpoints, keyed on `path+query`,
+explicitly **ignoring cookies**. Because the payload is tick-identical, one origin hit per endpoint per ~tick
+serves *all* viewers; origin DB/CPU becomes **O(1) in viewer count** instead of O(N). `proxy_cache_lock on`
+collapses the thundering herd at each tick boundary into a single upstream request.
+- Pairs perfectly with the existing per-tick `_cached` and gzip (cache the gzipped bytes once).
+- **Caveats:** do **not** cache `/` (it sets the `nha_cid` cookie and drives visitor counting) or any
+  authenticated/POST route (`/intent`, `/guild/verdict`, `/chat` POST, `/agents`). Cache only the read GETs.
+  TTL ≈ tick (2 s); `proxy_cache_use_stale updating` to keep serving during a refresh.
+- **Effort:** a dozen lines of nginx, no app change. **Impact:** decouples the whole site from viewer count —
+  this is what lets the world survive a traffic spike. Highest impact-to-effort of anything remaining.
+
+## Option B — Coalesce + conditional GET (small app change, fewer round trips)
+- **One endpoint `/dash?tab=<t>`** returning exactly that tab's data in a single JSON, instead of the client
+  firing N parallel fetches. Cuts TLS/header/round-trip overhead N→1 per poll and gives a single object to
+  cache/ETag. The tab→endpoints map already exists client-side (`TAB_EP`) — move it server-side.
+- **ETag = world tick**, honor `If-None-Match` → `304` (empty body) when the viewer already has this tick.
+  Most useful for slow-changing tabs and when a poll races ahead of the tick. Cheap on top of `_cached`.
+
+## Option C — Push instead of poll: SSE with per-tick broadcast + deltas (the end state)
+Spectators are **read-only** (the only write is the rare chat POST), so a one-way **Server-Sent Events** stream
+fits better than WebSockets (plain HTTP, auto-reconnect, no upgrade/proxy fuss):
+- Client opens one `EventSource('/stream?tab=…')`. On connect the server sends a **full snapshot**; thereafter
+  it pushes **one event per tick** — and because the per-tick data is identical for everyone, the server
+  computes that event **once and fans it out to all subscribers** (O(1) origin per tick, O(N) cheap sends).
+- Send **deltas, not snapshots**: after the initial snapshot, each tick event carries only what changed
+  (changed entities/fields, new chat/log lines). This is the big remaining **bytes** win — e.g. `/scene` is
+  ~660 KB of mostly-static deposits + biomes; a per-tick delta is a handful of moved agents/structures.
+- Server-paced: no client polling faster/slower than the tick, no wasted empty polls, instant updates.
+- **Cost:** a streaming endpoint + a small client `EventSource` layer + per-tick delta computation (diff the
+  cached world snapshot tick-over-tick — the engine already carries an in-memory `_WORLD`, so the diff is
+  cheap and natural to emit alongside the tick). nginx must disable proxy buffering for the stream path
+  (`proxy_buffering off`, `X-Accel-Buffering: no`). Across the 2 API replicas each just streams from its own
+  per-tick payload — no shared bus needed (the data is deterministic per tick).
+
+## Recommendation (phased)
+1. **Now / cheap:** **Option A edge micro-cache** — the single highest-leverage change for surviving load;
+   no code, decouples origin from viewer count. Add **ETag/304** (Option B) while there.
+2. **Next:** **coalesce to `/dash?tab=`** (Option B) — fewer requests, one cache key, sets up the snapshot
+   shape the stream will reuse.
+3. **End state:** **SSE + deltas** (Option C) — eliminates polling entirely and drops per-viewer bytes to
+   "what changed", with a single per-tick computation fanned out to all watchers.
+
+Net: A makes the origin **viewer-count-independent** (the thing that actually falls over under a crowd); C
+makes the **bytes** viewer-count-independent in everything but the unavoidable per-connection delta. Combined
+with what already shipped, that is the proper end state for a "the whole world is watching" spectator feed.
+
+### Explicitly not worth it here
+- **WebSockets** — bidirectional machinery for a one-way feed; SSE is strictly simpler for this shape.
+- **HTTP/2 server push** — deprecated/removed in browsers; don't.
+- **Per-viewer personalization / auth on reads** — there is none, which is exactly why edge caching is free;
+  keep it that way (don't make read payloads depend on the viewer).
