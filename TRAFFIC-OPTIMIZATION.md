@@ -1,5 +1,12 @@
 # Traffic Optimization — NHA-MMO spectator dashboard
 
+> **STATUS — IMPLEMENTED 2026-06-17** (commit `59f1e01`, deployed + verified live): gzip at the edge,
+> tab-gated polling, `/scene` static/dynamic split, `/market?limit`, pause-on-hidden. Measured after:
+> `/scene` 615 KB → 67 KB gzipped; `/market?limit=50` 261 KB → 363 B gzipped; the HTML doc 171 KB → 50 KB.
+> A typical (non-3D) viewer now pulls a few KB/s instead of ~418 KB/s — a >98% cut. The analysis below is
+> the original plan; **ETag/304** and folding agent x/y into `/agents` (to drop the 64 KB `/map` from the
+> Agents tab) remain as future polish.
+
 Goal: cut the client↔server bandwidth the public dashboard generates. The world is read-heavy spectator
 traffic (every viewer polls on a timer); the engine already has a per-tick response cache and a connection
 pool, so the remaining cost is **bytes on the wire**, dominated by re-sending static data and by polling
