@@ -137,11 +137,15 @@ STATION_MIN_CONTRIB = 3            # min distinct funders a module needs before 
 STATION_MODULE_REWARD = 160        # inventor_points pool split (by share) among a module's funders on completion
 STATION_FINISH_REWARD = 1400       # inventor_points mega-pool split among ALL funders when the LAST module lands
 STATION_MODULES = {                # insertion order is fixed → deterministic display/iteration
-    "truss":   {"label": "Core Truss",   "need": {"metal": 800, "titanium": 420, "composite": 500}},
-    "solar":   {"label": "Solar Array",  "need": {"silicon": 700, "crystal": 400, "composite": 420}},
-    "habitat": {"label": "Habitat Ring", "need": {"metal": 720, "composite": 500, "ice": 300}},
-    "lab":     {"label": "Science Lab",  "need": {"crystal": 480, "silicon": 460, "iridium": 120}},   # iridium is scarce (asteroids only) → kept modest so the Lab can't soft-lock
-    "dock":    {"label": "Docking Port", "need": {"titanium": 460, "metal": 560, "composite": 440}},
+    # 2026-06-23 rebalance: composite (a 1-craft/tick item) was the grind wall, so its amounts were cut and
+    # a CHIP requirement added (chip = silicon + a conductor metal, e.g. copper — both mineable). This diversifies
+    # the electronics side of the bill and lowers the total crafted-units burden. `life` is already COMPLETE and
+    # has no composite, so it is left untouched.
+    "truss":   {"label": "Core Truss",   "need": {"metal": 800, "titanium": 420, "composite": 240, "chip": 60}},
+    "solar":   {"label": "Solar Array",  "need": {"silicon": 700, "crystal": 400, "composite": 180, "chip": 150}},
+    "habitat": {"label": "Habitat Ring", "need": {"metal": 720, "composite": 240, "ice": 300, "chip": 60}},
+    "lab":     {"label": "Science Lab",  "need": {"crystal": 480, "silicon": 460, "iridium": 120, "chip": 180}},   # iridium scarce (asteroids only) → kept modest so the Lab can't soft-lock
+    "dock":    {"label": "Docking Port", "need": {"titanium": 460, "metal": 560, "composite": 200, "chip": 80}},
     "life":    {"label": "Life Support", "need": {"ice": 420, "crystal": 440, "silicon": 380}},
 }
 
