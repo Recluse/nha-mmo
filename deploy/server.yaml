@@ -79,7 +79,7 @@ spec:
             - {name: server, mountPath: /app/server}
           resources:
             requests: {cpu: 300m, memory: 384Mi}    # 2 uvicorn workers
-            limits: {memory: 1Gi}                    # no CPU limit on purpose (avoid throttling /observe under burst)
+            limits: {memory: 1536Mi}                 # 1Gi ловил OOMKilled под нагрузкой (18 и 21 авг); no CPU limit on purpose (avoid throttling /observe under burst)
       volumes:
         - {name: engine, configMap: {name: nha-engine-code}}
         - {name: server, configMap: {name: nha-server-code}}
