@@ -1592,20 +1592,21 @@ def universe_broadcast(ents, cur, t, events):
     elif is_space:                                             # offset +900: the Great A'Tuin Question (space era only) — kicks off the cosmonauts' debate
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, ATUIN_QUESTION))
 
-def grow_trees(ents, t):
+def grow_trees(by_type, t):
     """Trees (wood deposits) slowly regrow toward maturity → renewable forestry. Deterministic (staggered by id),
-    regrows even from a fully-chopped stump (amount 0), so a `plant`ed/chopped forest comes back on its own."""
-    for e in ents.values():
-        if e["type"] == "deposit" and e["attrs"].get("resource") == "wood":
+    regrows even from a fully-chopped stump (amount 0), so a `plant`ed/chopped forest comes back on its own.
+    P1: takes the per-tick type index (by_type) so it walks only deposits, never the whole world."""
+    for e in by_type.get("deposit", ()):
+        if e["attrs"].get("resource") == "wood":
             amt = int(e["attrs"].get("amount", 0))
             if amt < 22 and (t + e["id"]) % 8 == 0:
                 e["attrs"]["amount"] = amt + 1
 
-def grow_plants(ents, t):
+def grow_plants(by_type, t):
     """Plant deposits (herb/lichen/fungus/algae) regrow toward a cap → renewable foraging for the medicine branch.
     Deterministic (staggered by id), regrows even from a fully-gathered patch (amount 0) — like grow_trees."""
-    for e in ents.values():
-        if e["type"] == "deposit" and e["attrs"].get("resource") in PLANT_RESOURCES:
+    for e in by_type.get("deposit", ()):
+        if e["attrs"].get("resource") in PLANT_RESOURCES:
             amt = int(e["attrs"].get("amount", 0))
             if amt < PLANT_REGROW_CAP and (t + e["id"]) % PLANT_REGROW_EVERY == 0:
                 e["attrs"]["amount"] = amt + 1
@@ -1644,19 +1645,20 @@ def orbital_decay(ents, t, events, cur=None):
         else:
             a["attrs"]["altitude"] = alt
 
-def respawn_deposits(ents, t):
-    """Mineral deposits + asteroids slowly replenish (deterministic, staggered by id) → the world never runs permanently dry."""
-    for e in ents.values():
-        if e["type"] == "deposit" and e["attrs"].get("resource") != "wood" \
+def respawn_deposits(by_type, t):
+    """Mineral deposits + asteroids slowly replenish (deterministic, staggered by id) → the world never runs permanently dry.
+    P1: two independent (order-free) loops over the deposit + asteroid buckets instead of one full-world scan."""
+    for e in by_type.get("deposit", ()):
+        if e["attrs"].get("resource") != "wood" \
                 and e["attrs"].get("resource") not in PLANT_RESOURCES:   # wood→grow_trees, plants→grow_plants; here = minerals only
             amt = int(e["attrs"].get("amount", 0))
             if amt < 18 and (t + e["id"]) % 12 == 0:
                 e["attrs"]["amount"] = amt + 1
-        elif e["type"] == "asteroid":
-            amt = int(e["attrs"].get("amount", 0))
-            cap = int(e["attrs"].get("max", amt))
-            if amt < cap and (t + e["id"]) % ASTEROID_RESPAWN_EVERY == 0:
-                e["attrs"]["amount"] = amt + 1
+    for e in by_type.get("asteroid", ()):
+        amt = int(e["attrs"].get("amount", 0))
+        cap = int(e["attrs"].get("max", amt))
+        if amt < cap and (t + e["id"]) % ASTEROID_RESPAWN_EVERY == 0:
+            e["attrs"]["amount"] = amt + 1
 
 # ---------- season 3 per-tick systems (deterministic → replay-safe) ----------
 def tick_bombs(ents, cur, t, events):
@@ -1670,15 +1672,14 @@ def tick_bombs(ents, cur, t, events):
             explode(b, ents, t, events, cur)
             del_entity(ents, cur, b["id"])
 
-def respawn_agents(ents, cur, t, events):
+def respawn_agents(by_type, cur, t, events):
     """Downed agents whose cooldown has elapsed respawn at full HP at a deterministic cell FAR from the
     death cell (anti-spawn-camp): a hash-derived point across the whole map, replay-safe (no RNG)."""
-    mkt = next((x for x in ents.values() if x["type"] == "market"), None)
+    mkts = by_type.get("market", ())
+    mkt = mkts[0] if mkts else None                       # first market in insertion order == old next()-over-ents.values()
     w = int(mkt["attrs"].get("w", 156)) if mkt else 156
     h = int(mkt["attrs"].get("h", 156)) if mkt else 156
-    for a in ents.values():
-        if a["type"] != "agent":
-            continue
+    for a in by_type.get("agent", ()):
         du = int(a["attrs"].get("downed_until", 0))
         if du and t >= du:
             mx = int(a["attrs"].get("hp_max", HP_MAX))
@@ -1691,11 +1692,9 @@ def respawn_agents(ents, cur, t, events):
             a["attrs"]["respawned_at"] = t                # RESPAWN_GRACE untargetability
             events.append((t, a["id"], "respawn", {"x": a["x"], "y": a["y"]}))
 
-def cool_reputation(ents, t):
+def cool_reputation(by_type, t):
     """Expire 'wanted' status and staggered-decay vigilance/notoriety; clear stale robbed_recent flags."""
-    for a in ents.values():
-        if a["type"] != "agent":
-            continue
+    for a in by_type.get("agent", ()):
         at = a["attrs"]
         if int(at.get("wanted_until", 0)) and t >= int(at.get("wanted_until", 0)):
             at["wanted_until"] = 0
@@ -1706,23 +1705,20 @@ def cool_reputation(ents, t):
         if "robbed_recent" in at and int(at.get("robbed_recent", 0)) + THEFT_COOLDOWN <= t:
             at.pop("robbed_recent", None)
 
-def accrue_weariness(ents, t):
+def accrue_weariness(by_type, t):
     """War weariness builds ONLY on ticks where a real attack landed between the pair (no credit payout — C6)."""
-    for e in ents.values():
-        if e["type"] == "relation" and e["attrs"].get("state") == "war" and int(e["attrs"].get("war_combat_tick", -1)) == t:
+    for e in by_type.get("relation", ()):
+        if e["attrs"].get("state") == "war" and int(e["attrs"].get("war_combat_tick", -1)) == t:
             e["attrs"]["weariness"] = min(WEARINESS_CAP, int(e["attrs"].get("weariness", 0)) + 1)
 
-def regen_hp(ents, t):
+def regen_hp(by_type, t):
     """Agents heal HP_REGEN/tick when not downed and not in active combat with a war foe this tick."""
-    fighting = {e["attrs"].get("a") for e in ents.values()
-                if e["type"] == "relation" and e["attrs"].get("state") == "war"
-                and int(e["attrs"].get("war_combat_tick", -1)) == t}
-    fighting |= {e["attrs"].get("b") for e in ents.values()
-                 if e["type"] == "relation" and e["attrs"].get("state") == "war"
-                 and int(e["attrs"].get("war_combat_tick", -1)) == t}
-    for a in ents.values():
-        if a["type"] != "agent":
-            continue
+    rels = by_type.get("relation", ())
+    fighting = {e["attrs"].get("a") for e in rels
+                if e["attrs"].get("state") == "war" and int(e["attrs"].get("war_combat_tick", -1)) == t}
+    fighting |= {e["attrs"].get("b") for e in rels
+                 if e["attrs"].get("state") == "war" and int(e["attrs"].get("war_combat_tick", -1)) == t}
+    for a in by_type.get("agent", ()):
         if int(a["attrs"].get("downed_until", 0)) > t or a["id"] in fighting:
             continue
         mx = int(a["attrs"].get("hp_max", HP_MAX))
@@ -1989,14 +1985,23 @@ def _tick_body(conn):
     resolve_proposals(ents, cur, t, events)
     roam_autonomous(ents, cur, t, events)
     universe_broadcast(ents, cur, t, events)              # GIGACHRUSCH: the Universe periodically re-decrees in the world chat
-    grow_trees(ents, t)
-    grow_plants(ents, t)                                   # renewable plant deposits (medicine branch)
+    # P1 (scale): ONE type-index pass replaces the per-system full-world scans below — on a deposit-heavy world the
+    # agent/relation systems no longer walk ~all entities. Built HERE (after intents/behave/market/roam/broadcast have
+    # settled the entity set); the systems it feeds only mutate attrs in place — none add/remove a deposit/agent/
+    # asteroid/relation/market — and the one interleaved unconverted system (orbital_decay) only creates 'loot', a
+    # type none of them read, so the index cannot go stale between them. Insertion order within each bucket == the
+    # old ents.values() filter order, so the tick_hash chain is byte-identical (proven by tests/test_determinism.py).
+    by_type = {}
+    for e in ents.values():
+        by_type.setdefault(e["type"], []).append(e)
+    grow_trees(by_type, t)
+    grow_plants(by_type, t)                                # renewable plant deposits (medicine branch)
     orbital_decay(ents, t, events, cur)
-    respawn_deposits(ents, t)
-    respawn_agents(ents, cur, t, events)                  # season 3 per-tick systems (after respawn_deposits, before write-back)
-    cool_reputation(ents, t)
-    accrue_weariness(ents, t)
-    regen_hp(ents, t)
+    respawn_deposits(by_type, t)
+    respawn_agents(by_type, cur, t, events)               # season 3 per-tick systems (after respawn_deposits, before write-back)
+    cool_reputation(by_type, t)
+    accrue_weariness(by_type, t)
+    regen_hp(by_type, t)
     expire_diplomacy(ents, cur, t)
     drift_asteroids(ents, t, events)
     move_geese(ents, cur, t, events)                      # shoreline goose flocks: spawn-once + waddle + honk + peck (deterministic)

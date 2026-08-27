@@ -77,11 +77,18 @@ proven").
 ---
 
 ## Recommended sequence
-1. **Build a local replay/determinism harness first.** There is none today (see the determinism caveat in
-   ops-memory) — P0 and P2 change hashing/simulation and are unsafe to ship blind. Harness = seed a small
-   world, run K ticks twice, assert identical `tick_hashes`; plus a golden replay of a captured intent log.
-2. **P1** (type buckets) — safe, immediate, big constant-factor win. Ship alone, measure.
-3. **P0** (incremental digest) — biggest win; needs the harness + a documented hash-format version bump.
+1. **✅ DONE — determinism harness.** `tests/test_determinism.py` seeds a small-but-rich world (deposits
+   regrow, hurt/downed agents, a war relation, asteroids → every maintenance system does work and the chain
+   evolves), runs N ticks twice, asserts an identical `tick_hash` chain. Skips cleanly when no throwaway
+   Postgres is reachable (so CI stays green). It is the equivalence gate for every step below: capture the
+   `CHAIN_FINGERPRINT` before a change, then after — they must match.
+2. **✅ DONE — P1 (type buckets).** `_tick_body` builds a per-tick `by_type` index; `grow_trees`, `grow_plants`,
+   `respawn_deposits`, `respawn_agents`, `cool_reputation`, `accrue_weariness`, `regen_hp` now walk only their
+   type instead of the whole world. Validated behaviour-preserving via the harness (fp `9922767f180849f0`
+   unchanged). Remaining full-world walkers to convert next: `behave`, `drift_asteroids`, `move_geese`,
+   `tick_bombs`, `decay_loot`.
+3. **P0** (incremental digest) — biggest win; needs the harness (now have it) + a documented hash-format version
+   bump. This is where the real per-tick speedup lives (the 3× full-world `json.dumps`).
 4. **P2** (lazy deposits) — unlocks true density; then the forest prune is no longer necessary and the map can
    be as dense as design wants.
 5. **P3/P4** as scale demands.
