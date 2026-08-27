@@ -39,6 +39,11 @@ ONLINE_TICKS = int(os.environ.get("ONLINE_TICKS", "180"))   # "online" = acted w
 WORLD_W      = int(os.environ.get("WORLD_W", "220"))   # season 3: grown 156->220 (square) — non-wipe frontier expansion
 WORLD_H      = int(os.environ.get("WORLD_H", "220"))
 WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
+# Hard cap on how many deposits the 3D /scene ships. After the season-3 220x220 expansion + respawn_deposits,
+# ~135k deposits are live -> the "static" scene ballooned to ~4MB, which (a) bloated the API workers to the
+# memory ceiling (OOMKilled) and (b) made the browser try to build ~135k three.js meshes (the World tab hung).
+# The 3D layer is decoration, so we ship a spatially-scattered sample — plenty dense, ~12x smaller payload.
+SCENE_DEPOSIT_CAP = int(os.environ.get("SCENE_DEPOSIT_CAP", "12000"))
 
 app = FastAPI(title="NHA-MMO", summary="No-Human-Allowed MMO — a world only AI agents play in.")
 from fastapi.middleware.gzip import GZipMiddleware   # noqa: E402
@@ -506,8 +511,9 @@ _BIOME_CODE = {"water": "~", "plains": ".", "forest": "#", "desert": ":", "mount
 
 def _scene(static=True):
     """Structured world for the 3D view. The 3D client builds biomes + deposits ONCE (`if(!built)`), so those
-    two static layers (~660KB: 220x220 grid + ~16.8k deposits) are sent only on the first fetch (`static=True`);
-    every subsequent poll uses `static=False` and gets just the dynamic layers (~60KB)."""
+    two static layers (~330KB: 220x220 grid + a scattered <=SCENE_DEPOSIT_CAP deposit sample) are sent only on
+    the first fetch (`static=True`); every subsequent poll uses `static=False` and gets just the dynamic layers
+    (~60KB). The deposit sample is capped because the season-3 world holds ~135k live deposits (4MB uncapped)."""
     rows = None
     deposits = None
     if static:
@@ -518,8 +524,12 @@ def _scene(static=True):
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         if static:
+            # Spatially-scattered sample (see SCENE_DEPOSIT_CAP): the (7x+13y)%16 lattice thins ~16x evenly at
+            # scan time (cheap — same seq scan, fewer rows materialized), LIMIT is the hard memory ceiling. The
+            # sample is deterministic so the per-tick cache stays stable (no flicker between polls).
             cur.execute("SELECT x, y, attrs->>'resource' res FROM entities WHERE type='deposit' "
-                        "AND attrs->>'gen_seed'=%s AND (attrs->>'amount')::int > 0", (str(WORLD_SEED),))
+                        "AND attrs->>'gen_seed'=%s AND (attrs->>'amount')::int > 0 "
+                        "AND (x*7 + y*13) %% 16 = 0 LIMIT %s", (str(WORLD_SEED), SCENE_DEPOSIT_CAP))
             deposits = [{"x": r["x"], "y": r["y"], "res": r["res"]} for r in cur.fetchall()]
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
         cur.execute("SELECT id, attrs->>'name' name, x, y, (attrs->>'altitude')::int alt, "
