@@ -2026,7 +2026,7 @@ def _tick_body(conn):
     cur.execute("INSERT INTO tick_hashes(tick, hash) VALUES(%s,%s) "
                 "ON CONFLICT (tick) DO UPDATE SET hash=EXCLUDED.hash", (t, state_hash(ents)))
     _pd["events_hash"] = _pc() - _pm                       # events INSERT + state_hash serialize
-    if t % 5 == 0:                                          # TEMP: fast cadence for the P0 measurement window (raise/remove after)
+    if t % 200 == 0:                                        # lightweight ongoing telemetry: where each tick's work goes (dirty_detect+events_hash = the serialization that bounds density)
         print(f"[PROF] t{t} ents={len(ents)} " + " ".join(f"{k}={v*1000:.0f}" for k, v in _pd.items())
               + f" | total={sum(_pd.values()) * 1000:.0f}ms", flush=True)
     if t % 200 == 0:                                      # bound the log tables periodically (cheap, not every tick)

@@ -357,6 +357,7 @@ def _ensure_world():
 def _tick_loop():
     conn = _connect()
     while True:
+        _start = time.perf_counter()
         try:
             t, _ = engine.tick(conn)
             _state["tick"] = t
@@ -366,7 +367,10 @@ def _tick_loop():
                 conn.rollback()
             except Exception:
                 conn = _connect()
-        time.sleep(TICK_SECONDS)
+        # Rate-limit to the TICK_SECONDS target instead of sleeping a FIXED TICK_SECONDS *on top of* the work:
+        # when a tick's work is under budget the world holds a steady ~2s/tick (was ~2s+work≈3s); when the world
+        # is dense enough that work exceeds the budget it just runs back-to-back (graceful degrade, as before).
+        time.sleep(max(0.05, TICK_SECONDS - (time.perf_counter() - _start)))
 
 
 def _tick_syncer():
