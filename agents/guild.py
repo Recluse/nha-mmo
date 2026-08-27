@@ -19,8 +19,11 @@ URL      = os.environ.get("GUILD_URL", "https://models.github.ai/inference/chat/
 KEY      = os.environ["GUILD_KEY"]
 MODEL    = os.environ.get("GUILD_MODEL", "openai/gpt-4.1-mini")
 INTERVAL = float(os.environ.get("GUILD_INTERVAL", "12"))
+RL_MAX_RETRIES = int(os.environ.get("GUILD_RL_MAX_RETRIES", "8"))   # after this many back-to-back 429s on ONE proposal, refund it (approved:false) so an exhausted LLM quota can't jam the queue forever — the 400 path already refunds; this closes the 429 gap
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+_rl_fails = {}   # proposal_id -> consecutive rate-limited (429) attempts; cleared on any successful verdict
 
 SYSTEM = ("You classify combinations in a crafting game. Each input material has integer property tags. "
           "Decide whether the inputs form a coherent new crafted item. If yes, give it a short snake_case "
@@ -89,11 +92,26 @@ def main():
                                "props": v.get("props") or {}, "reason": str(v.get("reason", ""))[:200]}
                 http("POST", SERVER + "/guild/verdict", verdict,
                      headers={"x-guild-token": GUILD_TOKEN} if GUILD_TOKEN else None)
+                _rl_fails.pop(p["id"], None)                  # judged → clear any rate-limit strikes
                 tag = ("APPROVED " + verdict["item_key"]) if verdict["approved"] else "rejected"
                 print(f"#{p['id']} {p.get('proposed_name') or p['sig']} -> {tag} :: {verdict['reason'][:70]}", flush=True)
             except Exception as e:
                 print(f"judge #{p.get('id')} failed: {e}", flush=True)
                 if getattr(e, "code", None) == 429:          # rate-limited: stop hammering the LLM, let the window reset before retrying the rest
+                    pid = p.get("id")
+                    _rl_fails[pid] = _rl_fails.get(pid, 0) + 1
+                    if _rl_fails[pid] >= RL_MAX_RETRIES:      # quota looks exhausted for a long stretch → refund so the queue can't jam (materials returned, agent can resubmit)
+                        try:
+                            http("POST", SERVER + "/guild/verdict",
+                                 {"proposal_id": pid, "approved": False, "item_key": "", "name": "", "props": {},
+                                  "reason": "the Guild was rate-limited too long to evaluate — materials refunded, resubmit later"},
+                                 headers={"x-guild-token": GUILD_TOKEN} if GUILD_TOKEN else None)
+                            _rl_fails.pop(pid, None)
+                            print(f"#{pid} rate-limited x{RL_MAX_RETRIES} — refunded to unjam the queue", flush=True)
+                            time.sleep(1.5)
+                            continue                          # cleared this one; on to the next proposal
+                        except Exception as e2:
+                            print(f"#{pid} unjam-refund POST failed: {e2}", flush=True)
                     print("rate-limited (429) — backing off 90s", flush=True)
                     time.sleep(90)
                     break
