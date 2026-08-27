@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import runner
 
 NAME = os.environ.get("WOOD_NAME", "Woodcutter")
-INTERVAL = float(os.environ.get("WOOD_INTERVAL", "14"))
+INTERVAL = float(os.environ.get("WOOD_INTERVAL", "45"))   # slowed 14->45s: forests were pruned (135k->8.3k wood), don't strip them
 
 LINES = [
     "ещё одно дерево — ещё рубль", "лес рубят — щепки летят", "топор не подведёт",
