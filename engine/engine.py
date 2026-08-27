@@ -11,7 +11,7 @@ durable, authoritative store. Self-creates the schema and seeds a tiny demo worl
 
 Run:  PG_DSN='host=127.0.0.1 dbname=nhamoo user=postgres' python engine.py [ticks]
 """
-import os, sys, json, hashlib
+import os, sys, json, hashlib, time
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json, execute_batch
 import vehicles   # PART / BUILD_COST / finalize() — for the build & finalize intents
@@ -1954,6 +1954,7 @@ def _tick_body(conn):
     _clean = {eid: (e["x"], e["y"], json.dumps(e["buffers"], sort_keys=True), json.dumps(e["attrs"], sort_keys=True))
               for eid, e in ents.items()}                 # snapshot for dirty-tracking — only CHANGED entities written back
     events = []
+    _pc = time.perf_counter; _pm = _pc(); _pd = {}         # [PROF] coarse per-phase timing — behavior-neutral, logged every 100 ticks (P0 measurement)
     cur.execute("SELECT * FROM intents WHERE status = 'pending' ORDER BY id")
     for it in cur.fetchall():
         # loop guard (engine-enforced): an agent repeating the SAME action that keeps FAILING is stuck
@@ -1977,6 +1978,7 @@ def _tick_body(conn):
             st, res = "rejected", f"bad intent ({str(e)[:80]})"
         cur.execute("UPDATE intents SET status=%s, result=%s WHERE id=%s", (st, res, it["id"]))
         events.append((t, it["agent"], "act", {"verb": it["verb"], "status": st, "result": res}))
+    _pd["intents"] = _pc() - _pm; _pm = _pc()
     tick_bombs(ents, cur, t, events)                      # AFTER intents: bombs armed this tick tick down in id order
     for e in list(ents.values()):
         behave(e)
@@ -2006,8 +2008,10 @@ def _tick_body(conn):
     drift_asteroids(ents, t, events)
     move_geese(ents, cur, t, events)                      # shoreline goose flocks: spawn-once + waddle + honk + peck (deterministic)
     decay_loot(ents, cur, t)
+    _pd["systems"] = _pc() - _pm; _pm = _pc()
     dirty = [(e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), eid) for eid, e in ents.items()
              if _clean.get(eid) != (e["x"], e["y"], json.dumps(e["buffers"], sort_keys=True), json.dumps(e["attrs"], sort_keys=True))]
+    _pd["dirty_detect"] = _pc() - _pm; _pm = _pc()         # cost of the O(N) json.dumps diff
     execute_batch(cur, "UPDATE entities SET x=%s, y=%s, buffers=%s, "
                        "attrs = (%s::jsonb - 'token') || (CASE WHEN jsonb_exists(entities.attrs, 'token') "
                        "THEN jsonb_build_object('token', entities.attrs->'token') ELSE '{}'::jsonb END) "
@@ -2015,11 +2019,16 @@ def _tick_body(conn):
     # (_load_world + the merge), excluded from state_hash, and re-attached HERE from the live DB row — never change one half alone.
     # dirty write-back: ONLY entities changed this tick (was rewriting all ~8k incl 7715 static deposits every tick →
     # >12s stall + a postgres hammer that flapped the API). New rows are INSERTed elsewhere; deletes via DELETE.
+    _pd["dirty_write"] = _pc() - _pm; _pm = _pc()          # cost of the batched UPDATE to Postgres
     if events:                                            # one round-trip instead of N (was a per-event INSERT)
         execute_batch(cur, "INSERT INTO events(tick, entity, kind, data) VALUES(%s,%s,%s,%s)",
                       [(tk, eid, kind, Json(data)) for (tk, eid, kind, data) in events], page_size=500)
     cur.execute("INSERT INTO tick_hashes(tick, hash) VALUES(%s,%s) "
                 "ON CONFLICT (tick) DO UPDATE SET hash=EXCLUDED.hash", (t, state_hash(ents)))
+    _pd["events_hash"] = _pc() - _pm                       # events INSERT + state_hash serialize
+    if t % 5 == 0:                                          # TEMP: fast cadence for the P0 measurement window (raise/remove after)
+        print(f"[PROF] t{t} ents={len(ents)} " + " ".join(f"{k}={v*1000:.0f}" for k, v in _pd.items())
+              + f" | total={sum(_pd.values()) * 1000:.0f}ms", flush=True)
     if t % 200 == 0:                                      # bound the log tables periodically (cheap, not every tick)
         prune_tables(cur, t)
     conn.commit()
