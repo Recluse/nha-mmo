@@ -570,6 +570,8 @@ function drawLangPicker(){const FL={en:'\uD83C\uDDEC\uD83C\uDDE7',uk:'\uD83C\uDD
 }
 const TABS=["Agents","Station","Profile","Records","Timeline","Map","World","Inventors","Codex","Diplomacy","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
+try{const _q0=new URLSearchParams(location.search).get('tab');if(_q0&&TABS.includes(_q0))active=_q0;}catch(e){}   // ?tab=… deep-link
+function pageURL(){try{const p=new URLSearchParams();p.set('tab',active);const pid=$('pid')&&$('pid').value;if(active==='Profile'&&pid)p.set('agent',pid);history.replaceState(null,'',location.pathname+'?'+p.toString());}catch(e){}}   // shareable permalink to the current tab (+ agent profile)
 // Tab-gated polling: tick() fetches ONLY the endpoints the active tab renders (plus /world + /roster, always).
 // Cuts a viewer from ~15 endpoints/2s to 1-4. Panels for other tabs keep their last content until you switch.
 const TAB_EP={Agents:['/map','/agents','/depot','/market'],Map:['/map'],Records:['/records','/milestones'],
@@ -579,7 +581,7 @@ function need(ep){return (TAB_EP[active]||[]).includes(ep);}
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(tk=>`<span class="tab${tk==active?' active':''}" data-t="${tk}">${t('tab_'+tk)}</span>`).join('');
  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab==active));
- document.querySelectorAll('.tab').forEach(el=>el.onclick=()=>{active=el.dataset.t;localStorage.setItem('nha_tab',active);drawTabs();fitMap();tick();if(active=='World')setTimeout(initWorld3D,60);});
+ document.querySelectorAll('.tab').forEach(el=>el.onclick=()=>{active=el.dataset.t;localStorage.setItem('nha_tab',active);pageURL();drawTabs();fitMap();tick();if(active=='World')setTimeout(initWorld3D,60);});
 }
 applyI18n();
 drawTabs();
@@ -597,7 +599,7 @@ let agSort={k:'cr',dir:-1};   // Agents table sort (click a column header)
 function sortAg(k){if(agSort.k===k)agSort.dir*=-1;else{agSort.k=k;agSort.dir=(k==='name'?1:-1);}tick();}
 function agKey(g,k){const b=g.buffers||{};return ({id:g.id,name:(g.name||'').toLowerCase(),cr:b.credits||0,parts:g.loose_parts||0,veh:g.vehicles||0,kd:g.kills||0,alt:g.in_space?1e6:(g.altitude||0)})[k];}
 let codexQ='';   // Codex search filter (items / ingredients / properties / inventor)
-async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;
+async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;pageURL();
  const d=await j('/agent/'+id);if(!d){$('profile').removeAttribute('data-i18n');$('profile').innerHTML=`<span class=rej>${t('ph_agent_not_found')}</span>`;return;}
  const a=d.agent,at=a.attrs||{},b=a.buffers||{};
  const inv=Object.entries(b).filter(([k,v])=>v).map(([k,v])=>esc(k)+' '+v).join(', ')||t('lbl_empty');
@@ -1213,6 +1215,7 @@ void main(){
  })();
  S3={};
 }
+try{const _qa=new URLSearchParams(location.search).get('agent');if(_qa)loadProfile(_qa);}catch(e){}   // ?agent=… deep-link opens that profile on load
 tick(); setInterval(tick, 2000);
 if(active=='World')setTimeout(initWorld3D,150);
 </script></body></html>
