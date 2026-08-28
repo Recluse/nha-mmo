@@ -60,6 +60,26 @@ def deal(obs, depot):
     prices = (depot or {}).get("prices", {}) or {}
     held = [(r, int(inv.get(r, 0))) for r in SELLABLE if int(inv.get(r, 0)) >= 3]
     rr = random.random()
+    board = obs.get("contracts") or []
+    # A) opportunistic: fulfill SOMEONE ELSE'S open contract if I already hold the goods and the credit reward beats
+    #    liquidating them at the depot — a wheeler-dealer never turns down a paying job.
+    for c in board:
+        if c.get("mine"):
+            continue
+        want = c.get("want") or {}
+        rc = int((c.get("reward") or {}).get("credits", 0))
+        if want and rc > 0 and all(int(inv.get(r, 0)) >= int(q) for r, q in want.items()):
+            liq = sum(int(q) * int((prices.get(r, {}) or {}).get("sell", 1) or 1) for r, q in want.items())
+            if rc > liq:                                   # paying more than I'd get dumping the goods → take the spread
+                return "fulfill", {"contract_id": c["id"]}
+    # B) occasionally SEED the board with a supply job — pay credits for raws so the contract market has real demand
+    #    (keeps at most 2 of my own open; escrows a reward but keeps a 20-credit reserve; auto-refunds if unclaimed).
+    if cr >= 60 and sum(1 for c in board if c.get("mine")) < 2 and rr < 0.15:
+        want_res = random.choice(("iron", "copper", "metal", "carbon", "crystal", "coal", "wood", "silicon"))
+        n = random.randint(5, 15)
+        reward = min(cr - 20, n * random.randint(2, 4))
+        if reward >= n:                                    # only worth posting if the pay is decent per unit
+            return "contract", {"reward": {"credits": reward}, "want": {want_res: n}, "deadline_ticks": 600}
     # 1) cash out a stockpile to the depot — guaranteed income (the goods were mined for free)
     if held and (cr < 60 or max(q for _, q in held) >= 12 or rr < 0.42):
         r, q = max(held, key=lambda x: x[1] * (prices.get(x[0], {}).get("sell", 1) or 1))
