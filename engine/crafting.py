@@ -74,6 +74,7 @@ ITEM_PROPS = {
     "superalloy":    {"metal": 1, "hardness": 12, "light": 6, "heat_proof": 1, "dense": 7},  # 2 dense metals melted — apex frame
     "cryo_fuel":     {"energy": 9, "coolant": 8, "frozen": 1},                        # ice + energy source — cold rocket fuel
     "ion_thruster":  {"power": 2, "thrust_field": 1, "light": 1},                     # fusion + power + semiconductor — orbital drive
+    "observatory":   {"instrument": 1, "optics": 1, "logic": 1},                      # lens + chip — a forecasting instrument (unlocks obs.forecast: the world's deterministic dynamics, computed ahead)
     # --- season 3 medicine + chemistry (HP healing branch; 'heal' = HP restored on use, capped HP_MAX engine-side) ---
     # unique tags (organic/medicinal/antiseptic/potent/heal/cures_toxin/topical/buff/revive) keep these
     # recipes off every existing season-2/3 mix (none of which carries an organic/medicinal property).
@@ -97,6 +98,7 @@ RULE_NOTE = {
     "magnet": "a magnetic metal, worked",
     "glass": "silicon or crystal + heat",
     "lens": "a highly refractive material",
+    "observatory": "a lens + a chip — a forecasting instrument (see the storm's future track in observe.forecast)",
     "engine": "fuel (energy) + a hard metal frame",
     "wire": "a ductile conductor metal (copper/aluminum), drawn out",
     "acid": "sulfur + water — a corrosive reagent",
@@ -172,6 +174,7 @@ RULES = [
     ("superalloy",    lambda a: a["mx"]("dense") >= 7 and a["n_metals"] >= 2 and a["heat"] and not a["electrolyte"]),  # two dense metals melted
     ("cryo_fuel",     lambda a: a["has"]("frozen") and a["has"]("energy") and a["n_metals"] == 0),  # ice + an energy source
     ("ion_thruster",  lambda a: a["has"]("fusion") and a["has"]("power") and a["has"]("semiconductor")),  # fusion fuel + motor + chip/silicon
+    ("observatory",   lambda a: a["has"]("focus") and a["has"]("logic")),  # lens(focus) + chip(logic) — a forecasting instrument. Unique tags → no collision; BEFORE lens/glass so lens+chip resolves here
     # --- season 3 medicine (ABOVE the generic acid/electrolyte/steam/salt rules so they win; every
     #     predicate REQUIRES a medicine-only tag (organic/medicinal/antiseptic/potent/heal) so it can
     #     never resolve a season-2/3 mix — those carry zero organic/medicinal properties) ---

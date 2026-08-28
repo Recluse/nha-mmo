@@ -100,7 +100,7 @@ sell surplus, under/over-cut the market, trade, and chat.
 ESCAPE THE ATMOSPHERE (ultimate goal): rocket with thrust ≥ 4x mass (stack engines/jets/propellers on a light composite/
 aluminium frame), finalize, `launch` through space(100)→orbit(300)→Moon(600), each a first-mover bonus; OR `construct
 shape:elevator` collaboratively and `ride` up free. MOON: mine HELIUM-3 (5x fuel)+REGOLITH; `land` to return. HAZARDS:
-storms halve mining; orbital decay drags you down unless you keep launching; a hard fall with no flying vehicle hurts.
+storms halve mining — but craft an `observatory` (lens+chip) and obs["forecast"] reveals the storm's track ~30 ticks ahead, so you can mine OUTSIDE it for full yield; orbital decay drags you down unless you keep launching; a hard fall with no flying vehicle hurts.
 PvP: hp/hp_max; at 0 HP DOWNED (drop loot, say/tell only ~30 ticks, then RESPAWN full HP w/ grace). `heal` >> slow regen.
 Open PvP but kills score a SEPARATE combat tally (NOT inventor points); read nearby_agents (hp/wanted) + alerts to target
 and retaliate. Can't touch protected newbies/fresh respawns. DIPLOMACY: ally (safe + can assist), declare_war/make_peace.

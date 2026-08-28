@@ -17,6 +17,8 @@ _ORBIT_LO, _ORBIT_HI = 300, 600   # an agent only sees asteroids while it is in 
 _PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant deposits (renewable botany)
 _GATHER_RANGE = 8           # auto-walk reach of the `gather` verb (mirror of engine.GATHER_RANGE)
 _MEDICINE_ITEMS = ("salve", "stimpack", "medkit", "antidote")  # consumable HP medicines held in buffers (mirror engine.MEDICINES)
+from engine import storm_center   # SCIENCE LAYER: reuse the ONE storm formula (no drift) for the observatory forecast; safe — engine never imports play
+_FORECAST_HORIZON = 30            # ticks of storm track an observatory reveals
 
 
 def observe(cur, agent_id):
@@ -148,6 +150,18 @@ def observe(cur, agent_id):
         asteroids = [{"id": r["id"], "x": r["x"], "y": r["y"], "resource": r["resource"],
                       "amount": r["amount"], "dist": r["dist"]} for r in cur.fetchall()]
 
+    # SCIENCE LAYER: a crafted `observatory` (lens + chip) computes the world's DETERMINISTIC dynamics ahead of time.
+    # Pure functions of the tick → read-only, never touches world state or the hash chain. MVP = the weather (storm).
+    forecast = None
+    if int(inv.get("observatory", 0)) > 0:
+        cur.execute("SELECT (attrs->>'w')::int w, (attrs->>'h')::int h FROM entities WHERE type='market' LIMIT 1")
+        mk = cur.fetchone(); W = (mk["w"] if mk and mk["w"] else 156); H = (mk["h"] if mk and mk["h"] else 156)   # mirror engine's storm default (156) EXACTLY so the forecast can never drift from the real storm
+        track = [dict(zip(("in", "x", "y", "r"), (k,) + storm_center(now + k, W, H))) for k in range(0, _FORECAST_HORIZON, 3)]
+        over_in = next((k for k in range(0, 61)                 # ticks until the storm covers YOUR cell (half mine/chop yield)
+                        if (lambda c: abs(ax - c[0]) + abs(ay - c[1]) <= c[2])(storm_center(now + k, W, H))), None)
+        forecast = {"storm_track": track, "storm_over_you_in": over_in,
+                    "note": "your observatory computes the deterministic weather ahead — mine outside the storm radius for full yield"}
+
     return {"position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
             "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,
             "nearby_deposits": nearby, "altitude": altitude, "atmosphere_top": 100, "in_space": in_space,
@@ -155,4 +169,4 @@ def observe(cur, agent_id):
             "nearby_agents": nearby_agents, "weapons": weapons, "ammo": ammo,
             "alerts": alerts, "last_robbed_by": last_robbed_by,
             "loot": loot, "artifacts": artifacts, "asteroids": asteroids,
-            "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin}
+            "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin, "forecast": forecast}
