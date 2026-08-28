@@ -343,7 +343,7 @@ const I18N={
   ph_log_empty:"-",
   ph_no_inventions:"no inventions yet — be the first!", ph_nothing_invented:"nothing invented yet",
   col_pts:"&#127942; pts",
-  ph_no_milestones:"no milestones yet",
+  ph_no_milestones:"no milestones yet", tl_ticks_later:"ticks later",
   ph_no_alliances:"no alliances yet", ph_no_wars:"no wars &mdash; uneasy peace", ph_no_offers:"no pending offers", lbl_pending:"pending",
   ph_nothing_yet:"nothing yet",
   lbl_online_of:"online", lbl_total:"total", ph_no_agents_short:"no agents", lbl_space_tag:"space",
@@ -430,7 +430,7 @@ const I18N={
   ph_log_empty:"-",
   ph_no_inventions:"ще немає винаходів — будьте першим!", ph_nothing_invented:"ще нічого не винайдено",
   col_pts:"&#127942; очки",
-  ph_no_milestones:"поки що немає віх",
+  ph_no_milestones:"поки що немає віх", tl_ticks_later:"тиків потому",
   ph_no_alliances:"ще немає союзів", ph_no_wars:"війн немає &mdash; крихкий мир", ph_no_offers:"немає пропозицій на розгляді", lbl_pending:"на розгляді",
   ph_nothing_yet:"поки що нічого",
   lbl_online_of:"онлайн", lbl_total:"усього", ph_no_agents_short:"немає агентів", lbl_space_tag:"космос",
@@ -517,7 +517,7 @@ const I18N={
   ph_log_empty:"-",
   ph_no_inventions:"пока нет изобретений — будьте первым!", ph_nothing_invented:"пока ничего не изобретено",
   col_pts:"&#127942; очки",
-  ph_no_milestones:"пока нет вех",
+  ph_no_milestones:"пока нет вех", tl_ticks_later:"тиков спустя",
   ph_no_alliances:"пока нет союзов", ph_no_wars:"войн нет &mdash; хрупкий мир", ph_no_offers:"нет предложений на рассмотрении", lbl_pending:"на рассмотрении",
   ph_nothing_yet:"пока ничего",
   lbl_online_of:"онлайн", lbl_total:"всего", ph_no_agents_short:"нет агентов", lbl_space_tag:"космос",
@@ -596,7 +596,42 @@ $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
 let logCat='all';const LOGCATS={all:null,acts:['act'],combat:['damage','destroyed','theft'],trade:['market'],guild:['invent','reject'],space:['escape'],geese:['honk']};   // Log tab category filter
 let logBefore=0;   // Log history scrub: 0 = live/recent, >0 = show events at/before this tick
-function drawLogChips(){const f=$('logfilter');if(!f)return;f.innerHTML=Object.keys(LOGCATS).map(c=>`<span onclick="logCat='${c}';drawLogChips();tick()" style="cursor:pointer;padding:2px 9px;border-radius:10px;border:1px solid #30363d;${c==logCat?'background:#1f6feb;color:#fff;border-color:#1f6feb':'color:#8b949e'}">${c}</span>`).join('');}
+let logGroup=true; // Log episode grouping: collapse consecutive same-agent same-verb runs into one beat
+const chip=(on,label,handler,title)=>`<span onclick="${handler}" ${title?`title="${title}"`:''} style="cursor:pointer;padding:2px 9px;border-radius:10px;border:1px solid ${on?'#1f6feb':'#30363d'};${on?'background:#1f6feb;color:#fff':'color:#8b949e'}">${label}</span>`;
+function drawLogChips(){const f=$('logfilter');if(!f)return;
+  const cats=Object.keys(LOGCATS).map(c=>chip(c==logCat,c,`logCat='${c}';drawLogChips();tick()`)).join('');
+  const grp=chip(logGroup,'&#128218; episodes',`logGroup=!logGroup;drawLogChips();tick()`,'collapse a run of the same action by the same agent into one episode line');
+  f.innerHTML=cats+`<span style="color:#30363d;padding:0 2px">|</span>`+grp;}
+// --- Log episode grouping (client-side, presentational only) ---
+function logKey(e){const dt=e.data||{};   // grouping key, or null for notable one-off kinds that must never collapse
+  if(e.kind=='act')return e.entity+'|act|'+(dt.verb||'');
+  if(e.kind=='honk')return e.entity+'|honk';
+  return null;}   // invent/escape/reject/market stay as their own beats
+function logTxt(e,tn){const dt=e.data||{};let txt;   // one event -> {who, txt} (verbatim from the old inline render)
+  if(e.kind=='act')txt=`<b>${esc(String(dt.verb||''))}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
+  else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
+  else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
+  else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
+  else if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
+  else if(e.kind=='honk'){const g=Math.max(1,Math.min(dt.n||1,20));txt=`${'&#129727;'.repeat(g)} <b>${esc(dt.text||'HONK')}</b>${dt.flock?` <span class=sub>(flock ${dt.flock})</span>`:''}`;}
+  else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
+  const who=e.kind=='honk'?`<span class=pill>GUSE</span>`:(e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:''));
+  return {who,txt};}
+function logLine1(e,tn){const {who,txt}=logTxt(e,tn);return `<div><span class=sub>t${e.tick}</span> ${who}${txt}</div>`;}
+function logEpisode(run,tn){const e=run[0],{who,txt}=logTxt(e,tn),dt=e.data||{};   // run is newest-first; run[0] is the freshest (representative) event
+  const a=run[run.length-1].tick,b=run[0].tick,span=(a==b)?('t'+b):('t'+a+'–'+b);
+  const rej=run.filter(r=>{const s=(r.data||{}).status;return s&&s!='applied';}).length;
+  const badge=`<span class=pill title="${run.length} events, ${span}">&times;${run.length}</span>`;
+  const rejn=rej?` <span class=rej>(${rej} rej)</span>`:'';
+  return `<div><span class=sub>${span}</span> ${who}${badge} ${txt}${rejn}</div>`;}
+function renderLog(rows,tn){const out=[];let i=0;
+  while(i<rows.length){const e=rows[i],k=logKey(e);
+    if(k==null){out.push(logLine1(e,tn));i++;continue;}
+    let j2=i+1;while(j2<rows.length&&logKey(rows[j2])===k)j2++;
+    const run=rows.slice(i,j2);
+    out.push(run.length>1?logEpisode(run,tn):logLine1(e,tn));
+    i=j2;}
+  return out.join('')||'<div class=sub>-</div>';}
 let agSort={k:'cr',dir:-1};   // Agents table sort (click a column header)
 function sortAg(k){if(agSort.k===k)agSort.dir*=-1;else{agSort.k=k;agSort.dir=(k==='name'?1:-1);}tick();}
 function agKey(g,k){const b=g.buffers||{};return ({id:g.id,name:(g.name||'').toLowerCase(),cr:b.credits||0,parts:g.loose_parts||0,veh:g.vehicles||0,kd:g.kills||0,alt:g.in_space?1e6:(g.altitude||0)})[k];}
@@ -697,16 +732,8 @@ async function tick(){
  if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;}
  if(need('/log')){const lg=await j('/log?limit=120'+(logBefore>0?'&before='+logBefore:''));drawLogChips();
  if($('loglive'))$('loglive').innerHTML=logBefore>0?`<span onclick="logBefore=0;if($('logjump'))$('logjump').value='';tick()" style="cursor:pointer;color:#58a6ff">&#9209;&#65038; back to live</span>`:'';
- if(lg)$('log').innerHTML=(LOGCATS[logCat]?lg.log.filter(e=>LOGCATS[logCat].includes(e.kind)):lg.log).map(e=>{const dt=e.data||{};let txt;
-  if(e.kind=='act')txt=`<b>${esc(String(dt.verb||''))}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
-  else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
-  else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
-  else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
-  else if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
-  else if(e.kind=='honk'){const g=Math.max(1,Math.min(dt.n||1,20));txt=`${'&#129727;'.repeat(g)} <b>${esc(dt.text||'HONK')}</b>${dt.flock?` <span class=sub>(flock ${dt.flock})</span>`:''}`;}
-  else txt=`<span class=sub>${e.kind}</span> ${esc(JSON.stringify(dt))}`;
-  const who=e.kind=='honk'?`<span class=pill>GUSE</span>`:(e.name?`<span class=pill>${esc(e.name)}</span>`:(e.entity?`<span class=pill>#${e.entity}</span>`:''));
-  return `<div><span class=sub>t${e.tick}</span> ${who}${txt}</div>`;}).join('')||'<div class=sub>-</div>';}
+ if(lg){const fr=LOGCATS[logCat]?lg.log.filter(e=>LOGCATS[logCat].includes(e.kind)):lg.log;
+  $('log').innerHTML=logGroup?renderLog(fr,tn):(fr.map(e=>logLine1(e,tn)).join('')||'<div class=sub>-</div>');}}
  if(need('/inventors')){const iv=await j('/inventors');
  if(iv){
   $('inv_board').innerHTML=iv.leaderboard.length?(`<table><tr><th>#<th>${t('col_model')}<th>${t('col_pts')}</tr>`+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${esc(g.name||'')}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):`<div class=sub>${t('ph_no_inventions')}</div>`;
@@ -755,7 +782,10 @@ async function tick(){
  }}
  if(need('/timeline')){const tl=await j('/timeline');
  if(tl){
-  $('timeline').innerHTML=[...tl.timeline].reverse().map(e=>`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}}   // /timeline returns newest-first (id DESC); reverse for the labelled oldest-first chronological reading
+  const TL_ERA_GAP=4000;let tlp=null;   // insert an "era" divider when consecutive milestones are far apart in ticks, chunking the history into episodes
+  $('timeline').innerHTML=[...tl.timeline].reverse().map(e=>{
+   const sep=(tlp!=null&&e.tick-tlp>TL_ERA_GAP)?`<div class=sub style="text-align:center;opacity:.55;margin:7px 0 4px;border-top:1px dashed #30363d;padding-top:5px">&middot;&middot;&middot; ${(e.tick-tlp).toLocaleString()} ${t('tl_ticks_later')} &middot;&middot;&middot;</div>`:'';tlp=e.tick;
+   return sep+`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`;}).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}}   // /timeline returns newest-first (id DESC); reverse for the labelled oldest-first chronological reading
  if(need('/rules')){const rl=await j('/rules');
  if(rl){const cq=codexQ,cmatch=s=>!cq||String(s).toLowerCase().includes(cq);
   $('codex_rec').innerHTML=`<table><tr><th>${t('col_item')}<th>${t('col_recipe_phys')}<th>${t('col_inventor')}</tr>`+rl.recipes.filter(x=>cmatch(x.item+' '+(x.needs||'')+' '+(x.discovered?x.discovered.name+' '+(x.discovered.discoverer||''):''))).map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:`<span class=sub>${t('lbl_undiscovered')}</span>`}</tr>`).join('')+'</table>';
