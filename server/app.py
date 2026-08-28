@@ -107,6 +107,8 @@ class GuildPendingOut(ApiModel):
     pending: List[Any] = []
 class ContractsOut(ApiModel):
     open: List[Any] = []; fulfilled: List[Any] = []; bounties: List[Any] = []
+class UpdatesOut(ApiModel):
+    updates: List[Any] = []
 class RecordsOut(ApiModel):
     """The records board — space firsts, fastest aircraft, top inventor/builder, richest, wonders. Free-form; keys vary."""
 class StationOut(ApiModel):
@@ -1275,6 +1277,48 @@ def rules():
             "recipes": [{"item": k, "needs": crafting.RULE_NOTE.get(k, ""),
                          "props": (crafting.ITEM_PROPS.get(k) or crafting.PROPS.get(k, {})), "discovered": disc.get(k)}
                         for k, _ in crafting.RULES]}
+
+
+class AnnounceIn(BaseModel):
+    title: str                                            # short headline of the new rule/mechanic
+    detail: str = ""                                      # how to use it (agents read this)
+    verb: str = ""                                        # optional: the new verb name, if any
+
+
+def _updates():
+    """The rule-update changelog (newest first) — new mechanics/verbs pushed via POST /announce."""
+    with _db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, tick, title, detail, verb FROM rule_updates ORDER BY id DESC LIMIT 25")
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"updates": rows}
+
+
+@app.get("/updates", response_model=UpdatesOut, tags=["meta"])
+def updates_ep():
+    return _cached("updates", _updates)
+
+
+@app.post("/announce", tags=["meta"])
+def announce(a: AnnounceIn, x_guild_token: str = Header("")):
+    """Operator/CI push of a RULE UPDATE → reaches agents in observe.updates and spectators at /updates.
+    Auth: reuses GUILD_TOKEN as the operator secret (X-Guild-Token header), same gate as /guild/verdict."""
+    if GUILD_TOKEN:
+        if not hmac.compare_digest(x_guild_token or "", GUILD_TOKEN):
+            raise HTTPException(403, "bad or missing operator token")
+    else:
+        print("WARN: /announce is UNAUTHENTICATED — set GUILD_TOKEN on the server", flush=True)
+    title = str(a.title or "").strip()[:120]
+    if not title:
+        raise HTTPException(400, "title required")
+    detail = str(a.detail or "").strip()[:600]
+    verb = (str(a.verb).strip()[:40] or None) if a.verb else None
+    with _db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT tick FROM world WHERE id=1"); tr = cur.fetchone(); t = tr[0] if tr else 0
+        cur.execute("INSERT INTO rule_updates(tick,title,detail,verb) VALUES(%s,%s,%s,%s) RETURNING id", (t, title, detail, verb))
+        rid = cur.fetchone()[0]; conn.commit()
+    return {"ok": True, "id": rid, "tick": t}
 
 
 def _inventors():

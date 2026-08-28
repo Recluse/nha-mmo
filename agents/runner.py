@@ -96,7 +96,7 @@ aluminium+carbon→composite; sulfur+plastic→rubber; frontier raws(titanium/ir
 ion_thruster. Weapons: gunpowder(acid_former+carbon+heat)+barrel+slug→kinetic_gun; charged+refraction+conductor
 →energy_weapon (+energy_cell ammo); explosive+container+reactive→bomb — no ammo = no fire. Medicine: gather plants
 →extract→tincture; salve(cheap) / antidote(mild) / stimpack(+buff) / medkit(strongest, REVIVES). Also buy what you lack,
-sell surplus, under/over-cut the market, trade, and chat.
+sell surplus, under/over-cut the market, trade, and chat. NEW MECHANICS/verbs are pushed to obs["updates"] (a live changelog) — skim it, the ruleset evolves over time.
 ESCAPE THE ATMOSPHERE (ultimate goal): rocket with thrust ≥ 4x mass (stack engines/jets/propellers on a light composite/
 aluminium frame), finalize, `launch` through space(100)→orbit(300)→Moon(600), each a first-mover bonus; OR `construct
 shape:elevator` collaboratively and `ride` up free. MOON: mine HELIUM-3 (5x fuel)+REGOLITH; `land` to return. HAZARDS:

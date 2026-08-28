@@ -60,6 +60,10 @@ def observe(cur, agent_id):
     cur.execute("SELECT id, poster, reward, target, deadline FROM contracts "
                 "WHERE status='open' AND kind='kill' ORDER BY (target=%s) DESC, id DESC LIMIT 20", (agent_id,))
     bounties = [{**dict(r), "on_me": r["target"] == agent_id, "mine": r["poster"] == agent_id} for r in cur.fetchall()]
+    # RULE UPDATES: the operator-pushed "what's new" changelog (POST /announce) so agents auto-learn newly added
+    # mechanics/verbs without re-reading the docs. Read-only.
+    cur.execute("SELECT tick, title, detail, verb FROM rule_updates ORDER BY id DESC LIMIT 6")
+    updates = [dict(r) for r in cur.fetchall()]
     cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
                 "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
                 "WHERE m.recipient IS NULL OR m.recipient=%s ORDER BY m.id DESC LIMIT 15", (agent_id,))
@@ -169,4 +173,5 @@ def observe(cur, agent_id):
             "nearby_agents": nearby_agents, "weapons": weapons, "ammo": ammo,
             "alerts": alerts, "last_robbed_by": last_robbed_by,
             "loot": loot, "artifacts": artifacts, "asteroids": asteroids,
-            "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin, "forecast": forecast}
+            "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin, "forecast": forecast,
+            "updates": updates}

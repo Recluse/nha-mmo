@@ -181,6 +181,8 @@ CREATE TABLE IF NOT EXISTS contracts (id bigserial PRIMARY KEY, poster bigint NO
   status text NOT NULL DEFAULT 'open', fulfiller bigint, created int, deadline int);
 CREATE INDEX IF NOT EXISTS contracts_open_idx ON contracts(status);   -- open-board scan in observe() + expire_contracts
 ALTER TABLE contracts ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'supply';   -- migrate a pre-bounty contracts table (CREATE above is a no-op once it exists); also applied out-of-band on the live world
+CREATE TABLE IF NOT EXISTS rule_updates (id bigserial PRIMARY KEY, tick int NOT NULL DEFAULT 0,
+  title text NOT NULL, detail text NOT NULL DEFAULT '', verb text);   -- operator-pushed "what's new" changelog: reaches agents via observe.updates + spectators via /updates
 CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, tick int NOT NULL,
   sender bigint NOT NULL, recipient bigint, text text NOT NULL);
 CREATE TABLE IF NOT EXISTS discoveries (rule_key text PRIMARY KEY, name text NOT NULL,
