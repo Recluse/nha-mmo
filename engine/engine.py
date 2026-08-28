@@ -533,8 +533,15 @@ def apply_intent(it, ents, cur, t, events):
             fuel = next((f for f in ("oil", "coal", "wood", "carbon") if get(a, f) >= 1), None)
             if fuel:
                 addb(a, fuel, -1); rng = min(10, 3 + vmax // 6); drove = f" (drove on {fuel}, range {rng})"
-        dx = max(-rng, min(rng, _ai(args, "dx", 0)))
-        dy = max(-rng, min(rng, _ai(args, "dy", 0)))
+        # accept EITHER relative {dx,dy} OR an absolute target {x,y} (step up to `rng` toward it — repeat to travel).
+        # {x,y} used to be silently ignored (no-op); agents kept sending it, so honor it as "walk toward this cell".
+        if "dx" in args or "dy" in args:
+            dx, dy = _ai(args, "dx", 0), _ai(args, "dy", 0)
+        else:
+            dx = _ai(args, "x", a["x"]) - a["x"]
+            dy = _ai(args, "y", a["y"]) - a["y"]
+        dx = max(-rng, min(rng, dx))
+        dy = max(-rng, min(rng, dy))
         a["x"] = max(0, min(w - 1, a["x"] + dx))
         a["y"] = max(0, min(h - 1, a["y"] + dy))
         return "applied", f"moved to ({a['x']},{a['y']})" + drove

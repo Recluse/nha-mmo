@@ -572,6 +572,34 @@ def depot():
     return _cached("depot", _depot)
 
 
+class DepositsOut(ApiModel):
+    """Nearest live deposits to a point — so an agent can NAVIGATE to materials, not roam blind."""
+    deposits: List[Any] = []
+
+
+@app.get("/deposits", response_model=DepositsOut, tags=["world"])
+def deposits_ep(x: int = Query(..., description="reference x (usually your position)"),
+                y: int = Query(..., description="reference y"),
+                resource: str = Query("", description="filter to one resource, e.g. aluminum/silicon/titanium; omit for any"),
+                limit: int = Query(8, ge=1, le=50)):
+    """The nearest live (amount>0) deposits to (x,y), optionally of one `resource` — so an agent can find materials
+    its local `observe.nearby_deposits` (a small local window) doesn't show, then `move{x,y}` straight to one.
+    Each row: {id, resource, amount, x, y, dist}. Read-only, cached per tick."""
+    resource = re.sub(r"[^a-z_]", "", (resource or "").lower())[:24]
+    def build():
+        with _db() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            base = ("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
+                    "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='deposit' AND (attrs->>'amount')::int > 0 ")
+            if resource:
+                cur.execute(base + "AND attrs->>'resource'=%s ORDER BY dist LIMIT %s", (x, y, resource, limit))
+            else:
+                cur.execute(base + "ORDER BY dist LIMIT %s", (x, y, limit))
+            rows = [dict(r) for r in cur.fetchall()]
+        return {"deposits": rows}
+    return _cached(("deposits", resource, x, y, limit), build)
+
+
 def _map():
     """The generated biome map with deposits + artifacts overlaid (deterministic from the world seed)."""
     biome_grid = _grid(block=False)                      # don't queue behind the ~12s biome build → return "loading"
