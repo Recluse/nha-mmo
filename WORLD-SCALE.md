@@ -101,10 +101,16 @@ proven").
    type instead of the whole world. Validated behaviour-preserving via the harness (fp `9922767f180849f0`
    unchanged). Remaining full-world walkers to convert next: `behave`, `drift_asteroids`, `move_geese`,
    `tick_bombs`, `decay_loot`.
-3. **P0** (incremental digest) — biggest win; needs the harness (now have it) + a documented hash-format version
-   bump. This is where the real per-tick speedup lives (the 3× full-world `json.dumps`).
+3. **✅ DONE — P0 (unified cached canon).** `_entity_canon(e)` is computed ONCE per entity per tick into
+   `_CANON` (persisted across ticks, reset from the authoritative rows on every reload) and drives BOTH the
+   dirty diff AND `state_hash` — replacing the ~5 full-world `json.dumps`/entity (2 snapshot + 2 diff + 1 hash)
+   with 1. The hash is byte-identical to the old form, so **no version bump was needed** (harness fingerprint
+   `9922767f180849f0` unchanged, 37 tests pass). ~2.6× fewer `json.dumps`; serialization roughly halves. Next
+   step here for even more headroom is TRUE incremental (only re-serialize entities marked dirty on mutation →
+   `O(changed)` instead of `O(N)`), which does change the hash cadence and wants explicit mutation tracking.
 4. **P2** (lazy deposits) — unlocks true density; then the forest prune is no longer necessary and the map can
-   be as dense as design wants.
+   be as dense as design wants. This is now the highest-value remaining lever (the deposit bulk still gets
+   serialized once/tick for the hash + walked by grow_trees/respawn_deposits).
 5. **P3/P4** as scale demands.
 
 **Guardrail:** every step must preserve replay-safety and the `tick_hashes` chain. A change to the hash
