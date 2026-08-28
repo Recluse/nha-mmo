@@ -114,7 +114,7 @@ KARMA_DIV = 4
 COOP_THRESH = 6
 _NF_W_MARKET = 2
 # --- geese (shoreline hazard, increment) ---
-GOOSE_FLOCKS = 3                 # one-time deterministic spawn: this many gaggles anchored at water deposits
+GOOSE_FLOCKS = 7                 # one-time deterministic spawn: this many gaggles, SPREAD across the map (farthest-point) at water deposits
 GOOSE_PER_FLOCK_MIN = 4         # each gaggle holds MIN..MAX geese (count derived per-flock from _h, no RNG)
 GOOSE_PER_FLOCK_MAX = 6
 GOOSE_WATER_RES = ("water", "brine", "salt", "ice", "algae")   # water-ish deposits geese anchor to (sea/coast)
@@ -1934,14 +1934,21 @@ def move_geese(ents, cur, t, events):
                          and e["attrs"].get("resource") in GOOSE_WATER_RES), key=lambda e: e["id"])
         if waters:
             n = len(waters)
-            picked, seen = [], set()
-            for k in range(GOOSE_FLOCKS):                  # deterministic distinct anchors (probe forward on collision)
-                idx = _h("goose", "anchor", k) % n
-                for _ in range(n):
-                    if idx not in seen:
-                        break
-                    idx = (idx + 1) % n
-                seen.add(idx); picked.append(waters[idx])
+            # SPREAD the gaggles across the WHOLE map (deterministic farthest-point sampling on water deposits) so
+            # they roam in scattered groups, not one clump. First anchor is _h-picked; each next is the water deposit
+            # whose nearest already-chosen anchor is FARTHEST (waters is id-sorted + strict '>' → ties break to lowest
+            # id → replay-stable). No RNG. O(flocks·n), one-time on spawn.
+            picked = [waters[_h("goose", "anchor0") % n]]
+            chosen = {picked[0]["id"]}
+            while len(picked) < min(GOOSE_FLOCKS, n):
+                best, bestd = None, -1
+                for e in waters:
+                    if e["id"] in chosen:
+                        continue
+                    d = min(abs(e["x"] - p["x"]) + abs(e["y"] - p["y"]) for p in picked)
+                    if d > bestd:
+                        bestd, best = d, e
+                picked.append(best); chosen.add(best["id"])
             for anchor in picked:
                 fid = anchor["id"]; ax, ay = int(anchor["x"]), int(anchor["y"])
                 cnt = GOOSE_PER_FLOCK_MIN + _h("goose", "cnt", fid) % (GOOSE_PER_FLOCK_MAX - GOOSE_PER_FLOCK_MIN + 1)
