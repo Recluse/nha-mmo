@@ -20,19 +20,23 @@ _ORBIT_LO, _ORBIT_HI = 300, 600   # an agent only sees asteroids while it is in 
 _PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant deposits (renewable botany)
 _GATHER_RANGE = 8           # auto-walk reach of the `gather` verb (mirror of engine.GATHER_RANGE)
 _MEDICINE_ITEMS = ("salve", "stimpack", "medkit", "antidote")  # consumable HP medicines held in buffers (mirror engine.MEDICINES)
-from engine import storm_center   # SCIENCE LAYER: reuse the ONE storm formula (no drift) for the observatory forecast; safe — engine never imports play
+from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula (no drift) for the observatory forecast; safe — engine never imports play
+                    EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL)
 _FORECAST_HORIZON = 30            # ticks of storm track an observatory reveals
 
 
 def observe(cur, agent_id):
     """The agent's curated view of the world."""
-    cur.execute("SELECT tick FROM world WHERE id=1")
-    wr = cur.fetchone(); now = (wr["tick"] if wr else 0) or 0
+    cur.execute("SELECT tick, to_jsonb(w)->>'era' era FROM world w WHERE id=1")
+    wr = cur.fetchone(); now = (wr["tick"] if wr else 0) or 0; era = (wr["era"] if wr else None) or "architect"
     cur.execute("SELECT buffers, x, y, (attrs->>'inventor_points')::int pts, "
                 "(attrs->>'altitude')::int alt, (attrs->>'in_space')::boolean space, "
                 "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, "
                 "(attrs->>'downed_until')::int downed, attrs->>'last_robbed_by' robbed_by, "
-                "(attrs->>'buff_until')::int buff_until, (attrs->>'toxin_until')::int toxin_until "
+                "(attrs->>'buff_until')::int buff_until, (attrs->>'toxin_until')::int toxin_until, "
+                "attrs->>'transit_to' transit_to, (attrs->>'eta_tick')::int eta_tick, "
+                "attrs->>'at_body' at_body, attrs->>'at_body_orbit' at_body_orbit, "
+                "COALESCE((attrs->>'adrift')::boolean,false) adrift, attrs->'body_awarded' body_awarded "
                 "FROM entities WHERE id=%s", (agent_id,))
     me = cur.fetchone(); inv = me["buffers"]; ax, ay = me["x"], me["y"]; ipts = me["pts"] or 0
     altitude = me["alt"] or 0; in_space = bool(me["space"])
@@ -193,6 +197,26 @@ def observe(cur, agent_id):
         forecast = {"storm_track": track, "storm_over_you_in": over_in,
                     "note": "your observatory computes the deterministic weather ahead — mine outside the storm radius for full yield"}
 
+    # EXPANSION ERA — interplanetary reach surface. Dormant (null) outside the space/expansion era, exactly like the
+    # station board is null off-season. Lets an agent see where it is (in transit / at a body), which launch windows
+    # are open right now, and what each destination costs — so depart{dest}/land_body are actionable from /observe.
+    expansion = None
+    if era in ("space", "expansion"):
+        transit_to = me["transit_to"]; at_body = me["at_body"]; at_orbit = me["at_body_orbit"]
+        windows = {b: {"open": window_open(b, now), "dv_need": DV_NEED[b], "transit_ticks": TRANSIT_TICKS[b],
+                       "opens_in": (0 if window_open(b, now) else SYNODIC[b] - (now % SYNODIC[b]))} for b in EXPANSION_BODIES}
+        loc = ("transit" if transit_to else ("on_" + at_body if at_body else ("orbit_" + at_orbit if at_orbit else "earth")))
+        expansion = {
+            "era": era, "location": loc,
+            "transit": ({"to": transit_to, "eta_tick": me["eta_tick"], "eta_in": (me["eta_tick"] or 0) - now,
+                         "adrift": me["adrift"]} if transit_to else None),
+            "at_body": at_body, "at_body_orbit": at_orbit,
+            "visited": me["body_awarded"] or [],
+            "windows": windows,
+            "return_dv": (DV_RETURN.get(at_orbit or at_body) if (at_orbit or at_body) else None),
+            "how": ("depart{dest} from Earth orbit (altitude 300-600) to a body; carry an ion_thruster ship, fuel (cryo_fuel/helium3) "
+                    "and — for Mars/Venus — a heat_shield (+acid_skin for Venus). land_body on arrival; depart{dest:'earth'} to return."),
+        }
     return {"tick": now, "position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
             "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,
             "nearby_deposits": nearby, "altitude": altitude, "atmosphere_top": 100, "in_space": in_space,
@@ -201,4 +225,5 @@ def observe(cur, agent_id):
             "alerts": alerts, "last_robbed_by": last_robbed_by,
             "loot": loot, "artifacts": artifacts, "asteroids": asteroids,
             "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin, "forecast": forecast,
-            "updates": updates, "elevators": elevators, "nearby_structures": nearby_structures, "vision": vision}
+            "updates": updates, "elevators": elevators, "nearby_structures": nearby_structures, "vision": vision,
+            "expansion": expansion}

@@ -136,6 +136,7 @@ class ObserveOut(ApiModel):
     system_notices: List[Any] = []; space_station: Optional[Any] = None
     tick: Optional[int] = None     # the world tick this observation reflects — poll GET /intent/{id} once this advances past your intent's tick
     vision: Optional[Any] = None   # fog-of-war: {radius, base, bonus:{radar,observatory}} — how far this agent sees other agents
+    expansion: Optional[Any] = None  # EXPANSION ERA: {location, transit, at_body, windows{body:{open,dv_need,transit_ticks}}, how} — null off-era. depart{dest}/land_body
 from fastapi.middleware.gzip import GZipMiddleware   # noqa: E402
 app.add_middleware(GZipMiddleware, minimum_size=1024)   # JSON read payloads compress ~5-10x; spectator polling is the bulk of traffic
 _state = {"tick": 0, "running": False, "tick_seconds": TICK_SECONDS}

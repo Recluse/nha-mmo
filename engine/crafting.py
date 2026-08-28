@@ -74,6 +74,8 @@ ITEM_PROPS = {
     "superalloy":    {"metal": 1, "hardness": 12, "light": 6, "heat_proof": 1, "dense": 7},  # 2 dense metals melted — apex frame
     "cryo_fuel":     {"energy": 9, "coolant": 8, "frozen": 1},                        # ice + energy source — cold rocket fuel
     "ion_thruster":  {"power": 2, "thrust_field": 1, "light": 1},                     # fusion + power + semiconductor — orbital drive
+    "heat_shield":   {"ablative": 1, "hardness": 9, "shaped": 1, "sheds_heat": 1},    # EXPANSION EDL — ablative re-entry shield (consumed at Mars/Venus arrival)
+    "acid_skin":     {"acid_proof": 1, "insulator": 6, "shielding": 1},               # EXPANSION — H2SO4-proof hull coat (consumed at Venus arrival)
     "observatory":   {"instrument": 1, "optics": 1, "logic": 1},                      # lens + chip — a forecasting instrument (unlocks obs.forecast: the world's deterministic dynamics, computed ahead)
     "radar":         {"instrument": 1, "sensor": 1, "detects": 1},                     # a finished magnet + chip — a sensor that WIDENS sight (observe.vision radius). No 'logic'/'focus'/'semiconductor' tag on purpose, so a radar can't stand in for a chip/lens; its 'instrument' tag is what the radar rule's `not instrument` guard reads to refuse consuming a finished instrument (observatory/radar) into another radar
     # --- season 3 medicine + chemistry (HP healing branch; 'heal' = HP restored on use, capped HP_MAX engine-side) ---
@@ -124,6 +126,8 @@ RULE_NOTE = {
     "superalloy": "two dense metals melted with heat — an apex frame material",
     "cryo_fuel": "ice (frozen) + an energy source, no metal — cold rocket fuel",
     "ion_thruster": "a fusion fuel (helium3/iridium) + a motor (power) + a semiconductor — orbital drive",
+    "heat_shield": "a superalloy (heat-proof) + a composite (shaped, hard) — an ablative re-entry shield for Mars/Venus arrival",
+    "acid_skin": "acid + rubber — an H₂SO₄-proof hull coat for the Venus cloud deck",
     "extract": "a plant (herb/lichen/fungus/algae) steeped in a solvent (water) — a base medicine",
     "tincture": "an extract fixed with salt or acid — a concentrated base medicine",
     "salve": "a medicinal plant + water, cooked with heat — a mild topical heal",
@@ -176,6 +180,10 @@ RULES = [
     ("superalloy",    lambda a: a["mx"]("dense") >= 7 and a["n_metals"] >= 2 and a["heat"] and not a["electrolyte"]),  # two dense metals melted
     ("cryo_fuel",     lambda a: a["has"]("frozen") and a["has"]("energy") and a["n_metals"] == 0),  # ice + an energy source
     ("ion_thruster",  lambda a: a["has"]("fusion") and a["has"]("power") and a["has"]("semiconductor")),  # fusion fuel + motor + chip/silicon
+    # --- EXPANSION ERA re-entry gear (unique heat_proof/grip+elastic pins keep them off every existing mix; ABOVE
+    #     composite/acid/rubber so a finished-superalloy or acid+rubber mix resolves here, not to those primitives) ---
+    ("heat_shield",   lambda a: a["has"]("heat_proof") and a["has"]("shaped") and a["mx"]("hardness") >= 8),  # superalloy(heat_proof) + composite(shaped,hard) → an ablative EDL shield (Mars/Venus entry)
+    ("acid_skin",     lambda a: a["has"]("acid_former") and a["has"]("grip") and a["has"]("elastic")),  # acid + rubber(grip/elastic) → an H2SO4-proof hull coat (Venus cloud deck)
     ("observatory",   lambda a: a["has"]("focus") and a["has"]("logic")),  # lens(focus) + chip(logic) — a forecasting instrument. Unique tags → no collision; BEFORE lens/glass so lens+chip resolves here
     # radar: a FINISHED magnet (9) / electromagnet (10) + a CHIP. Raw iron is magnetic 8 so it can't reach this
     # ({iron,chip} still smelts to a chip). The chip is pinned by BOTH `logic` AND `semiconductor`: the observatory

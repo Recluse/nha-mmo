@@ -156,6 +156,67 @@ STATION_MODULES = {                # insertion order is fixed → deterministic 
     "life":    {"label": "Life Support", "need": {"ice": 420, "crystal": 440, "silicon": 380}},
 }
 
+# ===================== EXPANSION ERA — Phase 1: interplanetary transit =====================
+# Reach PHOBOS, DEIMOS, MARS and VENUS by committing a ship to a multi-tick transfer. Everything here is
+# DORMANT unless (a) the world era is 'space'/'expansion' AND (b) an agent actively `depart`s — so it is a
+# byte-for-byte no-op under the Season-3 determinism seed (which never flips the era nor builds a ship).
+# Three non-aligned reach gates: fuel Δv (moons<Mars<Venus), transit TIME, and terminal-maneuver SPEED (TWR).
+EXPANSION_BODIES = ("deimos", "phobos", "mars", "venus")   # ordered cheapest→hardest by Δv
+DV_NEED   = {"deimos": 50, "phobos": 55, "mars": 100, "venus": 130}   # km/s×10 — arrival + egress reserve
+DV_RETURN = {"deimos": 45, "phobos": 50, "mars": 95, "venus": 130, "earth": 0}   # body→Earth (return leg)
+# R1 (critic fix): the moons ride the SAME Mars Hohmann transfer, so they must be as FAR IN TIME as Mars — not
+# cheaper on every axis. Original 78/80 Pareto-dominated Mars (cheaper fuel AND faster); ≥90 restores the
+# intended "moons = cheap-fuel / long-haul" identity and is more physically faithful.
+TRANSIT_TICKS = {"deimos": 90, "phobos": 92, "mars": 90, "venus": 40, "earth": 60}   # Venus fastest arrival
+TWR_DEPART = {"deimos": 0.5, "phobos": 0.5, "mars": 0.7, "venus": 0.9, "earth": 0.5}  # terminal-maneuver authority
+FUEL_MASS = 5                                              # each loaded fuel unit adds this to wet mass (the rocket-equation tax, no ln)
+FUEL_VE   = {"helium3": 500, "methalox": 300, "cryo_fuel": 300, "oil": 100, "coal": 100, "wood": 100, "carbon": 100}
+ENGINE_EFF = {"ion": 3, "jet": 2, "prop": 1}              # ion_thruster ship > jet-flyer > plain
+CORRECTION_EVERY = 20                                     # one course-correction burn (1 fuel) every N transit ticks
+ADRIFT_ABORT_TICKS = 60                                   # adrift this long → auto-abort (return to origin + damage)
+ADRIFT_DMG = 25
+SYNODIC = {"deimos": 780, "phobos": 780, "mars": 780, "venus": 584, "earth": 1}   # launch-window period (earth=always open on return)
+WINDOW_OPEN = 120                                         # window is open while (t % SYNODIC[dest]) < WINDOW_OPEN  (~15–20% duty)
+# Protective items HELD in inventory, consumed 1 each at ARRIVAL (moons need only landing-gear on the SHIP, checked
+# at depart, never consumed — gear is reusable). Mars needs a heat_shield (EDL); Venus a heat_shield + acid_skin.
+BODY_ITEMS = {"deimos": (), "phobos": (), "mars": ("heat_shield",), "venus": ("heat_shield", "acid_skin")}
+BODY_LABEL = {"deimos": "Deimos", "phobos": "Phobos", "mars": "Mars", "venus": "Venus", "earth": "Earth"}
+
+
+def _era_now(cur):
+    cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
+    r = cur.fetchone()
+    return (r.get("era") if r else None) or "architect"
+
+
+def window_open(dest, t):
+    """Deterministic launch window: open while the tick sits in the first WINDOW_OPEN of the synodic period."""
+    per = SYNODIC.get(dest, 1)
+    return (t % per) < WINDOW_OPEN if per > 1 else True
+
+
+def dv_capacity(a, ship, dv_need):
+    """R2 (critic fix): try EVERY fuel tier the agent holds and pick the one giving the MAX Δv (not 'first tier
+    held ≥1', which bricked a hold of 1 helium3 + 1000 cryo). Pure-integer, deterministic. Returns the best plan
+    dict {fuel, loaded, wet, dv, ve, eff, cost} or None if the agent holds no burnable fuel.
+    dv_capacity asymptotes at FUEL_VE*eff/FUEL_MASS → the rocket-equation diminishing return without a ln()."""
+    cap = int(ship["attrs"].get("fuel_cap", 0))
+    mass = int(ship["attrs"].get("mass", 0)) or 1
+    eff = ENGINE_EFF["ion"] if ship["attrs"].get("orbital_engine") else (ENGINE_EFF["jet"] if ship["attrs"].get("flies") else ENGINE_EFF["prop"])
+    best = None
+    for f, ve in FUEL_VE.items():                          # dict literal order is fixed → replay-stable iteration
+        held = get(a, f)
+        if held < 1 or cap < 1:
+            continue
+        loaded = min(int(held), cap)
+        wet = mass + loaded * FUEL_MASS
+        dv = (loaded * ve * eff) // wet
+        if best is None or dv > best["dv"]:
+            cost = (dv_need * wet) // (ve * eff)            # fuel burned at depart to make dv_need
+            best = {"fuel": f, "loaded": loaded, "wet": wet, "dv": dv, "ve": ve, "eff": eff, "cost": cost}
+    return best
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
 ALTER TABLE world ADD COLUMN IF NOT EXISTS notices jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -349,7 +410,7 @@ def apply_intent(it, ents, cur, t, events):
         new_entity(ents, cur, "part", a["x"], a["y"], a["id"], {"part": part, "stats": stats, "upgrades": ups})
         return "applied", f"built {part}" + (f" [+{'+'.join(ups)}]" if ups else "")
     if verb == "finalize":                               # assemble the agent's loose parts into a vehicle
-        cur.execute("SELECT id, attrs->>'part' part, attrs->'stats' stats FROM entities "
+        cur.execute("SELECT id, attrs->>'part' part, attrs->'stats' stats, attrs->'upgrades' ups FROM entities "
                     "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL", (a["id"],))
         rows = cur.fetchall()
         if not rows:
@@ -357,6 +418,9 @@ def apply_intent(it, ents, cur, t, events):
         parts = [r["part"] for r in rows]
         stats_list = [r["stats"] or vehicles.PART.get(r["part"], {}) for r in rows]
         st = vehicles.finalize_stats(stats_list)
+        # EXPANSION ERA: an ion_thruster upgrade anywhere in the build makes this an ORBITAL-drive ship (ion efficiency,
+        # eligible for interplanetary depart). Read the parts' stored upgrade lists. Seed never finalizes → chain-safe.
+        st["orbital_engine"] = any("ion_thruster" in (r["ups"] or []) for r in rows)
         vid = new_entity(ents, cur, "vehicle", 0, 0, a["id"], {"name": args.get("name", "vehicle"), "parts": parts, **st,
                          "hp": HP_BY_TYPE["vehicle"], "hp_max": HP_BY_TYPE["vehicle"]})   # stamp HP at creation (no lazy hp → replay-safe)
         used_ids = [r["id"] for r in rows]
@@ -794,6 +858,104 @@ def apply_intent(it, ents, cur, t, events):
             return "applied", ((("touched down — FIRST round trip to space and back! ") if first
                                 else "touched down — round trip complete! ") + f"+{pts} pts")
         return "applied", "landed safely back on the surface"
+    if verb == "depart":                                 # EXPANSION ERA — commit a ship to an interplanetary transfer
+        if _era_now(cur) not in ("space", "expansion"):
+            return "rejected", "interplanetary transfers need the SPACE / EXPANSION era"
+        if a["attrs"].get("transit_to"):
+            return "rejected", f"already in transit to {BODY_LABEL.get(a['attrs']['transit_to'], a['attrs']['transit_to'])} (ETA tick {a['attrs'].get('eta_tick')})"
+        dest = str(args.get("dest") or args.get("body") or "").strip().lower()
+        alt = int(a["attrs"].get("altitude", 0))
+        at_orbit = a["attrs"].get("at_body_orbit"); at_body = a["attrs"].get("at_body")
+        if dest == "earth":                              # RETURN leg: fly home from a body (orbit or surface)
+            origin = at_orbit or at_body
+            if not origin:
+                return "rejected", "depart{dest:'earth'} is the RETURN leg — you must be at a body (arrive somewhere first)"
+            dv_need = DV_RETURN.get(origin, 130); target = "earth"; win_ok = True
+        else:                                            # OUTBOUND leg: Earth orbit → a body
+            if dest not in EXPANSION_BODIES:
+                return "rejected", "dest must be one of: " + "/".join(EXPANSION_BODIES) + " (or 'earth' to return)"
+            if at_orbit or at_body:
+                return "rejected", "you are already at a body — return to Earth first (depart{dest:'earth'})"
+            if not (a["attrs"].get("in_space") and ORBIT_LO <= alt <= ORBIT_HI):
+                return "rejected", f"depart from EARTH ORBIT (altitude {ORBIT_LO}-{ORBIT_HI}: launch or ride the elevator up first)"
+            dv_need = DV_NEED[dest]; target = dest; win_ok = window_open(dest, t)
+        if not win_ok:
+            nxt = SYNODIC[dest] - (t % SYNODIC[dest])
+            return "rejected", f"the {BODY_LABEL[dest]} launch window is CLOSED — opens again in ~{nxt} ticks (windows last {WINDOW_OPEN} ticks)"
+        twr_min = TWR_DEPART.get(target, 0.5)
+        need_gear = target in ("deimos", "phobos", "mars")   # landing gear on the SHIP to set down (Venus is a cloud-deck aerostat, none)
+        ship = plan = None; gear_blocked = False
+        for v in sorted((e for e in ents.values() if e["type"] == "vehicle" and e.get("owner") == a["id"]), key=lambda e: e["id"]):
+            at = v["attrs"]; m = int(at.get("mass", 0)) or 1
+            if at.get("wrecked") or not at.get("controllable") or not at.get("flies") or not at.get("orbital_engine"):
+                continue
+            if int(at.get("thrust", 0)) < twr_min * GRAVITY * m:       # thrust/(GRAVITY*mass) >= TWR_DEPART[dest]
+                continue
+            if need_gear and int(at.get("gear", 0)) < 1:               # gear is part of ELIGIBILITY, so a 2-ship agent isn't bricked by picking the gearless one
+                gear_blocked = True
+                continue
+            p = dv_capacity(a, v, dv_need)
+            if p and (plan is None or p["dv"] > plan["dv"]):
+                ship, plan = v, p
+        if ship is None:
+            if gear_blocked:
+                return "rejected", f"{BODY_LABEL[target]} needs LANDING GEAR on the ship (build a landing_gear part before finalizing the rocket)"
+            return "rejected", (f"need a controllable, flying ship with an ion_thruster (orbital drive) and thrust/(mass*{GRAVITY}) "
+                                f">= {twr_min} — finalize a rocket with an ion_thruster-upgraded jet")
+        need_items = BODY_ITEMS.get(target, ())          # protective consumables, verified now, burned at land_body
+        miss = [it for it in need_items if get(a, it) < 1]
+        if miss:
+            return "rejected", f"{BODY_LABEL[target]} entry needs {', '.join(need_items)} in your hold (missing {', '.join(miss)}) — craft them first"
+        if plan["dv"] < dv_need:
+            return "rejected", (f"Δv too low: your ship makes {plan['dv']} but {BODY_LABEL[target]} needs {dv_need}. "
+                                f"Load more/better fuel (cryo_fuel/helium3) or lighten the ship.")
+        n_corr = TRANSIT_TICKS[target] // CORRECTION_EVERY           # R3: gate must also cover the mid-course correction burns
+        if plan["loaded"] - plan["cost"] < n_corr:
+            return "rejected", (f"not enough correction margin: after the {plan['cost']}-unit departure burn you'd have "
+                                f"{plan['loaded'] - plan['cost']} spare fuel but the {TRANSIT_TICKS[target]}-tick crossing needs {n_corr}. "
+                                f"Carry more {plan['fuel']}.")
+        addb(a, plan["fuel"], -plan["cost"])             # burn the departure Δv
+        a["attrs"]["transit_to"] = target
+        a["attrs"]["depart_tick"] = t
+        a["attrs"]["eta_tick"] = t + TRANSIT_TICKS[target]
+        a["attrs"]["depart_from"] = ("earth" if target != "earth" else (at_orbit or at_body))
+        a["attrs"]["in_space"] = True
+        a["attrs"]["altitude"] = SKY_TOP                 # beyond-LEO sentinel (orbital_decay skips in-transit agents)
+        for k in ("at_body_orbit", "at_body", "adrift", "adrift_since"):
+            a["attrs"].pop(k, None)
+        cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'depart',%s)",
+                    (t, a["id"], Json({"dest": target, "eta": a["attrs"]["eta_tick"], "dv": plan["dv"], "fuel": plan["fuel"], "burn": plan["cost"]})))
+        return "applied", (f"DEPARTED for {BODY_LABEL[target]}! burned {plan['cost']} {plan['fuel']} (Δv {plan['dv']}/{dv_need}), "
+                           f"ETA tick {a['attrs']['eta_tick']} ({TRANSIT_TICKS[target]} ticks) — carry {n_corr}+ spare fuel for course corrections")
+    if verb == "land_body":                              # EXPANSION ERA — descend from body orbit onto the surface / cloud deck
+        if a["attrs"].get("transit_to"):
+            return "rejected", f"still in transit to {BODY_LABEL.get(a['attrs']['transit_to'], a['attrs']['transit_to'])} — arrive first (ETA tick {a['attrs'].get('eta_tick')})"
+        body = a["attrs"].get("at_body_orbit")
+        if not body:
+            return "rejected", "you are not in orbit of any body — depart to one first"
+        cur.execute("SELECT 1 FROM entities WHERE type='vehicle' AND owner=%s AND (attrs->>'controllable')::boolean AND NOT COALESCE((attrs->>'wrecked')::boolean,false) LIMIT 1", (a["id"],))
+        if not cur.fetchone():
+            return "rejected", "need a controllable lander to set down"
+        need_items = BODY_ITEMS.get(body, ())
+        miss = [it for it in need_items if get(a, it) < 1]
+        if miss:
+            return "rejected", f"can't survive {BODY_LABEL[body]} entry without {', '.join(need_items)} (missing {', '.join(miss)})"
+        for it in need_items:                            # single-use protective gear ablates on entry
+            addb(a, it, -1)
+        a["attrs"]["at_body"] = body
+        a["attrs"].pop("at_body_orbit", None)
+        awarded = a["attrs"].setdefault("body_awarded", [])     # audit(exploit): points paid ONCE per body per agent (mirrors moon_awarded)
+        if body in awarded:
+            return "applied", f"set down on {BODY_LABEL[body]} again — the frontier remembers you"
+        awarded.append(body)
+        cur.execute("SELECT 1 FROM events WHERE kind='body_landing' AND data->>'body'=%s LIMIT 1", (body,))
+        first = cur.fetchone() is None
+        pts = (500 if first else 120) if body in ("mars", "venus") else (350 if first else 90)
+        a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
+        cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'body_landing',%s)",
+                    (t, a["id"], Json({"body": body, "first": first, "points": pts})))
+        return "applied", ((f"FIRST TO LAND ON {BODY_LABEL[body].upper()}! " if first else f"touched down on {BODY_LABEL[body]}! ")
+                           + f"+{pts} pts — plant the flag; return home with depart{{dest:'earth'}}")
     if verb == "deploy":                                 # send a finalized vehicle off to roam the world autonomously
         cand = [v for v in ents.values() if v["type"] == "vehicle" and v.get("owner") == a["id"]
                 and not v["attrs"].get("autonomous") and (v["attrs"].get("drives") or v["attrs"].get("flies"))]
@@ -1910,6 +2072,8 @@ def orbital_decay(ents, t, events, cur=None):
     for a in ents.values():
         if a["type"] != "agent" or not a["attrs"].get("in_space"):
             continue
+        if a["attrs"].get("transit_to") or a["attrs"].get("at_body") or a["attrs"].get("at_body_orbit"):
+            continue                                       # R7: beyond-LEO sentinel (in transit / at a body) — LEO decay does not apply
         if int(a["attrs"].get("downed_until", 0)) > t:    # a downed agent (corpse) must not take a fresh fall-hit / re-die (double loot + respawn reset) — mirrors explode's guard
             continue
         if int(a["attrs"].get("stasis", 0)) > 0:          # stasis_relic artifact: skip orbital decay, spend one of its charges
@@ -1931,6 +2095,58 @@ def orbital_decay(ents, t, events, cur=None):
             events.append((t, a["id"], "act", {"verb": "decay", "status": "applied", "result": "orbital decay — fell back to the surface"}))
         else:
             a["attrs"]["altitude"] = alt
+
+
+CORRECTION_FUELS = ("carbon", "wood", "coal", "oil", "cryo_fuel", "methalox", "helium3")   # cheapest-first: a correction burns 1 of the first held
+
+
+def advance_transits(ents, t, events, cur):
+    """EXPANSION ERA — interplanetary transit as a deterministic per-tick countdown. A strict NO-OP when nobody is
+    in transit (exactly like orbital_decay with nobody in space) → the Season-3 seed is untouched. Per tick, id-sorted:
+      • a course-correction burn every CORRECTION_EVERY ticks spends 1 spare fuel (cheapest first); out of fuel → ADRIFT
+      • adrift ≥ ADRIFT_ABORT_TICKS → auto-abort: snap back to the departure node + ADRIFT_DMG (into the normal death path)
+      • t ≥ eta_tick → ARRIVE: clear transit, set at_body_orbit=dest (or Earth orbit on the return leg)."""
+    movers = [a for a in ents.values() if a["type"] == "agent" and a["attrs"].get("transit_to")]
+    if not movers:
+        return
+    for a in sorted(movers, key=lambda e: e["id"]):
+        at = a["attrs"]; dest = at.get("transit_to")
+        eta = int(at.get("eta_tick", 0)); dep = int(at.get("depart_tick", 0))
+        if at.get("adrift"):                               # frozen mid-course — count down to auto-abort
+            if t - int(at.get("adrift_since", t)) >= ADRIFT_ABORT_TICKS:
+                origin = at.get("depart_from") or "earth"
+                for k in ("transit_to", "depart_tick", "eta_tick", "depart_from", "adrift", "adrift_since"):
+                    at.pop(k, None)
+                at["in_space"] = True; at["altitude"] = SKY_TOP
+                if origin != "earth":
+                    at["at_body_orbit"] = origin           # drifted on the return leg → fall back to the body's orbit
+                events.append((t, a["id"], "act", {"verb": "abort", "status": "applied",
+                              "result": f"transit to {BODY_LABEL.get(dest, dest)} ABORTED (adrift, out of correction fuel) — limped back toward {BODY_LABEL.get(origin, origin)}, took {ADRIFT_DMG} damage"}))
+                apply_damage(a, ADRIFT_DMG, t, None, events, cur, ents)
+            continue
+        if t > dep and (t - dep) % CORRECTION_EVERY == 0 and t < eta:   # a scheduled course-correction burn
+            fuel = next((f for f in CORRECTION_FUELS if get(a, f) >= 1), None)
+            if fuel is None:
+                at["adrift"] = True; at["adrift_since"] = t
+                events.append((t, a["id"], "act", {"verb": "adrift", "status": "applied",
+                              "result": f"ADRIFT en route to {BODY_LABEL.get(dest, dest)} — no fuel for a course correction; drifting (auto-abort in {ADRIFT_ABORT_TICKS} ticks)"}))
+                continue
+            addb(a, fuel, -1)
+        if t >= eta:                                       # ARRIVE
+            for k in ("transit_to", "depart_tick", "eta_tick", "depart_from", "adrift", "adrift_since"):
+                at.pop(k, None)
+            at["in_space"] = True; at["altitude"] = SKY_TOP
+            if dest == "earth":
+                for k in ("at_body_orbit", "at_body"):
+                    at.pop(k, None)
+                events.append((t, a["id"], "act", {"verb": "arrive", "status": "applied",
+                              "result": "arrived back in EARTH ORBIT — land or ride the elevator down"}))
+            else:
+                at["at_body_orbit"] = dest
+                events.append((t, a["id"], "arrive", {"body": dest}))
+                events.append((t, a["id"], "act", {"verb": "arrive", "status": "applied",
+                              "result": f"ARRIVED at {BODY_LABEL.get(dest, dest)} orbit — land_body to set down"}))
+
 
 def respawn_deposits(by_type, t):
     """Mineral deposits + asteroids slowly replenish (deterministic, staggered by id) → the world never runs permanently dry.
@@ -2312,6 +2528,7 @@ def _tick_body(conn, s):
     grow_trees(by_type, t)
     grow_plants(by_type, t)                                # renewable plant deposits (medicine branch)
     orbital_decay(ents, t, events, cur)
+    advance_transits(ents, t, events, cur)                 # EXPANSION ERA: interplanetary transit countdown (no-op if nobody's in transit)
     respawn_deposits(by_type, t)
     respawn_agents(by_type, cur, t, events)               # season 3 per-tick systems (after respawn_deposits, before write-back)
     cool_reputation(by_type, t)

@@ -76,4 +76,5 @@ def finalize_stats(stats_list):
     flies     = bool(control and lift_coef * v_air * v_air >= G * mass)   # подъёмная на v_max ≥ вес
     return dict(mass=mass, drag=drag, power=power, drive_force=drive, thrust=thrust,
                 wing_area=wing_area, lift_coef=lift_coef, controllable=bool(control),
+                fuel_cap=s("fuel_cap"),                     # total tankage (Expansion Era: caps interplanetary Δv)
                 v_ground=v_ground, v_air=v_air, drives=drives, flies=flies)
