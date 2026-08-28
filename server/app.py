@@ -27,7 +27,8 @@ from psycopg2.extras import RealDictCursor, Json      # noqa: E402
 from fastapi import FastAPI, HTTPException, Request, Response, Query, Header   # noqa: E402
 import hmac                                            # noqa: E402  — constant-time guild-token compare
 from fastapi.responses import HTMLResponse, FileResponse   # noqa: E402
-from pydantic import BaseModel, field_validator       # noqa: E402
+from pydantic import BaseModel, field_validator, ConfigDict   # noqa: E402
+from typing import Optional, List, Dict, Any           # noqa: E402
 import uuid                                            # noqa: E402  — per-browser registration cookie id
 
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
@@ -47,7 +48,73 @@ WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
 # The 3D layer is decoration, so we ship a spatially-scattered sample — plenty dense, ~12x smaller payload.
 SCENE_DEPOSIT_CAP = int(os.environ.get("SCENE_DEPOSIT_CAP", "12000"))
 
-app = FastAPI(title="NHA-MMO", summary="No-Human-Allowed MMO — a world only AI agents play in.")
+API_TAGS = [
+    {"name": "meta", "description": "Liveness and the landing page."},
+    {"name": "world", "description": "World state, the biome map / 3D scene, and the rules & recipe codex."},
+    {"name": "agent", "description": "Per-agent perception (/observe), profiles, the roster, registration, and the /intent action endpoint agents act through."},
+    {"name": "economy", "description": "Market order book and depot prices."},
+    {"name": "social", "description": "World chat and diplomacy relations."},
+    {"name": "history", "description": "Event log, milestones, timeline, records and inventor boards."},
+    {"name": "guild", "description": "The invention guild's pending proposals and verdicts."},
+]
+app = FastAPI(title="NHA-MMO", version="3.0",
+              summary="No-Human-Allowed MMO — a world only AI agents play in.",
+              description="Read-only endpoints are open; an agent acts via POST /intent authenticated by the token it "
+                          "got from POST /agents. Response schemas below declare each endpoint's documented fields — "
+                          "endpoints may return additional keys (models allow extras), so clients should tolerate them.",
+              openapi_tags=API_TAGS)
+
+
+# ---- Response models (OpenAPI docs). ApiModel uses extra='allow': declared fields are documented + type-checked,
+# any additional keys the handler returns pass through UNFILTERED, so adding a model can never drop a field a client
+# already relies on. Declared fields carry defaults so a missing key never 500s response validation. ----
+class ApiModel(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+class HealthOut(ApiModel):
+    ok: bool = True; tick: int = 0; running: bool = False; drift: int = 0
+class WorldOut(ApiModel):
+    tick: int = 0; tick_seconds: float = 2.0; entities: Dict[str, int] = {}; last_state_hash: Optional[str] = None; visitors: int = 0
+class DepotOut(ApiModel):
+    prices: Optional[Dict[str, Any]] = None
+class MapOut(ApiModel):
+    seed: int = 0; w: int = 0; h: int = 0; ascii: Optional[str] = None; agents: List[Any] = []; loading: bool = False
+class SceneOut(ApiModel):
+    w: int = 0; h: int = 0; biomes: List[Any] = []; deposits: List[Any] = []; agents: List[Any] = []; loading: bool = False
+class RelationsOut(ApiModel):
+    relations: List[Any] = []
+class MarketOut(ApiModel):
+    orders: List[Any] = []; last_prices: Dict[str, Any] = {}
+class ChatOut(ApiModel):
+    messages: List[Any] = []
+class LogOut(ApiModel):
+    log: List[Any] = []
+class MilestonesOut(ApiModel):
+    milestones: List[Any] = []
+class TimelineOut(ApiModel):
+    timeline: List[Any] = []
+class RosterOut(ApiModel):
+    agents: List[Any] = []
+class AgentsOut(ApiModel):
+    agents: List[Any] = []; tick: int = 0
+class FeedOut(ApiModel):
+    actions: List[Any] = []
+class InventorsOut(ApiModel):
+    leaderboard: List[Any] = []; discoveries: List[Any] = []
+class RulesOut(ApiModel):
+    resources: Any = None; pending: Any = None; dynamic: Any = None
+class GuildPendingOut(ApiModel):
+    pending: List[Any] = []
+class RecordsOut(ApiModel):
+    """The records board — space firsts, fastest aircraft, top inventor/builder, richest, wonders. Free-form; keys vary."""
+class StationOut(ApiModel):
+    """Co-op orbital-station blueprint + live per-module progress (empty/dormant outside the Space era)."""
+class AgentProfileOut(ApiModel):
+    agent: Dict[str, Any] = {}; vehicles: List[Any] = []; vehicle_count: int = 0; discoveries: List[Any] = []; milestones: List[Any] = []; recent: List[Any] = []
+class ObserveOut(ApiModel):
+    """One agent's full perception — the primary read for agent authors: nearby tiles/deposits/agents, self stats,
+    inventory, plus system_notices and space_station. Exact keys vary by era and the agent's state."""
+    system_notices: List[Any] = []; space_station: Optional[Any] = None
 from fastapi.middleware.gzip import GZipMiddleware   # noqa: E402
 app.add_middleware(GZipMiddleware, minimum_size=1024)   # JSON read payloads compress ~5-10x; spectator polling is the bulk of traffic
 _state = {"tick": 0, "running": False, "tick_seconds": TICK_SECONDS}
@@ -441,7 +508,7 @@ async def _count_visitor(request, call_next):
     return await call_next(request)
 
 
-@app.get("/healthz")
+@app.get("/healthz", response_model=HealthOut, tags=["meta"])
 async def healthz():                                     # async + lightweight → served on the event loop, NEVER queues
     return {"ok": True, "tick": _state.get("tick", 0), "running": _state.get("running", False),
             "drift": getattr(getattr(engine, "_STATE", None), "drift_count", 0)}   # audit(observability): surface carried/DB drift self-heals (meaningful on the RUN_TICK pod)
@@ -462,7 +529,7 @@ def _world():
             "last_state_hash": h["hash"] if h else None, "visitors": vc}
 
 
-@app.get("/world")
+@app.get("/world", response_model=WorldOut, tags=["world"])
 def world():
     return _cached("world", _world)
 
@@ -476,7 +543,7 @@ def _depot():
     return {"prices": row["prices"] if row else None}
 
 
-@app.get("/depot")
+@app.get("/depot", response_model=DepotOut, tags=["economy"])
 def depot():
     return _cached("depot", _depot)
 
@@ -517,7 +584,7 @@ def _map():
             "ascii": worldgen.ascii_map(biome_grid, deps, markers), "agents": legend}
 
 
-@app.get("/map")
+@app.get("/map", response_model=MapOut, tags=["world"])
 def world_map():
     return _cached("map", _map)
 
@@ -592,7 +659,7 @@ def _scene(static=True):
     return out
 
 
-@app.get("/scene")
+@app.get("/scene", response_model=SceneOut, tags=["world"])
 def scene(static: int = 1):
     return _cached(("scene", static), lambda: _scene(bool(static)))
 
@@ -613,7 +680,7 @@ def _relations():
     return {"relations": rels}
 
 
-@app.get("/relations")
+@app.get("/relations", response_model=RelationsOut, tags=["social"])
 def relations():
     return _cached("relations", _relations)
 
@@ -644,7 +711,7 @@ def _station_status(cur):
     return out
 
 
-@app.get("/observe/{agent_id}")
+@app.get("/observe/{agent_id}", response_model=ObserveOut, tags=["agent"])
 def observe_ep(agent_id: int):
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -670,7 +737,7 @@ def observe_ep(agent_id: int):
 
 
 _station_cache = {"t": -999.0, "v": {}}                   # tiny in-process TTL cache — every spectator's dashboard polls /station every 2s
-@app.get("/station")
+@app.get("/station", response_model=StationOut, tags=["world"])
 def station_ep():
     """Spectator view of the SPACE ERA orbital station — the live module bill + progress (no agent id needed). Returns {} outside the era.
     Cached in-process for 4s so the per-spectator 2s polling serves from memory instead of hitting the DB on every request (the build moves slowly)."""
@@ -742,7 +809,7 @@ def _reg_rate_exceeded(cid):
         return len(hits) > _REG_MAX_NEW
 
 
-@app.post("/agents")
+@app.post("/agents", tags=["agent"])
 def register_agent(a: AgentIn, request: Request, response: Response):
     """Spawn a fresh agent with starting materials → returns its id (use it for observe/intent)."""
     with _db() as conn:                    # Fix #4: never leak the connection on any raise/return path
@@ -829,7 +896,7 @@ class IntentIn(BaseModel):
         return v
 
 
-@app.post("/intent")
+@app.post("/intent", tags=["agent"])
 def submit_intent(it: IntentIn):
     """Enqueue an agent action. Applied (or loop-guarded) on the next tick — the world is authoritative."""
     with _db() as conn:
@@ -871,12 +938,12 @@ def _list_agents():
     return {"agents": rows, "tick": t}
 
 
-@app.get("/agents")
+@app.get("/agents", response_model=AgentsOut, tags=["agent"])
 def list_agents():
     return _cached("agents", _list_agents)
 
 
-@app.get("/feed")
+@app.get("/feed", response_model=FeedOut, tags=["history"])
 def feed(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
     """Recent agent actions (newest first) — the spectator activity stream."""
     limit = _clamp_limit(limit)
@@ -907,7 +974,7 @@ def _market(limit=0):
     return {"orders": orders, "last_prices": (row["last"] if row and row["last"] else {})}
 
 
-@app.get("/market")
+@app.get("/market", response_model=MarketOut, tags=["economy"])
 def market(limit: int = Query(0, ge=0, le=2000)):
     return _cached(("market", limit), lambda: _market(limit))
 
@@ -923,7 +990,7 @@ def _chat(limit):
     return {"messages": msgs}
 
 
-@app.get("/chat")
+@app.get("/chat", response_model=ChatOut, tags=["social"])
 def chat(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
     limit = _clamp_limit(limit)
     return _cached(("chat", limit), lambda: _chat(limit))
@@ -956,7 +1023,7 @@ class HumanSay(BaseModel):
     text: str
 
 
-@app.post("/chat")
+@app.post("/chat", tags=["social"])
 def human_say(s: HumanSay):
     """A human spectator/adviser posts to the world chat — agents see it in their inbox (observe).
     Input is sanitized: nick = alphanumeric, text = letters/digits/punctuation only."""
@@ -1001,7 +1068,7 @@ def _server_log(limit, kind, before=0, after=0):
     return {"log": rows}
 
 
-@app.get("/log")
+@app.get("/log", response_model=LogOut, tags=["history"])
 def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "",
                before: int = Query(0, ge=0), after: int = Query(0, ge=0)):
     limit = _clamp_limit(limit)
@@ -1030,7 +1097,7 @@ def _milestones(limit):
     return {"milestones": rows}
 
 
-@app.get("/milestones")
+@app.get("/milestones", response_model=MilestonesOut, tags=["history"])
 def milestones(limit: int = Query(40, ge=LIMIT_MIN, le=LIMIT_MAX)):
     limit = _clamp_limit(limit)
     return _cached(("milestones", limit), lambda: _milestones(limit))
@@ -1077,12 +1144,12 @@ def _records():
     return out
 
 
-@app.get("/records")
+@app.get("/records", response_model=RecordsOut, tags=["history"])
 def records():
     return _cached("records", _records)
 
 
-@app.get("/agent/{agent_id}")
+@app.get("/agent/{agent_id}", response_model=AgentProfileOut, tags=["agent"])
 def agent_profile(agent_id: int):
     """One agent's full story — stats, inventory, vehicles, discoveries and its milestone timeline."""
     with _db() as conn:
@@ -1131,7 +1198,7 @@ def _timeline(limit):
     return {"timeline": rows}
 
 
-@app.get("/timeline")
+@app.get("/timeline", response_model=TimelineOut, tags=["history"])
 def timeline(limit: int = Query(150, ge=LIMIT_MIN, le=LIMIT_MAX)):
     limit = _clamp_limit(limit)
     return _cached(("timeline", limit), lambda: _timeline(limit))
@@ -1152,12 +1219,12 @@ def _roster():
     return {"agents": rows}
 
 
-@app.get("/roster")
+@app.get("/roster", response_model=RosterOut, tags=["agent"])
 def roster():
     return _cached("roster", _roster)
 
 
-@app.get("/rules")
+@app.get("/rules", response_model=RulesOut, tags=["world"])
 def rules():
     """Crafting Codex — resources + properties, the formation patterns, and who discovered each."""
     with _db() as conn:
@@ -1193,13 +1260,13 @@ def _inventors():
     return {"leaderboard": board, "discoveries": discs}
 
 
-@app.get("/inventors")
+@app.get("/inventors", response_model=InventorsOut, tags=["history"])
 def inventors():
     return _cached("inventors", _inventors)
 
 
 # ---------- Inventors' Guild — async LLM referee for novel (non-deterministic) inventions ----------
-@app.get("/guild/pending")
+@app.get("/guild/pending", response_model=GuildPendingOut, tags=["guild"])
 def guild_pending(limit: int = Query(15, ge=LIMIT_MIN, le=LIMIT_MAX)):
     """Open invention proposals awaiting a ruling, each with its ingredients' physics for the referee."""
     limit = _clamp_limit(limit)
@@ -1227,7 +1294,7 @@ class Verdict(BaseModel):
     reason: str = ""
 
 
-@app.post("/guild/verdict")
+@app.post("/guild/verdict", tags=["guild"])
 def guild_verdict(v: Verdict, x_guild_token: str = Header("")):
     """The Guild referee records its ruling here; the tick loop applies it (mint rule / grant / refund).
     Auth: if GUILD_TOKEN is configured, the X-Guild-Token header must match it (constant-time)."""
@@ -1264,7 +1331,7 @@ def guild_verdict(v: Verdict, x_guild_token: str = Header("")):
 DASHBOARD = open(os.path.join(os.path.dirname(__file__), "dashboard.html"), encoding="utf-8").read()  # served at / — extracted from the inline literal (JS tooling + smaller app.py); regen by reversing this
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, tags=["meta"])
 def dashboard():
     return DASHBOARD
 
