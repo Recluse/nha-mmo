@@ -158,7 +158,7 @@ def observe(cur, agent_id):
     # Global (there are only a few) and nearest-first, so an agent stranded anywhere knows where it can climb.
     cur.execute("SELECT id, x, y, (attrs->>'height')::int height, (abs(x-%s)+abs(y-%s)) dist FROM entities "
                 "WHERE type='structure' AND attrs->>'shape'='elevator' AND (attrs->>'complete')::boolean "
-                "ORDER BY dist, id LIMIT 8", (ax, ay, ax, ay))
+                "ORDER BY dist, id LIMIT 8", (ax, ay))   # two placeholders — the query below takes four
     elevators = [dict(r) for r in cur.fetchall()]
     # nearby ground structures (cities/monuments/roads + UNFINISHED elevators) so the built world is visible, not just on the map.
     cur.execute("SELECT id, x, y, attrs->>'shape' shape, COALESCE((attrs->>'complete')::boolean, false) complete, "
