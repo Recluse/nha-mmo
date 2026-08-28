@@ -122,6 +122,7 @@ GOOSE_ROAM = 3                  # a goose waddles within this Chebyshev radius o
 GOOSE_HONK_EVERY = 5           # one flock honks every this-many ticks (deterministic, staggered by flock id)
 GOOSE_PECK_MIN_CLUSTER = 2     # an agent on/adjacent to this many geese of a flock gets pecked
 GOOSE_PECK_MAX = 5            # peck damage is capped at this (scales with cluster size, never one-shots)
+COMBINE_BATCH_MAX = 20       # combine{n} may craft up to this many copies of an ALREADY-KNOWN recipe in one intent (grind relief)
 # ============================================================================
 
 # ===================== SEASON 4 — THE SPACE ERA (co-op orbital station) =====================
@@ -564,10 +565,14 @@ def apply_intent(it, ents, cur, t, events):
             addb(a, "helium3", took); addb(a, "regolith", took * 2)
             return "applied", f"mined the Moon: +{took} helium-3 (super-fuel), +{took * 2} regolith (lunar building material)"
         want_wood = (verb == "chop")
+        want_res = str(args.get("resource") or "").strip().lower() or None   # mine{resource:"silicon"} → target THAT mineral; else the nearest of ANY (old behavior)
         deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0
                 and x["attrs"].get("resource") not in PLANT_RESOURCES   # plants are for `gather` only (keeps them off mine's karma/motor path)
-                and (x["attrs"].get("resource") == "wood") == want_wood]
+                and (x["attrs"].get("resource") == "wood") == want_wood
+                and (want_res is None or x["attrs"].get("resource") == want_res)]   # optional resource targeting → nearest of that kind
         if not deps:
+            if want_res:
+                return "rejected", f"no {want_res} deposit with any left in reach — check observe.nearby_deposits, or roam / pick another resource"
             return "rejected", ("no trees left to chop" if want_wood else "no mineral deposits left")
         dep = min(deps, key=lambda x: abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]))
         dist = abs(dep["x"] - a["x"]) + abs(dep["y"] - a["y"])
@@ -664,19 +669,25 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", "no ingredients"
         if any(get(a, k) < q for k, q in ings.items()):
             return "rejected", "you don't hold those ingredients"
-        # The recipe match + the output (exactly 1 item) depend ONLY on WHICH resources are mixed,
-        # never on how many — so a supplied qty>1 would silently over-debit (overpay/burn) inputs for
-        # the same single result. Collapse every ingredient to 1 unit: spend exactly one of each.
+        # The recipe match + the per-copy output depend ONLY on WHICH resources are mixed, never on how many, so
+        # one copy spends exactly ONE of each ingredient. `n` BATCHES an already-known recipe: craft up to n copies
+        # in this one intent (grind relief — 20 chips in 1 intent, not 20), bounded by stock and COMBINE_BATCH_MAX.
+        # A FIRST discovery / a novel Guild proposal still makes exactly one (points/escrow are one-time events).
+        want_n = max(1, min(_ai(args, "n", 1), COMBINE_BATCH_MAX))
         ings = {k: 1 for k in ings}
+        can = min(get(a, k) for k in ings)               # how many copies the current stock supports (1 of each per copy)
         rule = crafting.combine(ings)
         if rule:                                         # matched a built-in physics pattern
-            for k, q in ings.items():                    # consume the inputs
-                addb(a, k, -q)
             cur.execute("SELECT name FROM discoveries WHERE rule_key=%s", (rule,))
             disc = cur.fetchone()
-            if disc:
-                addb(a, rule, 1)
-                return "applied", f"crafted {disc['name']} ({rule})"
+            if disc:                                     # already discovered → batch craft
+                cnt = min(want_n, can)
+                for k in ings:
+                    addb(a, k, -cnt)
+                addb(a, rule, cnt)
+                return "applied", (f"crafted {cnt}x {disc['name']} ({rule})" if cnt > 1 else f"crafted {disc['name']} ({rule})")
+            for k in ings:                               # FIRST discovery → craft exactly one (scores inventor points once)
+                addb(a, k, -1)
             item_name = (str(args.get("name", "")).strip()[:32] or rule)
             pts = 5 + 2 * len(ings)
             cur.execute("INSERT INTO discoveries(rule_key, name, discoverer, discoverer_name, tick, points) VALUES(%s,%s,%s,%s,%s,%s)",
@@ -688,11 +699,12 @@ def apply_intent(it, ents, cur, t, events):
         sig = ",".join(sorted(ings))
         cur.execute("SELECT item_key, name FROM dynamic_rules WHERE sig=%s", (sig,))
         dyn = cur.fetchone()
-        if dyn:                                          # already a Guild-blessed recipe → deterministic craft
-            for k, q in ings.items():
-                addb(a, k, -q)
-            addb(a, dyn["item_key"], 1)
-            return "applied", f"crafted {dyn['name']} ({dyn['item_key']})"
+        if dyn:                                          # already a Guild-blessed recipe → deterministic BATCH craft
+            cnt = min(want_n, can)
+            for k in ings:
+                addb(a, k, -cnt)
+            addb(a, dyn["item_key"], cnt)
+            return "applied", (f"crafted {cnt}x {dyn['name']} ({dyn['item_key']})" if cnt > 1 else f"crafted {dyn['name']} ({dyn['item_key']})")
         cur.execute("SELECT 1 FROM proposals WHERE sig=%s AND status IN ('pending','approved') LIMIT 1", (sig,))
         if cur.fetchone():
             return "rejected", "this mixture is already before the Inventors' Guild — try another"

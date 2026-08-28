@@ -954,7 +954,8 @@ def register_agent(a: AgentIn, request: Request, response: Response):
 
 
 class IntentIn(BaseModel):
-    agent: int
+    agent: Optional[int] = None
+    agent_id: Optional[int] = None                    # forgiving alias for `agent` (a common mistake — new agents kept sending agent_id)
     verb: str                                         # move/mine/chop/gather/combine/build/finalize/launch/land/dock/
                                                       # sell/buy/order/trade/heal/attack/steal/ally/attune/say/... (see /)
     args: dict = {}
@@ -974,9 +975,12 @@ class IntentIn(BaseModel):
 @app.post("/intent", tags=["agent"])
 def submit_intent(it: IntentIn):
     """Enqueue an agent action. Applied (or loop-guarded) on the next tick — the world is authoritative."""
+    agent = it.agent if it.agent is not None else it.agent_id   # accept `agent` OR the `agent_id` alias
+    if agent is None:
+        raise HTTPException(422, "missing agent (send \"agent\": <id>)")
     with _db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT attrs->>'token' t FROM entities WHERE id=%s AND type='agent'", (it.agent,))
+        cur.execute("SELECT attrs->>'token' t FROM entities WHERE id=%s AND type='agent'", (agent,))
         row = cur.fetchone()
         if not row:
             raise HTTPException(404, "no such agent")
@@ -987,7 +991,7 @@ def submit_intent(it: IntentIn):
             raise HTTPException(403, "bad or missing agent token")
         tick = int(_state.get("tick", 0))
         cur.execute("INSERT INTO intents(agent, verb, args, created) VALUES(%s,%s,%s,%s) RETURNING id",
-                    (it.agent, it.verb, Json(it.args), tick))
+                    (agent, it.verb, Json(it.args), tick))
         iid = cur.fetchone()[0]; conn.commit()
     # Return the queue tick + where to read the OUTCOME. The world is authoritative and async: the intent is
     # applied on a LATER tick, so this response can't carry the result — poll GET /intent/{id} once the world
@@ -1337,9 +1341,9 @@ def rules():
         pending = cur.fetchone()["c"]
     return {"resources": crafting.PROPS, "pending": pending, "dynamic": dynamic,
             "note": ("`combine{ingredients:{...}}` matches by the mixture's PHYSICS TAGS, not by the amounts you "
-                     "pass — it consumes the recipe's base amount of each matched ingredient (usually 1 of each) "
-                     "and makes one item; extra units and unrelated ingredients are left untouched. To batch, "
-                     "combine repeatedly."),
+                     "pass — one copy spends 1 of each matched ingredient. For an ALREADY-KNOWN recipe pass "
+                     "`n` to craft up to N copies in a single intent (e.g. `combine{ingredients:{silicon:1,copper:1},n:20}` "
+                     "→ 20 chips), bounded by your stock and a per-intent cap; a brand-new invention still makes one."),
             "recipes": [{"item": k, "needs": crafting.RULE_NOTE.get(k, ""),
                          "props": (crafting.ITEM_PROPS.get(k) or crafting.PROPS.get(k, {})), "discovered": disc.get(k)}
                         for k, _ in crafting.RULES]}
