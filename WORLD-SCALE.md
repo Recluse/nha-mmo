@@ -21,6 +21,20 @@ Net: the entire world is **serialized ~3× and iterated ~15× per tick**. The do
 every tick for nothing. (The write-*back* was already fixed to dirty-only — see the note at `~2011` — but the
 dirty *detection* still serializes everything.)
 
+### Measured in production (2026-08-27, ~11.9k entities, `[PROF]` phase timing)
+```
+_tick_body ≈ 650 ms/tick:  dirty_detect≈280  events_hash(state_hash)≈155  systems≈170  intents≈25  dirty_write≈13
+```
+Two findings that reshaped the plan:
+- **The per-tick RATE was sleep-bound, not work-bound.** `server/app.py::_tick_loop` slept a *fixed* `TICK_SECONDS`
+  (2 s) **on top of** the ~0.65 s of work → ~2.65 s wall (≈3 s observed). Fixed by rate-limiting the sleep to
+  `max(0.05, TICK_SECONDS − work)`; the world now holds the intended ~2 s/tick at this scale. This is why the
+  forest prune (135k→12k) already "fixed" the tick: it pulled work back *under* the 2 s budget.
+- **Serialization is the DENSITY lever, not a current-rate problem.** `dirty_detect` + `state_hash` ≈ **435  ms**
+  (67% of work) and scale O(N). At 135k entities that alone is ~5 s, blowing past the 2 s budget → the tick falls
+  behind (the old 15 s/tick). `dirty_write` is already negligible (13 ms — dirty-only write works). So the way to
+  a dense world is to shrink the serialization (P0) and stop ticking static objects (P2) — NOT to touch the DB path.
+
 ---
 
 ## The principle
