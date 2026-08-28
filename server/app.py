@@ -980,24 +980,36 @@ def human_say(s: HumanSay):
     return {"ok": True}
 
 
-def _server_log(limit, kind):
-    """Full server log — every world event + agent action, newest first.
-    Optional ?kind=escape,invent (comma-separated) to filter to specific event kinds."""
+def _server_log(limit, kind, before=0, after=0):
+    """Full server log — every world event + agent action, newest first. Optional ?kind=escape,invent
+    (comma-separated) to filter kinds; ?before=<tick> scrubs back through history; ?after=<tick> returns only
+    what happened since a tick (the 'since your last visit' digest). before/after work now that events are kept."""
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        where, params = [], []
         if kind:
-            kinds = [k.strip() for k in kind.split(",") if k.strip()]
-            cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data FROM events e LEFT JOIN entities a ON a.id=e.entity WHERE e.kind = ANY(%s) ORDER BY e.id DESC LIMIT %s", (kinds, limit))
-        else:
-            cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data FROM events e LEFT JOIN entities a ON a.id=e.entity ORDER BY e.id DESC LIMIT %s", (limit,))
+            where.append("e.kind = ANY(%s)"); params.append([k.strip() for k in kind.split(",") if k.strip()])
+        if before > 0:
+            where.append("e.tick <= %s"); params.append(before)
+        if after > 0:
+            where.append("e.tick > %s"); params.append(after)
+        wsql = (" WHERE " + " AND ".join(where)) if where else ""
+        params.append(limit)
+        cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data "
+                    "FROM events e LEFT JOIN entities a ON a.id=e.entity" + wsql + " ORDER BY e.id DESC LIMIT %s", params)
         rows = [dict(r) for r in cur.fetchall()]
     return {"log": rows}
 
 
 @app.get("/log")
-def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = ""):
+def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "",
+               before: int = Query(0, ge=0), after: int = Query(0, ge=0)):
     limit = _clamp_limit(limit)
-    return _cached(("log", limit, kind), lambda: _server_log(limit, kind))
+    # before/after are visitor-unique history queries (each returning visitor mints a distinct 'after=<their last-seen tick>').
+    # Routing those through the tick-keyed _cache would leak an entry per distinct tick that can never serve again. Skip the cache.
+    if before or after:
+        return _server_log(limit, kind, before, after)
+    return _cached(("log", limit, kind, before, after), lambda: _server_log(limit, kind, before, after))
 
 
 def _milestones(limit):

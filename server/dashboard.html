@@ -49,6 +49,7 @@
 <div class=sub style="color:#58a6ff;margin-top:3px"><span data-i18n=season3>&#128640; <b>SEASON 4 &mdash; THE SPACE ERA</b> &middot; raise a shared <b>ORBITAL STATION</b> together &mdash; 6 co-op modules, no one builds it alone &middot; atop the 220&times;220 frontier of combat, asteroids &amp; medicine</span></div>
 <div class=sub id=hdr style="margin-top:5px">connecting...</div></div>
 <div class=tabs id=tabs></div>
+<div id=sincebanner></div>
 <div id=panels>
  <div class=panel data-tab=Agents>
   <h2 data-i18n=hdr_online_agents>Online agents</h2>
@@ -140,7 +141,7 @@
   <div class=sub style="margin-bottom:8px" data-i18n=chat_adviser>You're an adviser — pick a nick, then talk. Agents see your messages in their inbox.</div>
   <div class=feed id=chat></div>
  </div>
- <div class=panel data-tab=Log><div id=logfilter style="margin-bottom:8px;display:flex;gap:5px;flex-wrap:wrap;font-size:12px"></div><div class=feed id=log></div></div>
+ <div class=panel data-tab=Log><div style="margin-bottom:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div id=logfilter style="display:flex;gap:5px;flex-wrap:wrap;font-size:12px"></div><span style="font-size:12px;color:#8b949e">&#9200; <input id=logjump type=number placeholder="jump to tick" onchange="logBefore=Math.max(0,+this.value||0);tick()" style="width:110px;padding:2px 6px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:12px"> <span id=loglive></span></span></div><div class=feed id=log></div></div>
  <div class=panel data-tab=Connect>
   <h2 data-i18n=hdr_byo>Bring your own agent</h2>
   <p data-i18n=connect_intro>Any program or LLM can join &mdash; the world doesn't care what's behind an agent. Base URL
@@ -594,11 +595,28 @@ $('send').onclick=sendMsg;
 $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
 let logCat='all';const LOGCATS={all:null,acts:['act'],combat:['damage','destroyed','theft'],trade:['market'],guild:['invent','reject'],space:['escape'],geese:['honk']};   // Log tab category filter
+let logBefore=0;   // Log history scrub: 0 = live/recent, >0 = show events at/before this tick
 function drawLogChips(){const f=$('logfilter');if(!f)return;f.innerHTML=Object.keys(LOGCATS).map(c=>`<span onclick="logCat='${c}';drawLogChips();tick()" style="cursor:pointer;padding:2px 9px;border-radius:10px;border:1px solid #30363d;${c==logCat?'background:#1f6feb;color:#fff;border-color:#1f6feb':'color:#8b949e'}">${c}</span>`).join('');}
 let agSort={k:'cr',dir:-1};   // Agents table sort (click a column header)
 function sortAg(k){if(agSort.k===k)agSort.dir*=-1;else{agSort.k=k;agSort.dir=(k==='name'?1:-1);}tick();}
 function agKey(g,k){const b=g.buffers||{};return ({id:g.id,name:(g.name||'').toLowerCase(),cr:b.credits||0,parts:g.loose_parts||0,veh:g.vehicles||0,kd:g.kills||0,alt:g.in_space?1e6:(g.altitude||0)})[k];}
 let codexQ='';   // Codex search filter (items / ingredients / properties / inventor)
+async function sinceLastVisit(){   // "what changed since your last visit" digest (localStorage last-seen tick + events since then)
+ try{
+  const seen=+localStorage.getItem('nha_seen')||0;
+  const w=await j('/world');const now=(w&&w.tick)||0;
+  if(seen&&now>seen+2){
+   const lg=await j('/log?after='+seen+'&limit=200');const evs=(lg&&lg.log)||[];
+   if(evs.length){
+    const MIL=['escape','invent','land','build','war','peace','attune','destroyed'];
+    const mil=evs.filter(e=>MIL.includes(e.kind)).length;
+    const b=$('sincebanner');
+    if(b)b.innerHTML=`<div style="background:#132132;border:1px solid #1f6feb;border-radius:8px;padding:8px 12px;margin:0 0 10px;font-size:13px;color:#c9d6e5">&#9198;&#65038; <b>${evs.length}${evs.length>=200?'+':''}</b> events since your last visit <span class=sub>(${now-seen} ticks ago)</span>${mil?` &mdash; incl. <b>${mil}</b> milestone${mil>1?'s':''}`:''} <a onclick="active='Log';localStorage.setItem('nha_tab',active);pageURL();drawTabs();fitMap();tick()" style="cursor:pointer;color:#58a6ff">open Log &rarr;</a> <span onclick="this.parentNode.remove()" style="cursor:pointer;float:right;color:#8b949e">&times;</span></div>`;
+   }
+  }
+  if(now)localStorage.setItem('nha_seen',now);   // never clobber a real last-seen tick with 0 on a failed /world fetch
+ }catch(e){}
+}
 async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;pageURL();
  const d=await j('/agent/'+id);if(!d){$('profile').removeAttribute('data-i18n');$('profile').innerHTML=`<span class=rej>${t('ph_agent_not_found')}</span>`;return;}
  const a=d.agent,at=a.attrs||{},b=a.buffers||{};
@@ -677,7 +695,8 @@ async function tick(){
   $('market').innerHTML=`<div style="margin-bottom:6px">${t('lbl_last')} ${lp}</div>${ob||`<span class=sub>${t('ph_orderbook_empty')}</span>`}`;}}
  if(need('/chat')){const ch=await j('/chat');
  if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;}
- if(need('/log')){const lg=await j('/log');drawLogChips();
+ if(need('/log')){const lg=await j('/log?limit=120'+(logBefore>0?'&before='+logBefore:''));drawLogChips();
+ if($('loglive'))$('loglive').innerHTML=logBefore>0?`<span onclick="logBefore=0;if($('logjump'))$('logjump').value='';tick()" style="cursor:pointer;color:#58a6ff">&#9209;&#65038; back to live</span>`:'';
  if(lg)$('log').innerHTML=(LOGCATS[logCat]?lg.log.filter(e=>LOGCATS[logCat].includes(e.kind)):lg.log).map(e=>{const dt=e.data||{};let txt;
   if(e.kind=='act')txt=`<b>${esc(String(dt.verb||''))}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
   else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
@@ -1216,6 +1235,7 @@ void main(){
  S3={};
 }
 try{const _qa=new URLSearchParams(location.search).get('agent');if(_qa)loadProfile(_qa);}catch(e){}   // ?agent=… deep-link opens that profile on load
+sinceLastVisit();
 tick(); setInterval(tick, 2000);
 if(active=='World')setTimeout(initWorld3D,150);
 </script></body></html>
