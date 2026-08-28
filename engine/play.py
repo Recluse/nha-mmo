@@ -154,6 +154,19 @@ def observe(cur, agent_id):
         asteroids = [{"id": r["id"], "x": r["x"], "y": r["y"], "resource": r["resource"],
                       "amount": r["amount"], "dist": r["dist"]} for r in cur.fetchall()]
 
+    # COMPLETED orbital ELEVATORS anywhere on the map — the free path to space (move onto the base cell + `ride`).
+    # Global (there are only a few) and nearest-first, so an agent stranded anywhere knows where it can climb.
+    cur.execute("SELECT id, x, y, (attrs->>'height')::int height, (abs(x-%s)+abs(y-%s)) dist FROM entities "
+                "WHERE type='structure' AND attrs->>'shape'='elevator' AND (attrs->>'complete')::boolean "
+                "ORDER BY dist, id LIMIT 8", (ax, ay, ax, ay))
+    elevators = [dict(r) for r in cur.fetchall()]
+    # nearby ground structures (cities/monuments/roads + UNFINISHED elevators) so the built world is visible, not just on the map.
+    cur.execute("SELECT id, x, y, attrs->>'shape' shape, COALESCE((attrs->>'complete')::boolean, false) complete, "
+                "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='structure' "
+                "AND COALESCE((attrs->>'alt')::int,0)=0 AND (abs(x-%s)+abs(y-%s)) <= %s ORDER BY dist, id LIMIT 12",
+                (ax, ay, ax, ay, _NEARBY_RADIUS * 2))
+    nearby_structures = [dict(r) for r in cur.fetchall()]
+
     # SCIENCE LAYER: a crafted `observatory` (lens + chip) computes the world's DETERMINISTIC dynamics ahead of time.
     # Pure functions of the tick → read-only, never touches world state or the hash chain. MVP = the weather (storm).
     forecast = None
@@ -174,4 +187,4 @@ def observe(cur, agent_id):
             "alerts": alerts, "last_robbed_by": last_robbed_by,
             "loot": loot, "artifacts": artifacts, "asteroids": asteroids,
             "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin, "forecast": forecast,
-            "updates": updates}
+            "updates": updates, "elevators": elevators, "nearby_structures": nearby_structures}
