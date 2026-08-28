@@ -444,7 +444,7 @@ async def _count_visitor(request, call_next):
 @app.get("/healthz")
 async def healthz():                                     # async + lightweight → served on the event loop, NEVER queues
     return {"ok": True, "tick": _state.get("tick", 0), "running": _state.get("running", False),
-            "drift": getattr(engine, "_DRIFT_COUNT", 0)}   # audit(observability): surface carried/DB drift self-heals (meaningful on the RUN_TICK pod)
+            "drift": getattr(getattr(engine, "_STATE", None), "drift_count", 0)}   # audit(observability): surface carried/DB drift self-heals (meaningful on the RUN_TICK pod)
     # was `def healthz(): return _state` (sync → ran in the threadpool and queued behind heavy /observe under load →
     # readiness probe timed out → API flapped 0/1 → 502 even though the process was healthy). Keep it dependency-free.
 

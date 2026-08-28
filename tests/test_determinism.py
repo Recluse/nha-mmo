@@ -74,10 +74,9 @@ def _run_once(n):
     if _ENGINE_DIR not in sys.path:
         sys.path.insert(0, _ENGINE_DIR)
     for m in ("engine", "crafting", "vehicles", "worldgen"):
-        sys.modules.pop(m, None)                       # fresh import → _WORLD globals reset
+        sys.modules.pop(m, None)                       # fresh import → carried tick state reset
     import engine
-    engine._WORLD = engine._WORLD_LOADED_TICK = None
-    engine._WORLD_MAX_ID = 0
+    engine._STATE = engine._TickState()                # explicit fresh carried state (structural reset — audit #15)
     conn = psycopg2.connect(_TEST_DSN)
     cur = conn.cursor(); cur.execute(engine.SCHEMA); conn.commit()
     engine.seed_demo(conn)

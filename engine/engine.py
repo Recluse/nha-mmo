@@ -1922,13 +1922,22 @@ def _transient_reason(result):
 
 
 # ---------- in-memory world (Phase 1): carry ents across ticks instead of SELECT* every tick ----------
-_WORLD = None              # the carried entities dict (id -> row); None until first load
-_WORLD_MAX_ID = 0          # cross-process insert-merge watermark (pre-systems max id folded into _WORLD)
-_WORLD_LOADED_TICK = None  # tick of the last full reload (drift-check + safety-net boundary)
-_CANON = {}                # P0: persisted {id -> _entity_canon(e)} = last tick's serialized state; baseline for dirty-tracking AND the hash
-_DEP_AMT = {}              # P2: {deposit id -> last-serialized amount}. `amount` is a deposit's ONLY mutable field, so amount unchanged ⇒ canon unchanged ⇒ skip re-serializing it (an int compare vs the huge static deposit bulk)
+class _TickState:
+    """All replay-critical carried-across-ticks state in ONE object (audit #15). Reset is now STRUCTURAL rather
+    than by-convention: a second in-process caller (replay tool, multi-world harness) passes its OWN _TickState
+    instead of the module singleton's carried world bleeding into its hash chain. The per-tick systems still take
+    `ents` (== state.world) as a parameter, so only tick()/_tick_body() touch this object."""
+    __slots__ = ("world", "max_id", "loaded_tick", "canon", "dep_amt", "drift_count")
+    def __init__(self):
+        self.world = None          # the carried entities dict (id -> row); None until first load
+        self.max_id = 0            # cross-process insert-merge watermark (pre-systems max id folded in)
+        self.loaded_tick = None    # tick of the last full reload (drift-check + safety-net boundary)
+        self.canon = {}            # P0: {id -> _entity_canon(e)} = last tick's serialized state; baseline for dirty-tracking AND the hash
+        self.dep_amt = {}          # P2: {deposit id -> last-serialized amount} — amount is a deposit's ONLY mutable field, so unchanged ⇒ skip re-serializing it
+        self.drift_count = 0       # audit(observability): count of carried/DB drift self-heals — nonzero means the hash chain was written wrong for up to RELOAD_EVERY ticks (exposed on /healthz)
+
+_STATE = _TickState()      # the module-default single world — existing callers keep calling tick(conn) unchanged
 RELOAD_EVERY = 10          # full SELECT*-reload every N ticks: drift-check vs carried + self-heal (raise once proven)
-_DRIFT_COUNT = 0           # audit(observability): count of carried/DB drift self-heals — a nonzero value means the hash chain was written wrong for up to RELOAD_EVERY ticks; exposed on /healthz
 
 def _load_world(cur):
     """Full load of the entities table into an id-keyed dict, with the API-owned `token` stripped — the tick
@@ -1942,19 +1951,19 @@ def _load_world(cur):
             mx = e["id"]
     return w, mx
 
-def tick(conn):
-    """Advance the world one tick. On ANY failure, DROP the carried in-memory world so the next tick does a
-    clean full reload — the failed tick's uncommitted _WORLD mutations are rolled back by the caller, and
-    leaving a stale _WORLD would diverge from the DB for up to RELOAD_EVERY ticks (adversarial-review finding)."""
-    global _WORLD, _WORLD_LOADED_TICK, _CANON, _DEP_AMT
+def tick(conn, state=None):
+    """Advance the world one tick. `state` defaults to the module _STATE so existing callers use tick(conn)
+    unchanged; pass an explicit _TickState() to advance an ISOLATED world in-process. On ANY failure, DROP the
+    carried world so the next tick clean-reloads — the failed tick's uncommitted mutations are rolled back by
+    the caller, and a stale carried world would diverge from the DB for up to RELOAD_EVERY ticks."""
+    s = state if state is not None else _STATE
     try:
-        return _tick_body(conn)
+        return _tick_body(conn, s)
     except Exception:
-        _WORLD = _WORLD_LOADED_TICK = None; _CANON = {}; _DEP_AMT = {}   # drop the canon + deposit-amount baselines → next tick rebuilds them on the clean reload
+        s.world = s.loaded_tick = None; s.canon = {}; s.dep_amt = {}   # drop the caches → next tick rebuilds them on the clean reload
         raise
 
-def _tick_body(conn):
-    global _WORLD, _WORLD_MAX_ID, _WORLD_LOADED_TICK, _CANON, _DEP_AMT, _DRIFT_COUNT
+def _tick_body(conn, s):
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("UPDATE world SET tick = tick + 1 WHERE id = 1 RETURNING tick")
     t = cur.fetchone()["tick"]
@@ -1963,24 +1972,24 @@ def _tick_body(conn):
     # out-of-band (new agents/humans) via an id>watermark merge; new_entity/del_entity keep the carried
     # dict in lock-step for tick-time creates/deletes. Watermark = pre-systems max so the merge re-catches
     # an API insert whose id interleaved BELOW a same-tick tick-creation (else it'd be skipped until reload).
-    if _WORLD is None or _WORLD_LOADED_TICK is None or (t - _WORLD_LOADED_TICK) >= RELOAD_EVERY:
+    if s.world is None or s.loaded_tick is None or (t - s.loaded_tick) >= RELOAD_EVERY:
         fresh, _mx = _load_world(cur)
-        if _WORLD is not None:
-            carried, db = _world_hash(_CANON), state_hash(fresh)   # audit(perf): reuse the cached canon — identical to state_hash(_WORLD) here (pre-mutation), avoids a redundant full re-serialize on the reload tick
+        if s.world is not None:
+            carried, db = _world_hash(s.canon), state_hash(fresh)   # audit(perf): reuse the cached canon — identical to state_hash(s.world) here (pre-mutation), avoids a redundant full re-serialize on the reload tick
             if carried != db:
-                _DRIFT_COUNT += 1                                  # audit(observability): drift must be LOUD + countable (exposed on /healthz), not a lone print that scrolls away
-                print(f"[INMEM][ERROR] tick {t}: carried/db DRIFT #{_DRIFT_COUNT} carried={carried} db={db} "
-                      f"db_only={list(set(fresh) - set(_WORLD))[:6]} ram_only={list(set(_WORLD) - set(fresh))[:6]} — self-healed to db", flush=True)
-        _WORLD, _WORLD_LOADED_TICK = fresh, t
-        _CANON = {eid: _entity_canon(e) for eid, e in fresh.items()}   # P0: reset the dirty/hash baseline to the freshly-loaded (authoritative) state
-        _DEP_AMT = {eid: e["attrs"].get("amount") for eid, e in fresh.items() if e["type"] == "deposit"}   # P2: reset the deposit-amount baseline too
+                s.drift_count += 1                                  # audit(observability): drift must be LOUD + countable (exposed on /healthz), not a lone print that scrolls away
+                print(f"[INMEM][ERROR] tick {t}: carried/db DRIFT #{s.drift_count} carried={carried} db={db} "
+                      f"db_only={list(set(fresh) - set(s.world))[:6]} ram_only={list(set(s.world) - set(fresh))[:6]} — self-healed to db", flush=True)
+        s.world, s.loaded_tick = fresh, t
+        s.canon = {eid: _entity_canon(e) for eid, e in fresh.items()}   # P0: reset the dirty/hash baseline to the freshly-loaded (authoritative) state
+        s.dep_amt = {eid: e["attrs"].get("amount") for eid, e in fresh.items() if e["type"] == "deposit"}   # P2: reset the deposit-amount baseline too
     else:
-        cur.execute("SELECT * FROM entities WHERE id > %s ORDER BY id", (_WORLD_MAX_ID,))   # audit(determinism): keep merge order id-stable
+        cur.execute("SELECT * FROM entities WHERE id > %s ORDER BY id", (s.max_id,))   # audit(determinism): keep merge order id-stable
         for e in cur.fetchall():
             e["attrs"].pop("token", None)
-            _WORLD[e["id"]] = e                            # merged rows aren't in _CANON → flagged dirty once (harmless: they're already in the DB)
-    _WORLD_MAX_ID = max(_WORLD) if _WORLD else 0           # watermark for next tick's insert-merge
-    ents = _WORLD
+            s.world[e["id"]] = e                           # merged rows aren't in s.canon → flagged dirty once (harmless: they're already in the DB)
+    s.max_id = max(s.world) if s.world else 0             # watermark for next tick's insert-merge
+    ents = s.world
     events = []
     _pc = time.perf_counter; _pm = _pc(); _pd = {}         # [PROF] coarse per-phase timing — behavior-neutral, logged every 100 ticks (P0 measurement)
     cur.execute("SELECT * FROM intents WHERE status = 'pending' ORDER BY id")
@@ -2043,14 +2052,14 @@ def _tick_body(conn):
     # can't miss a change, and the reused canon equals what a recompute would give → hash stays byte-identical.
     _new_canon = {}
     for eid, e in ents.items():
-        if e["type"] == "deposit" and _DEP_AMT.get(eid) == e["attrs"].get("amount") and eid in _CANON:
-            _new_canon[eid] = _CANON[eid]
+        if e["type"] == "deposit" and s.dep_amt.get(eid) == e["attrs"].get("amount") and eid in s.canon:
+            _new_canon[eid] = s.canon[eid]
         else:
             _new_canon[eid] = _entity_canon(e)
             if e["type"] == "deposit":
-                _DEP_AMT[eid] = e["attrs"].get("amount")
+                s.dep_amt[eid] = e["attrs"].get("amount")
     dirty = [(e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), eid)
-             for eid, e in ents.items() if _CANON.get(eid) != _new_canon[eid]]
+             for eid, e in ents.items() if s.canon.get(eid) != _new_canon[eid]]
     _pd["dirty_detect"] = _pc() - _pm; _pm = _pc()         # cost of the O(N) canon build + compare (was 2 full json.dumps/entity here + 2 in the snapshot)
     execute_batch(cur, "UPDATE entities SET x=%s, y=%s, buffers=%s, "
                        "attrs = (%s::jsonb - 'token') || (CASE WHEN jsonb_exists(entities.attrs, 'token') "
@@ -2065,7 +2074,7 @@ def _tick_body(conn):
                       [(tk, eid, kind, Json(data)) for (tk, eid, kind, data) in events], page_size=500)
     cur.execute("INSERT INTO tick_hashes(tick, hash) VALUES(%s,%s) "
                 "ON CONFLICT (tick) DO UPDATE SET hash=EXCLUDED.hash", (t, _world_hash(_new_canon)))
-    _CANON = _new_canon                                    # P0: this tick's canon becomes next tick's baseline (deleted ids drop out here)
+    s.canon = _new_canon                                   # P0: this tick's canon becomes next tick's baseline (deleted ids drop out here)
     _pd["events_hash"] = _pc() - _pm                       # events INSERT + hash (now a join+sha256, no re-serialize)
     if t % 200 == 0:                                        # lightweight ongoing telemetry: where each tick's work goes (dirty_detect+events_hash = the serialization that bounds density)
         print(f"[PROF] t{t} ents={len(ents)} " + " ".join(f"{k}={v*1000:.0f}" for k, v in _pd.items())
