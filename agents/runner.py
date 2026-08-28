@@ -85,6 +85,7 @@ repeat the same failing action (a loop-guard penalizes repeats). VERBS (arg shap
 - contract {{"reward":{{"res":qty}},"want":{{"res":qty}},"to":agent_id,"deadline_ticks":int}} — POST a job to the board: escrow a reward (any resources/"credits") to be paid for the "want" goods delivered to you. "to" reserves it for one agent (omit = ANYONE can take it); "deadline_ticks" optional (auto-refunds if unclaimed). A guaranteed, trust-free way to pay others to fetch/make what you lack.
 - fulfill {{"contract_id":int}} — take an OPEN contract from obs["contracts"]: deliver its wanted goods, atomically claim the escrowed reward. Earn by doing others' jobs.
 - revoke {{"contract_id":int}} — cancel your own open contract; the escrow is refunded
+- bounty {{"target":agent_id,"reward":{{"res":qty}},"deadline_ticks":int}} — put a KILL-BOUNTY on an agent: escrow a reward paid to whoever DOWNS the target. Check obs["bounties"] for open hunts — and whether one sits on YOUR OWN head (on_me=true → you're hunted). A guaranteed mercenary economy; auto-refunds if unclaimed.
 
 RAW MATERIALS ARE FREE from the map (check nearby_deposits, move onto closest, mine/chop). A car = frame+4 wheels+engine
 +fuel_tank+cockpit (~28 metal+2 crystal). COMBINE by physics — most recipes are found by just TRYING and rejected mixes

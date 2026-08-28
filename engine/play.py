@@ -48,11 +48,16 @@ def observe(cur, agent_id):
     cur.execute("SELECT id,proposer,give,want FROM trades "
                 "WHERE target=%s AND status='open' ORDER BY id", (agent_id,))
     offers = [dict(r) for r in cur.fetchall()]
-    # open contract board relevant to me: jobs I can take (open to anyone or reserved for me) + my own posted jobs.
+    # open supply-contract board relevant to me: jobs I can take (open to anyone or reserved for me) + my own posted jobs.
     cur.execute("SELECT id, poster, reward, want, target, deadline FROM contracts "
-                "WHERE status='open' AND (target IS NULL OR target=%s OR poster=%s) ORDER BY id DESC LIMIT 20",
+                "WHERE status='open' AND kind='supply' AND (target IS NULL OR target=%s OR poster=%s) ORDER BY id DESC LIMIT 20",
                 (agent_id, agent_id))
     contracts = [{**dict(r), "mine": r["poster"] == agent_id} for r in cur.fetchall()]
+    # open KILL-BOUNTIES (public hunts): whom to hunt for a reward — and, critically, any bounty on MY OWN head (on_me).
+    # Order own-head bounties FIRST so the LIMIT can never drop the observer's own-head warning behind newer hunts.
+    cur.execute("SELECT id, poster, reward, target, deadline FROM contracts "
+                "WHERE status='open' AND kind='kill' ORDER BY (target=%s) DESC, id DESC LIMIT 20", (agent_id,))
+    bounties = [{**dict(r), "on_me": r["target"] == agent_id, "mine": r["poster"] == agent_id} for r in cur.fetchall()]
     cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
                 "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
                 "WHERE m.recipient IS NULL OR m.recipient=%s ORDER BY m.id DESC LIMIT 15", (agent_id,))
@@ -144,7 +149,7 @@ def observe(cur, agent_id):
                       "amount": r["amount"], "dist": r["dist"]} for r in cur.fetchall()]
 
     return {"position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
-            "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "messages": inbox,
+            "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,
             "nearby_deposits": nearby, "altitude": altitude, "atmosphere_top": 100, "in_space": in_space,
             "hp": hp, "hp_max": hp_max, "downed_until": downed_until,
             "nearby_agents": nearby_agents, "weapons": weapons, "ammo": ammo,

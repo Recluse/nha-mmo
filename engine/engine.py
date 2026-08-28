@@ -177,9 +177,10 @@ CREATE TABLE IF NOT EXISTS trades (id bigserial PRIMARY KEY, proposer bigint NOT
   target bigint NOT NULL, give jsonb NOT NULL, want jsonb NOT NULL,
   status text NOT NULL DEFAULT 'open', created int);
 CREATE TABLE IF NOT EXISTS contracts (id bigserial PRIMARY KEY, poster bigint NOT NULL,
-  reward jsonb NOT NULL, want jsonb NOT NULL, target bigint,
+  reward jsonb NOT NULL, want jsonb NOT NULL, target bigint, kind text NOT NULL DEFAULT 'supply',
   status text NOT NULL DEFAULT 'open', fulfiller bigint, created int, deadline int);
 CREATE INDEX IF NOT EXISTS contracts_open_idx ON contracts(status);   -- open-board scan in observe() + expire_contracts
+ALTER TABLE contracts ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'supply';   -- migrate a pre-bounty contracts table (CREATE above is a no-op once it exists); also applied out-of-band on the live world
 CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, tick int NOT NULL,
   sender bigint NOT NULL, recipient bigint, text text NOT NULL);
 CREATE TABLE IF NOT EXISTS discoveries (rule_key text PRIMARY KEY, name text NOT NULL,
@@ -456,10 +457,12 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", f"contract #{cid}: reward {reward} for delivery of {want}" + (f" by #{target}" if target else " (open)")
     if verb == "fulfill":                                # deliver the wanted goods, atomically claim the escrowed reward
         cid = _ai(args, "contract_id", 0)
-        cur.execute("SELECT poster,reward,want,target,status FROM contracts WHERE id=%s", (cid,))
+        cur.execute("SELECT poster,reward,want,target,status,kind FROM contracts WHERE id=%s", (cid,))
         c = cur.fetchone()
         if not c or c["status"] != "open":
             return "rejected", "no such open contract"
+        if c["kind"] == "kill":
+            return "rejected", "a kill-bounty is claimed by DOWNING the target, not via fulfill"
         if c["poster"] == a["id"]:
             return "rejected", "can't fulfill your own contract"
         if c["target"] is not None and c["target"] != a["id"]:
@@ -486,6 +489,26 @@ def apply_intent(it, ents, cur, t, events):
             addb(a, res, int(q))                         # refund the escrow
         cur.execute("UPDATE contracts SET status='revoked' WHERE id=%s", (cid,))
         return "applied", f"revoked contract #{cid} — reward refunded"
+    if verb == "bounty":                                 # post a KILL-BOUNTY: escrow a reward paid to whoever DOWNS the target
+        victim = _aid(args, "target") if args.get("target") is not None else None
+        reward = args.get("reward", {})
+        if victim is None or victim not in ents or ents[victim]["type"] != "agent":
+            return "rejected", "bounty needs a valid agent target"
+        if victim == a["id"]:
+            return "rejected", "can't put a bounty on your own head"
+        if not (isinstance(reward, dict) and reward) or any(not isinstance(q, (int, float)) or q < 1 for q in reward.values()):
+            return "rejected", "bounty needs a non-empty reward{} with positive quantities"
+        if any(get(a, res) < int(q) for res, q in reward.items()):
+            return "rejected", "insufficient to escrow the bounty reward"
+        dl = _ai(args, "deadline_ticks", 0)
+        deadline = t + dl if dl > 0 else None
+        for res, q in reward.items():
+            addb(a, res, -int(q))                         # escrow the bounty up front
+        cur.execute("INSERT INTO contracts(poster,reward,want,target,kind,created,deadline) VALUES(%s,%s,%s,%s,'kill',%s,%s) RETURNING id",
+                    (a["id"], Json(reward), Json({}), victim, t, deadline))
+        bid = cur.fetchone()["id"]
+        events.append((t, a["id"], "contract", {"event": "bounty_posted", "contract_id": bid, "target": victim, "reward": reward}))
+        return "applied", f"bounty #{bid}: {reward} to whoever downs #{victim}"
     if verb in ("say", "tell"):                          # agent↔agent communication (observable)
         cur.execute("SELECT 1 FROM messages WHERE sender=%s AND tick=%s LIMIT 1", (a["id"], t))
         if cur.fetchone():
@@ -1441,6 +1464,17 @@ def kill_agent(e, t, attacker, events, cur, ents):
             if int(lk.get(vk, -10 ** 9)) + COMBAT_PTS_PAIR_WINDOW <= t:
                 attacker["attrs"]["combat_points"] = int(attacker["attrs"].get("combat_points", 0)) + COMBAT_PTS_KILL
                 lk[vk] = t; attacker["attrs"]["last_kill"] = lk
+            # KILL-BOUNTIES: pay out every open bounty on this victim to the downer (reward was escrowed at post time).
+            # fetchall() first (rows materialized), then UPDATE in the loop — safe on the same cursor. Deterministic (id order).
+            # Guard self-down: an agent caught in its OWN bomb (attacker==victim) must NOT collect a bounty on its own head.
+            if attacker["id"] != e["id"]:
+                cur.execute("SELECT id, poster, reward FROM contracts WHERE kind='kill' AND status='open' AND target=%s ORDER BY id", (e["id"],))
+                for b in cur.fetchall():
+                    for res, q in (b["reward"] or {}).items():
+                        addb(attacker, res, int(q))
+                    cur.execute("UPDATE contracts SET status='fulfilled', fulfiller=%s WHERE id=%s", (attacker["id"], b["id"]))
+                    events.append((t, attacker["id"], "contract", {"event": "bounty_claimed", "contract_id": b["id"],
+                                                                    "target": e["id"], "poster": b["poster"], "reward": b["reward"]}))
     elif e["type"] == "vehicle":
         e["attrs"]["wrecked"] = True
         e["attrs"]["drives"] = False; e["attrs"]["flies"] = False; e["attrs"]["autonomous"] = False

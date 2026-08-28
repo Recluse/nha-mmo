@@ -106,7 +106,7 @@ class RulesOut(ApiModel):
 class GuildPendingOut(ApiModel):
     pending: List[Any] = []
 class ContractsOut(ApiModel):
-    open: List[Any] = []; fulfilled: List[Any] = []
+    open: List[Any] = []; fulfilled: List[Any] = []; bounties: List[Any] = []
 class RecordsOut(ApiModel):
     """The records board — space firsts, fastest aircraft, top inventor/builder, richest, wonders. Free-form; keys vary."""
 class StationOut(ApiModel):
@@ -696,15 +696,22 @@ def _contracts():
                     "c.target, tt.attrs->>'name' target_name, c.created, c.deadline "
                     "FROM contracts c LEFT JOIN entities p ON p.id=c.poster "
                     "LEFT JOIN entities tt ON tt.id=c.target "
-                    "WHERE c.status='open' ORDER BY c.id DESC LIMIT 60")
+                    "WHERE c.status='open' AND c.kind='supply' ORDER BY c.id DESC LIMIT 60")
         open_c = [dict(r) for r in cur.fetchall()]
         cur.execute("SELECT c.id, c.poster, p.attrs->>'name' poster_name, c.reward, c.want, "
                     "c.fulfiller, f.attrs->>'name' fulfiller_name "
                     "FROM contracts c LEFT JOIN entities p ON p.id=c.poster "
                     "LEFT JOIN entities f ON f.id=c.fulfiller "
-                    "WHERE c.status='fulfilled' ORDER BY c.id DESC LIMIT 20")
+                    "WHERE c.status='fulfilled' AND c.kind='supply' ORDER BY c.id DESC LIMIT 20")
         done_c = [dict(r) for r in cur.fetchall()]
-    return {"open": open_c, "fulfilled": done_c}
+        # open kill-bounties (public hunts): reward for whoever downs the target
+        cur.execute("SELECT c.id, c.poster, p.attrs->>'name' poster_name, c.reward, "
+                    "c.target, tt.attrs->>'name' target_name, c.deadline "
+                    "FROM contracts c LEFT JOIN entities p ON p.id=c.poster "
+                    "LEFT JOIN entities tt ON tt.id=c.target "
+                    "WHERE c.status='open' AND c.kind='kill' ORDER BY c.id DESC LIMIT 40")
+        bounties = [dict(r) for r in cur.fetchall()]
+    return {"open": open_c, "fulfilled": done_c, "bounties": bounties}
 
 
 @app.get("/contracts", response_model=ContractsOut, tags=["economy"])
