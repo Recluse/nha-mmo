@@ -34,9 +34,7 @@ REPLIES = [
 
 def register():
     mats = {"metal": 10, "carbon": 8, "credits": 60}
-    tok = "%016x" % random.getrandbits(64)
-    r = runner.api("/agents", "POST", {"name": NAME, "materials": mats, "reuse": True, "token": tok})
-    return r["agent_id"], (r.get("token") or tok)
+    return runner.register(NAME, mats)   # persist+reclaim our token (server no longer hands it out by name)
 
 
 def act(obs):

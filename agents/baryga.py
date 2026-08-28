@@ -45,9 +45,7 @@ SELLABLE = ("metal", "iron", "copper", "aluminum", "carbon", "silicon", "crystal
 
 def register():
     mats = {"credits": 300, "metal": 20, "carbon": 10}   # seed capital for the wheeler-dealer
-    tok = "%016x" % random.getrandbits(64)
-    r = runner.api("/agents", "POST", {"name": NAME, "materials": mats, "reuse": True, "token": tok})
-    return r["agent_id"], (r.get("token") or tok)
+    return runner.register(NAME, mats)   # persist+reclaim our token (server no longer hands it out by name)
 
 
 def deal(obs, depot):

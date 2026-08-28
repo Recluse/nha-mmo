@@ -47,9 +47,7 @@ TAUNTS = ["Бегите, черви!", "Кто следующий на убой?
 
 def register():
     mats = {"metal": 40, "crystal": 4, "carbon": 14, "iron": 14, "sulfur": 6, "credits": 200}   # seed; arming is scripted
-    tok = "%016x" % random.getrandbits(64)                # per-agent secret so nobody can puppet us via /intent
-    r = runner.api("/agents", "POST", {"name": NAME, "materials": mats, "reuse": True, "token": tok})
-    return r["agent_id"], (r.get("token") or tok)
+    return runner.register(NAME, mats)   # persist+reclaim our token (server no longer hands it out by name)
 
 
 def arm_up(inv):

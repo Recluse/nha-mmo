@@ -4,7 +4,9 @@ metadata:
   name: nha-agents
   namespace: nha-mmo
 spec:
-  replicas: 1
+  replicas: 0                    # DECOMMISSIONED — the live LLM fleet was retired (scripted nha-bots carry the world).
+                                 # Kept revive-safe: the token migration below means `kubectl scale deploy/nha-agents
+                                 # --replicas=1` brings it back working (it reclaims its seeded tokens) instead of 403ing.
   selector: {matchLabels: {app: nha-agents}}
   template:
     metadata: {labels: {app: nha-agents}}
@@ -19,13 +21,20 @@ spec:
             - {name: SERVER_URL, value: "http://nha-mmo.nha-mmo.svc.cluster.local:8000"}
             - {name: AGENT_MODELS, value: "llama-3.3-70b-versatile,llama-3.1-8b-instant,qwen/qwen3-32b,openai/gpt-oss-20b,meta-llama/llama-4-scout-17b-16e-instruct"}
             - {name: AGENT_INTERVAL, value: "14"}   # ease Groq free-tier TPM limits across 5 models
+            - {name: NHA_TOKENS, value: "/tokens/tokens.json"}   # reclaim each model's agent on restart — the
+              # server no longer returns a token by name, so the secret (seeded from the DB, keyed by this pod's
+              # FQDN SERVER_URL) is how a revived fleet re-binds instead of 403ing on every intent.
             - name: GROQ_API_KEY
               valueFrom: {secretKeyRef: {name: groq, key: GROQ_API_KEY}}
             - name: GROQ_URL                                 # Cloudflare AI Gateway → Groq (direct api.groq.com is edge-blocked here)
               valueFrom: {secretKeyRef: {name: groq, key: GROQ_URL}}
-          volumeMounts: [{name: code, mountPath: /app}]
+          volumeMounts:
+            - {name: code, mountPath: /app}
+            - {name: tokens, mountPath: /tokens, readOnly: true}
           resources:
             requests: {cpu: 25m, memory: 64Mi}
             limits: {memory: 160Mi}
       volumes:
         - {name: code, configMap: {name: nha-agents-code}}
+        - name: tokens
+          secret: {secretName: nha-agents-tokens, optional: true}   # seeded from the DB; optional so a fresh cluster still boots

@@ -26,6 +26,19 @@ import psycopg2                                       # noqa: E402
 from psycopg2.extras import RealDictCursor, Json      # noqa: E402
 from fastapi import FastAPI, HTTPException, Request, Response, Query, Header   # noqa: E402
 import hmac                                            # noqa: E402  — constant-time guild-token compare
+
+
+def _secret_eq(a, b) -> bool:
+    """Constant-time compare of two client-supplied secrets.
+
+    `hmac.compare_digest` raises TypeError on non-ASCII `str`, so comparing a raw request field would
+    turn any token containing e.g. "é" into a 500 instead of a clean refusal. Encoding first keeps the
+    timing property and makes every malformed token just a mismatch.
+    """
+    try:
+        return hmac.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
+    except (TypeError, ValueError, UnicodeError):
+        return False
 from fastapi.responses import HTMLResponse, FileResponse   # noqa: E402
 from pydantic import BaseModel, field_validator, ConfigDict   # noqa: E402
 from typing import Optional, List, Dict, Any           # noqa: E402
@@ -494,7 +507,7 @@ _seen_ips = set()                                        # in-process dedup: tou
 
 @app.middleware("http")
 async def _count_visitor(request, call_next):
-    """Count unique spectators by hashed client IP (X-Forwarded-For from the gw-public nginx). Only the dashboard
+    """Count unique spectators by hashed client IP (X-Forwarded-For from the the public gateway nginx). Only the dashboard
     root counts, and the in-process set means the DB is hit at most once per new IP — not on every poll."""
     if request.url.path == "/":
         try:
@@ -862,18 +875,21 @@ def register_agent(a: AgentIn, request: Request, response: Response):
                 # always re-sends its own token, which we verify below.
                 existing = row[1]
                 if existing:
-                    # Reuse-by-name returns the agent and its EXISTING token. The scripted bots regenerate a FRESH
-                    # token every restart and rely on getting the bound one back so their /intent matches — 403-ing on
-                    # a token mismatch here CrashLooped every bot. The token is never rebound to a caller-supplied
-                    # secret, so a stranger who reuses the name just receives the same token: best-effort identity by
-                    # design (open registration), not a hard boundary.
-                    return {"agent_id": row[0], "reused": True, "token": existing}
-                # Legacy tokenless agent (pre-fix). Adopt-on-reuse ONLY if the caller opts in by sending a token —
-                # bind THAT. Do NOT auto-mint here: external BYO agents (codex/KimiClaw) re-register without a token
-                # and must STAY tokenless, else they'd be locked out of /intent (which is soft for tokenless — below).
-                if tok:
-                    cur.execute("UPDATE entities SET attrs = attrs || %s WHERE id=%s", (Json({"token": tok}), row[0])); conn.commit()
-                return {"agent_id": row[0], "reused": True, "token": tok or None}
+                    # Reuse-by-name NEVER discloses the bound token. Agent names are public (`GET /agents`),
+                    # so handing the token to whoever asks for the name let any reader of this file take over
+                    # any agent: read a name, re-register it, receive its secret, POST /intent as that agent.
+                    # A caller who already holds the token gets it echoed back (idempotent restart); anyone
+                    # else gets the public id and no secret. Bots must persist their token across restarts —
+                    # see `agents/runner.py`, which stores it per world+name.
+                    if tok and _secret_eq(tok, existing):
+                        return {"agent_id": row[0], "reused": True, "token": existing}
+                    return {"agent_id": row[0], "reused": True, "token": None,
+                            "note": "name already taken; send that agent's token to control it"}
+                # Legacy tokenless agent. Binding on demand was the same hole in slower motion: a stranger
+                # could claim an unclaimed agent by sending any token. Tokenless agents are minted a secret
+                # by the migration and none of them ever submitted an intent, so refuse to bind here.
+                return {"agent_id": row[0], "reused": True, "token": None,
+                        "note": "this agent predates tokens and cannot be claimed"}
             # reuse:True but NO existing agent with this name → falls through to NEW creation below (validated like any new).
 
         # ----- below here a NEW agent will be created → apply the three abuse guards -----
@@ -943,10 +959,10 @@ def submit_intent(it: IntentIn):
         row = cur.fetchone()
         if not row:
             raise HTTPException(404, "no such agent")
-        # Soft token: enforce ONLY if the agent has one. New agents are born with a token (Fix #3a) and the reuse
-        # path won't rebind a protected one (Fix #3c), so impersonation of token-holders is closed; pre-fix tokenless
-        # external agents (codex/KimiClaw) keep working rather than getting locked out of /intent.
-        if row[0] and it.token != row[0]:
+        # Hard token. This used to be soft — enforced only if the agent happened to have one — which left every
+        # tokenless agent puppetable by anyone who read its id off the public /agents list. All 7 tokenless agents
+        # had submitted zero intents, so requiring a token locks out nobody who was actually playing.
+        if not row[0] or not it.token or not _secret_eq(it.token, row[0]):
             raise HTTPException(403, "bad or missing agent token")
         cur.execute("INSERT INTO intents(agent, verb, args) VALUES(%s,%s,%s) RETURNING id",
                     (it.agent, it.verb, Json(it.args)))

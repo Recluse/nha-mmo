@@ -24,6 +24,8 @@ spec:
         env:
         - name: SERVER_URL
           value: "http://nha-mmo:8000"
+        - name: NHA_TOKENS               # persisted bot secrets (seeded from the DB) so each bot reclaims its
+          value: "/tokens/tokens.json"   # agent across restarts — the server no longer hands out a token by name
         envFrom:
         - secretRef:
             name: nha-groq        # GROQ_API_KEY + GROQ_URL for varvar_groq (the scripted bots ignore them)
@@ -34,7 +36,14 @@ spec:
         volumeMounts:
         - name: code
           mountPath: /app
+        - name: tokens
+          mountPath: /tokens
+          readOnly: true
       volumes:
       - name: code
         configMap:
           name: nha-bots-code
+      - name: tokens
+        secret:
+          secretName: nha-bot-tokens
+          optional: true       # tolerate absence on a fresh cluster; bots then mint fresh tokens for new agents

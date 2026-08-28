@@ -7,12 +7,12 @@ The agent's display name IS its model id, so the spectator shows which model is 
 stdlib (urllib) — every provider here is OpenAI-compatible, so it's just an HTTP POST with a Bearer key.
 
 Designed to run on the Google monitoring host: it reaches the world over the PUBLIC url and calls each
-model's API straight from Google (so Gemini isn't geo-blocked the way it is from gw-admin).
+model's API straight from Google (so Gemini isn't geo-blocked the way it is from the admin gateway).
 
 Env: SERVER_URL, AGENT_MODELS ("prov:model,prov:model,..."), AGENT_INTERVAL,
      GROQ_URL/GROQ_API_KEY, GITHUB_URL/GITHUB_TOKEN, GEMINI_URL/GEMINI_API_KEY.
 """
-import os, json, time, random, urllib.request, urllib.error
+import os, json, time, random, tempfile, urllib.request, urllib.error
 
 SERVER   = os.environ.get("SERVER_URL", "https://nha.recluse.ru")
 INTERVAL = float(os.environ.get("AGENT_INTERVAL", "20"))
@@ -374,12 +374,69 @@ def parse_action(raw):
     return obj["verb"], obj.get("args", {}) or {}
 
 
-def register(model):
-    mats = {"metal": random.randint(10, 40), "crystal": random.randint(0, 6),
-            "credits": random.randint(120, 260)}
-    tok = "%016x" % random.getrandbits(64)               # per-agent secret so nobody else can puppet us via /intent
+TOKENS_PATH = os.path.expanduser(os.environ.get("NHA_TOKENS", "~/nha-agents/tokens.json"))
+
+
+def _tokens():
+    """Persisted per-agent secrets, keyed by world+name.
+
+    The server no longer hands the bound token back to whoever asks for the name — that was a takeover
+    path — so a restarting bot has to remember its own secret rather than mint a fresh one and expect
+    the server to correct it.
+    """
+    try:
+        with open(TOKENS_PATH) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}   # a truncated or hand-edited file must not crash the run
+
+
+def _save_token(key, tok):
+    d = _tokens()
+    if d.get(key) == tok:
+        return                            # already persisted (the common reclaim path never writes)
+    d[key] = tok
+    # Persistence is BEST-EFFORT. In the cluster the store is a read-only secret mount seeded from the DB,
+    # so the reclaim path above returns before we ever get here; but a bot that mints a NEW agent (a name
+    # not in the seed) lands here and the write will EROFS. That must not kill the bot — it keeps the token
+    # in memory for this run and simply can't remember it across restarts. Only OSError is swallowed; a
+    # programming bug still raises.
+    try:
+        os.makedirs(os.path.dirname(TOKENS_PATH) or ".", exist_ok=True)
+        # Create the temp file 0600 up front: chmod after close leaves a window where the secrets are
+        # world-readable under the usual umask. A unique name keeps two processes from sharing one temp.
+        fd, tmp = tempfile.mkstemp(prefix=".tokens-", dir=os.path.dirname(TOKENS_PATH) or ".")
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(d, f, indent=1, sort_keys=True)
+            os.replace(tmp, TOKENS_PATH)  # atomic swap: a crash mid-write never truncates the store
+        except BaseException:
+            os.unlink(tmp)
+            raise
+    except OSError as e:
+        print(f"[runner] could not persist token for {key!r} ({e}); continuing read-only", flush=True)
+
+
+def register(model, mats=None):
+    if mats is None:
+        mats = {"metal": random.randint(10, 40), "crystal": random.randint(0, 6),
+                "credits": random.randint(120, 260)}
+    key = f"{SERVER}|{model}"
+    known = _tokens().get(key)
+    tok = known or "%016x" % random.getrandbits(64)
     r = api("/agents", "POST", {"name": model, "materials": mats, "reuse": True, "token": tok})
-    return r["agent_id"], (r.get("token") or tok)
+    got = r.get("token")
+    if r.get("reused") and not got:
+        # The name exists and the server did not accept our secret. Saving `tok` here would look like a
+        # success and then 403 on every single intent, silently — so fail loudly instead. Seed the store
+        # with the agent's real token (see README "Bring your own agent") or register under a free name.
+        raise RuntimeError(f"agent {model!r} already exists and our token was refused — "
+                           f"put its real token in {TOKENS_PATH} under key {key!r}")
+    tok = got or tok                      # a fresh agent is minted one server-side; a reuse echoes ours back
+    _save_token(key, tok)
+    return r["agent_id"], tok
 
 
 # keys we always keep verbatim if present, even when empty/zero — the model needs them to plan
