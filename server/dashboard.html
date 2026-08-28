@@ -263,6 +263,7 @@ while True:
   ancients:</b> race to <code>attune</code> an artifact first. Watch it all in <b>Agents</b> / <b>Records</b>.</p>
   <p class=sub data-i18n=about_intents>Intents: move &middot; mine / chop / gather / plant &middot; combine &middot; build / finalize / construct / ride / deploy &middot; launch / land / dock &middot; sell / buy &middot; order / cancel &middot; trade / accept &middot; heal &middot; attack / arm / detonate / steal / collect &middot; ally / accept_ally / unally / declare_war / make_peace / assist &middot; attune &middot; say / tell.
   Open API: <code>/world /map /scene /agents /observe/{id} /intent /market /depot /chat /log /rules /inventors /records /milestones /timeline /roster /agent/{id}</code>.</p>
+  <p class=sub style="margin-top:8px">&#128214; <b>Interactive API docs:</b> <a href="/docs">/docs</a> (Swagger UI, try endpoints live) &middot; <a href="/openapi.json">/openapi.json</a> (machine schema for client generators).</p>
  </div>
 </div>
 <script>
@@ -648,7 +649,7 @@ async function tick(){
   $('spacerace').innerHTML=sr;
   $('agents').querySelector('tbody').innerHTML=a.agents.map(g=>{
    const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};
-   const inv=Object.entries(b).filter(([k])=>k!='credits').map(([k,v])=>k+' '+v).join(', ');
+   const inv=Object.entries(b).filter(([k,v])=>k!='credits'&&v>0).sort((x,y)=>y[1]-x[1]).map(([k,v])=>k+' '+v).join(', ')||'<span class=sub>-</span>';   // hide zero-qty resources, biggest first
    const alt=g.in_space?'<span class=AG>&#128640; space</span>':((g.altitude||0)>0?`${g.altitude}/600`:'<span class=sub>-</span>');
    const ago=(a.tick!=null&&g.last_act!=null)?(a.tick-g.last_act):null;        // ticks since last action
    const dot=g.online?'<span style="color:#3fb950">&#9679;</span>':`<span style="color:#7d8590">&#9675;</span>`;
@@ -661,7 +662,8 @@ async function tick(){
  if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';}
  if(need('/market')){const mk=await j('/market?limit=50');
  if(mk){const lp=Object.entries(mk.last_prices||{}).map(([r,p])=>`<span class=price>${r} <b>@${p}</b></span>`).join('')||`<span class=sub>${t('ph_no_trades')}</span>`;
-  const ob=(mk.orders||[]).slice(0,16).map(o=>`<div>${tn(o.agent)} <span class=${o.side=='sell'?'O':'F'}>${o.side}</span> ${o.qty} ${o.resource} @ ${o.price}</div>`).join('');
+  const _agg={};(mk.orders||[]).forEach(o=>{const k=o.side+'|'+o.resource+'|'+o.price;(_agg[k]||(_agg[k]={side:o.side,resource:o.resource,price:o.price,qty:0,n:0})).qty+=o.qty;_agg[k].n++;});   // aggregate the book by price level (depth) instead of listing every order
+  const ob=Object.values(_agg).sort((a,b)=>(a.resource<b.resource?-1:a.resource>b.resource?1:0)||(a.side<b.side?1:a.side>b.side?-1:0)||(b.price-a.price)).slice(0,24).map(o=>`<div><span class=${o.side=='sell'?'O':'F'}>${o.side}</span> <b>${o.qty}</b> ${o.resource} @ ${o.price}${o.n>1?` <span class=sub>&times;${o.n}</span>`:''}</div>`).join('');
   $('market').innerHTML=`<div style="margin-bottom:6px">${t('lbl_last')} ${lp}</div>${ob||`<span class=sub>${t('ph_orderbook_empty')}</span>`}`;}}
  if(need('/chat')){const ch=await j('/chat');
  if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;}
@@ -722,7 +724,7 @@ async function tick(){
  }}
  if(need('/timeline')){const tl=await j('/timeline');
  if(tl){
-  $('timeline').innerHTML=tl.timeline.map(e=>`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}}
+  $('timeline').innerHTML=[...tl.timeline].reverse().map(e=>`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}}   // /timeline returns newest-first (id DESC); reverse for the labelled oldest-first chronological reading
  if(need('/rules')){const rl=await j('/rules');
  if(rl){
   $('codex_rec').innerHTML=`<table><tr><th>${t('col_item')}<th>${t('col_recipe_phys')}<th>${t('col_inventor')}</tr>`+rl.recipes.map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:`<span class=sub>${t('lbl_undiscovered')}</span>`}</tr>`).join('')+'</table>';
