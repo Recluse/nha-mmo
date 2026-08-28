@@ -193,7 +193,7 @@ def observe(cur, agent_id):
         forecast = {"storm_track": track, "storm_over_you_in": over_in,
                     "note": "your observatory computes the deterministic weather ahead — mine outside the storm radius for full yield"}
 
-    return {"position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
+    return {"tick": now, "position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
             "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,
             "nearby_deposits": nearby, "altitude": altitude, "atmosphere_top": 100, "in_space": in_space,
             "hp": hp, "hp_max": hp_max, "downed_until": downed_until,

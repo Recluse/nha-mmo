@@ -134,6 +134,7 @@ class ObserveOut(ApiModel):
     """One agent's full perception — the primary read for agent authors: nearby tiles/deposits/agents, self stats,
     inventory, plus system_notices and space_station. Exact keys vary by era and the agent's state."""
     system_notices: List[Any] = []; space_station: Optional[Any] = None
+    tick: Optional[int] = None     # the world tick this observation reflects — poll GET /intent/{id} once this advances past your intent's tick
     vision: Optional[Any] = None   # fog-of-war: {radius, base, bonus:{radar,observatory}} — how far this agent sees other agents
 from fastapi.middleware.gzip import GZipMiddleware   # noqa: E402
 app.add_middleware(GZipMiddleware, minimum_size=1024)   # JSON read payloads compress ~5-10x; spectator polling is the bulk of traffic
@@ -560,7 +561,10 @@ def _depot():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT attrs->'prices' prices FROM entities WHERE type='depot' LIMIT 1")
         row = cur.fetchone()
-    return {"prices": row["prices"] if row else None}
+    # Prices are from the DEPOT's side (the trap agents keep hitting): `buy` = credits the depot PAYS you when
+    # you `sell` to it; `sell` = credits YOU PAY when you `buy` from it (so sell > buy — that spread is the depot's).
+    return {"prices": row["prices"] if row else None,
+            "note": "prices are the depot's side: buy = what it pays you when you sell to it; sell = what you pay to buy from it. Depot trades work from anywhere (no proximity)."}
 
 
 @app.get("/depot", response_model=DepotOut, tags=["economy"])
@@ -927,10 +931,26 @@ def register_agent(a: AgentIn, request: Request, response: Response):
         # Fix #1: clamp registration materials to the starter allowlist (per-key caps) + force fixed-credits;
         # the caller can NO LONGER mint arbitrary credits/rare goods by stuffing AgentIn.materials.
         materials = _sanitize_starter_materials(a.materials)
+        # ONBOARDING: spawn a newcomer NEAR a completed orbital elevator (its ride to space + the co-op station)
+        # instead of a random cell up to ~200 tiles away — with move ~3 tiles/tick, a random spawn stranded a fresh
+        # agent from the whole season goal. Fall back to a random cell if none is finished yet. The x/y RNG is a
+        # one-time pre-tick INSERT (see the note above), so this does NOT perturb the deterministic tick/hash chain.
+        cur.execute("SELECT x, y FROM entities WHERE type='structure' AND attrs->>'shape'='elevator' "
+                    "AND (attrs->>'complete')::boolean")
+        elevs = cur.fetchall()
+        if elevs:
+            ex, ey = random.choice(elevs)
+            sx = max(0, min(WORLD_W - 1, ex + random.randint(-8, 8)))
+            sy = max(0, min(WORLD_H - 1, ey + random.randint(-8, 8)))
+        else:
+            sx, sy = random.randint(0, WORLD_W - 1), random.randint(0, WORLD_H - 1)
         cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('agent',%s,%s,%s,%s) RETURNING id",
-                    (random.randint(0, WORLD_W - 1), random.randint(0, WORLD_H - 1), Json(materials), Json(attrs)))
+                    (sx, sy, Json(materials), Json(attrs)))
         aid = cur.fetchone()[0]; conn.commit()
-    return {"agent_id": aid, "materials": materials, "token": tok}
+    return {"agent_id": aid, "materials": materials, "token": tok, "spawn": [sx, sy],
+            "note": ("materials are clamped to a cheap starter allowlist + 100 credits (anything else you "
+                     "requested was dropped — you can't mint); you spawn near a completed orbital elevator, so "
+                     "`ride` it to reach space for the co-op station.")}
 
 
 class IntentIn(BaseModel):
@@ -965,10 +985,33 @@ def submit_intent(it: IntentIn):
         # had submitted zero intents, so requiring a token locks out nobody who was actually playing.
         if not row[0] or not it.token or not _secret_eq(it.token, row[0]):
             raise HTTPException(403, "bad or missing agent token")
-        cur.execute("INSERT INTO intents(agent, verb, args) VALUES(%s,%s,%s) RETURNING id",
-                    (it.agent, it.verb, Json(it.args)))
+        tick = int(_state.get("tick", 0))
+        cur.execute("INSERT INTO intents(agent, verb, args, created) VALUES(%s,%s,%s,%s) RETURNING id",
+                    (it.agent, it.verb, Json(it.args), tick))
         iid = cur.fetchone()[0]; conn.commit()
-    return {"queued_intent": iid, "note": "applied on next tick"}
+    # Return the queue tick + where to read the OUTCOME. The world is authoritative and async: the intent is
+    # applied on a LATER tick, so this response can't carry the result — poll GET /intent/{id} once the world
+    # tick has advanced (or watch /observe / /log). This is how an agent learns whether its action succeeded.
+    return {"queued_intent": iid, "tick": tick,
+            "note": f"queued at tick {tick}; applied on a later tick. GET /intent/{iid} for its status+result once the tick advances."}
+
+
+@app.get("/intent/{intent_id}", tags=["agent"])
+def intent_status(intent_id: int):
+    """The stored OUTCOME of a queued intent — how an agent learns whether its action worked.
+    `status` is `pending` until a tick applies it, then `applied` or `rejected`; `result` is the outcome
+    string (an unknown verb → `rejected`/"unknown verb"; a blocked action → its reason). The same text also
+    appears in `/log`. Poll this after the world `tick` (see `/world` or `observe.tick`) has advanced past
+    the intent's `created` tick. Open (the result is public in `/log` anyway)."""
+    with _db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        # NB: `args` is deliberately NOT returned — a `tell{to,text}` intent's args hold a PRIVATE message, and
+        # this endpoint is unauthenticated. verb + status + result is all the caller needs to learn the outcome.
+        cur.execute("SELECT id, agent, verb, status, result, created FROM intents WHERE id=%s", (intent_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "no such intent")
+    return dict(row)
 
 
 # ---------- spectator surface (watch the agents play) ----------
@@ -1293,6 +1336,10 @@ def rules():
         cur.execute("SELECT count(*) c FROM proposals WHERE status='pending'")
         pending = cur.fetchone()["c"]
     return {"resources": crafting.PROPS, "pending": pending, "dynamic": dynamic,
+            "note": ("`combine{ingredients:{...}}` matches by the mixture's PHYSICS TAGS, not by the amounts you "
+                     "pass — it consumes the recipe's base amount of each matched ingredient (usually 1 of each) "
+                     "and makes one item; extra units and unrelated ingredients are left untouched. To batch, "
+                     "combine repeatedly."),
             "recipes": [{"item": k, "needs": crafting.RULE_NOTE.get(k, ""),
                          "props": (crafting.ITEM_PROPS.get(k) or crafting.PROPS.get(k, {})), "discovered": disc.get(k)}
                         for k, _ in crafting.RULES]}
