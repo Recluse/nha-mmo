@@ -23,6 +23,16 @@
  #scene3d{width:100%;height:74vh;display:block;cursor:grab;touch-action:none}
  h2{font-size:12px;margin:16px 0 8px;color:#58a6ff;text-transform:uppercase;letter-spacing:.5px} h2:first-child{margin-top:0}
  pre.map{line-height:1.05;font-size:12px;white-space:pre;margin:0;overflow:auto}
+ #mapwrap{position:relative;width:100%;height:74vh;border:1px solid #21262d;border-radius:6px;overflow:hidden;background:#0b0e14}
+ #mapcv{display:block;width:100%;height:100%;cursor:grab;touch-action:none}
+ .maptip{position:absolute;pointer-events:none;background:#0d1117ee;border:1px solid #30363d;border-radius:5px;padding:3px 7px;font-size:12px;color:#e6edf3;display:none;z-index:5;white-space:nowrap}
+ .mapctl{position:absolute;top:8px;left:8px;display:flex;gap:5px;flex-wrap:wrap;z-index:4}
+ .mapzoom{position:absolute;top:8px;right:8px;display:flex;gap:4px;z-index:4}
+ .mapchip{cursor:pointer;padding:3px 9px;border-radius:10px;font-size:12px;user-select:none;border:1px solid #30363d;background:#0d1117cc;color:#8b949e}
+ .mapchip.on{background:#1f6feb;color:#fff;border-color:#1f6feb}
+ .mapbtn{cursor:pointer;width:26px;height:26px;line-height:24px;text-align:center;border-radius:6px;border:1px solid #30363d;background:#0d1117cc;color:#e6edf3;font-size:15px;user-select:none}
+ .mapbtn:hover,.mapchip:hover{border-color:#1f6feb}
+ .maploading{position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:#8b949e;font-size:14px;background:#0b0e14cc;z-index:3}
  .O{color:#f0883e}.C{color:#a371f7}.F{color:#3fb950}.W{color:#58a6ff}.AG{color:#ffd866;font-weight:bold}.PL{color:#7bd66a}.AR{color:#a371f7;font-weight:bold}
  .ME{color:#b0bac6}.CR{color:#d2a8ff}.EN{color:#8b949e}.SU{color:#e3b341}.OL{color:#bc8cff}.SI{color:#79c0ff}.AQ{color:#58a6ff}
  .VH{color:#39d0d8;font-weight:bold}.ST{color:#d29922;font-weight:bold}
@@ -97,7 +107,7 @@
   </div>
  </div>
  <div class=panel data-tab=Map>
-  <pre class=map id=map></pre>
+  <div id=mapwrap><canvas id=mapcv></canvas><div id=maptip class=maptip></div><div id=mapctl class=mapctl></div><div id=mapzoom class=mapzoom></div><div id=maploading class=maploading></div></div>
   <div class=sub style=margin-top:8px data-i18n=map_biomes><b>biomes:</b> ~ water &middot; . plains &middot; # forest &middot; : desert &middot; ^ mountain &middot; <span class=sub>%</span> tundra</div>
   <div class=sub style=margin-top:4px data-i18n=map_resources><b>resources:</b>
   <span class=ME>&curren;</span> metal (iron/copper/aluminum/titanium) &middot;
@@ -663,27 +673,86 @@ async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)re
  const ptitle=at.title?` <span title="prestige title" style="background:#3a2d6b;color:#d9c6ff;border-radius:5px;padding:1px 7px;font-size:13px;font-weight:bold">&#127894; ${esc(at.title)}</span>`:'';   // 🏆 prestige title (monument builder)
  $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span>${ptitle}</h2><div>pos (${a.x},${a.y}) &middot; <span class=O>&#10084; ${at.hp||0}/${at.hp_max||100} hp</span> &middot; <span class=AG>&#9876; ${at.kills||0} kills / ${at.deaths||0} deaths</span> &middot; alt ${at.altitude||0}${at.in_space?` <span class=AG>${t('lbl_space_tag')}</span>`:''} &middot; ${at.inventor_points||0} pts</div><h2>${t('hdr_inventory')}</h2><div class=sub>${inv}</div><h2>${t('hdr_vehicles')} (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>${t('hdr_discoveries')}</h2><div class=feed>${disc}</div><h2>${t('hdr_milestones')}</h2><div class=feed>${ms}</div>`;}
 $('pload').onclick=()=>loadProfile($('pid').value);
-function colorize(s){let o='';for(const ch of s){
- if(ch==='*')o+='<span class=O>*</span>';               // generic ore
- else if(ch==='¤')o+='<span class=ME>¤</span>';         // metals (iron/copper/aluminum/titanium)
- else if(ch==='◆')o+='<span class=CR>◆</span>';         // crystal
- else if(ch==='●')o+='<span class=EN>●</span>';         // coal / carbon (energy)
- else if(ch==='§')o+='<span class=SU>§</span>';         // sulfur
- else if(ch==='ø')o+='<span class=OL>ø</span>';         // oil
- else if(ch==='◇')o+='<span class=SI>◇</span>';         // silicon
- else if(ch==='≈')o+='<span class=AQ>≈</span>';         // water / brine / salt / ice
- else if(ch==='♣')o+='<span class=F>♣</span>';          // tree (wood)
- else if(ch===',')o+='<span class=PL>,</span>';         // gatherable plant/flora (medicine branch)
- else if(ch==='!')o+='<span class=AR>!</span>';         // ancient artifact
- else if(ch==='▾')o+='<span class=VH>▾</span>';         // vehicle (rover / craft)
- else if(ch==='▣')o+='<span class=ST>▣</span>';         // structure (building)
- else if(ch==='╫')o+='<span class=ST>╫</span>';         // structure — orbital elevator (tower)
- else if(/[1-9A-Z]/.test(ch))o+='<span class=AG>'+ch+'</span>';
- else o+=esc(ch);}return o;}
-function fitMap(){const el=$('map'); if(!el||!el.dataset.w)return;          // scale the ASCII map to fill the panel width (capped by height)
- const cols=+el.dataset.w, rows=+el.dataset.h||57;
- const availW=(el.parentElement.clientWidth||el.clientWidth)-2, availH=window.innerHeight*0.74;
- if(availW>40){let fs=Math.min(availW/(cols*0.61), availH/(rows*1.06)); fs=Math.max(5,Math.min(22,fs)); el.style.fontSize=fs.toFixed(2)+'px';}}
+// ===== Interactive Map (canvas: pan/zoom, layer toggles, resource heatmap). Fed by /map (ascii grid + agent legend). =====
+const MAP={
+ rows:null,w:0,h:0,agents:[],view:null,dpr:1,cw:1,ch:1,base:null,heat:null,hover:null,drag:null,_moved:false,bound:false,_hc:{},
+ layers:{terrain:true,resources:true,agents:true,heat:false},
+ BIOME:{'~':'#16324f','.':'#26402a','#':'#17301d',':':'#4a4327','^':'#3b3b42','%':'#4a5560'},
+ RESC:{'¤':'#b0bac6','*':'#f0883e','◆':'#d2a8ff','●':'#8b949e','§':'#e3b341','ø':'#bc8cff','◇':'#79c0ff','≈':'#58a6ff','♣':'#3fb950',',':'#7bd66a'},
+ MARK:{'!':'#a371f7','▾':'#39d0d8','▣':'#d29922','╫':'#d29922','▲':'#d29922','▦':'#d29922','·':'#8a6d3b','▥':'#c9932a'},
+ RESNAME:{'¤':'metal','*':'ore','◆':'crystal','●':'coal/carbon','§':'sulfur','ø':'oil','◇':'silicon','≈':'water/salt','♣':'wood',',':'plant'},
+ BIOMENAME:{'~':'water','.':'plains','#':'forest',':':'desert','^':'mountain','%':'tundra'},
+ cv(){return $('mapcv');},
+ hex(col){let c=this._hc[col];if(!c){c=[parseInt(col.slice(1,3),16),parseInt(col.slice(3,5),16),parseInt(col.slice(5,7),16)];this._hc[col]=c;}return c;},
+ isAgent(ch){return (ch>='1'&&ch<='9')||(ch>='A'&&ch<='Z')||ch==='@';},
+ setData(m){if(!m)return;const l=$('maploading');
+  if(!m.ascii){this.rows=null;if(l){l.textContent=m.loading?'generating map…':'no map yet';l.style.display='flex';}return;}
+  if(l)l.style.display='none';
+  this.rows=m.ascii.split('\n');this.w=m.w||(this.rows[0]||'').length;this.h=m.h||this.rows.length;this.agents=m.agents||[];
+  this.ensureSize();this.buildBase();if(this.layers.heat)this.buildHeat();else this.heat=null;if(!this.view)this.fit();this.bind();this.chips();this.draw();},
+ ensureSize(){const c=this.cv();if(!c)return;const dpr=window.devicePixelRatio||1;const w=c.clientWidth||1,h=c.clientHeight||1;
+  if(c.width!==Math.round(w*dpr)||c.height!==Math.round(h*dpr)){c.width=Math.round(w*dpr);c.height=Math.round(h*dpr);}
+  this.dpr=dpr;this.cw=w;this.ch=h;},
+ buildBase(){const off=document.createElement('canvas');off.width=this.w;off.height=this.h;const ic=off.getContext('2d');const img=ic.createImageData(this.w,this.h);const d=img.data,L=this.layers;
+  for(let y=0;y<this.h;y++){const row=this.rows[y]||'';for(let x=0;x<this.w;x++){const ch=row[x]||' ';let col;
+    if(this.RESC[ch])col=L.resources?this.RESC[ch]:(L.terrain?this.BIOME['.']:null);
+    else if(this.MARK[ch])col=this.MARK[ch];
+    else if(this.isAgent(ch))col=L.terrain?this.BIOME['.']:null;    // agents drawn as crisp overlay; base keeps terrain under them
+    else col=L.terrain?(this.BIOME[ch]||'#0b0e14'):null;
+    const i=(y*this.w+x)*4;
+    if(col){const c=this.hex(col);d[i]=c[0];d[i+1]=c[1];d[i+2]=c[2];d[i+3]=255;}else{d[i]=11;d[i+1]=14;d[i+2]=20;d[i+3]=255;}}}
+  ic.putImageData(img,0,0);this.base=off;},
+ buildHeat(){const w=this.w,h=this.h,f=new Float32Array(w*h),tmp=new Float32Array(w*h),R=2;
+  for(let y=0;y<h;y++){const row=this.rows[y]||'';for(let x=0;x<w;x++)if(this.RESC[row[x]])f[y*w+x]=1;}
+  for(let p=0;p<2;p++){
+   for(let y=0;y<h;y++)for(let x=0;x<w;x++){let s=0,n=0;for(let dx=-R;dx<=R;dx++){const xx=x+dx;if(xx<0||xx>=w)continue;s+=f[y*w+xx];n++;}tmp[y*w+x]=s/n;}
+   for(let x=0;x<w;x++)for(let y=0;y<h;y++){let s=0,n=0;for(let dy=-R;dy<=R;dy++){const yy=y+dy;if(yy<0||yy>=h)continue;s+=tmp[yy*w+x];n++;}f[y*w+x]=s/n;}}
+  let mx=0;for(let i=0;i<f.length;i++)if(f[i]>mx)mx=f[i];if(mx<=0)mx=1;
+  const off=document.createElement('canvas');off.width=w;off.height=h;const ic=off.getContext('2d');const img=ic.createImageData(w,h);const d=img.data;
+  for(let i=0;i<f.length;i++){const v=Math.min(1,f[i]/mx),c=this.heatColor(v),j2=i*4;d[j2]=c[0];d[j2+1]=c[1];d[j2+2]=c[2];d[j2+3]=v<0.04?0:Math.round(200*v);}
+  ic.putImageData(img,0,0);this.heat=off;},
+ heatColor(v){const S=[[13,17,60],[24,90,180],[80,200,120],[240,200,60],[230,60,40]];const t=v*(S.length-1),i=Math.min(S.length-2,Math.floor(t)),f=t-i,a=S[i],b=S[i+1];
+  return [Math.round(a[0]+(b[0]-a[0])*f),Math.round(a[1]+(b[1]-a[1])*f),Math.round(a[2]+(b[2]-a[2])*f)];},
+ fit(){this.ensureSize();if(!this.w||!this.h||this.cw<=1||this.ch<=1)return;const s=Math.min(this.cw/this.w,this.ch/this.h);this.view={s,ox:(this.cw-this.w*s)/2,oy:(this.ch-this.h*s)/2};},   // refuse to fit against a hidden/0-size canvas — onResize refits once the tab is shown
+ zoom(f,cx,cy){if(!this.view)return;cx=cx==null?this.cw/2:cx;cy=cy==null?this.ch/2:cy;const v=this.view,s2=Math.max(0.4,Math.min(40,v.s*f)),k=s2/v.s;v.ox=cx-(cx-v.ox)*k;v.oy=cy-(cy-v.oy)*k;v.s=s2;this.draw();},
+ draw(){const c=this.cv();if(!c||!this.rows||!this.view)return;const ctx=c.getContext('2d'),v=this.view;
+  ctx.setTransform(this.dpr,0,0,this.dpr,0,0);ctx.fillStyle='#0b0e14';ctx.fillRect(0,0,this.cw,this.ch);ctx.imageSmoothingEnabled=false;
+  if(this.base)ctx.drawImage(this.base,0,0,this.w,this.h,v.ox,v.oy,this.w*v.s,this.h*v.s);
+  if(this.layers.heat&&this.heat){ctx.globalAlpha=0.6;ctx.drawImage(this.heat,0,0,this.w,this.h,v.ox,v.oy,this.w*v.s,this.h*v.s);ctx.globalAlpha=1;}
+  if(this.layers.agents){const r=Math.max(2,v.s*0.42);ctx.lineWidth=Math.max(1,v.s*0.12);
+   for(const a of this.agents){const sx=v.ox+(a.x+0.5)*v.s,sy=v.oy+(a.y+0.5)*v.s;if(sx<-r||sy<-r||sx>this.cw+r||sy>this.ch+r)continue;
+    ctx.beginPath();ctx.arc(sx,sy,r,0,6.2832);ctx.fillStyle='#ffd866';ctx.fill();ctx.strokeStyle='#0b0e14';ctx.stroke();
+    if(v.s>=11){ctx.fillStyle='#111';ctx.font='bold '+Math.round(v.s*0.7)+'px monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(String(a.glyph||''),sx,sy);}}}
+  if(this.hover){ctx.strokeStyle='rgba(255,255,255,0.8)';ctx.lineWidth=1.5;ctx.strokeRect(v.ox+this.hover.x*v.s,v.oy+this.hover.y*v.s,v.s,v.s);}},
+ onResize(){if(!this.rows)return;this.ensureSize();if(!this.view)this.fit();this.chips();this.draw();},
+ cell(mx,my){const v=this.view;if(!v)return null;const x=Math.floor((mx-v.ox)/v.s),y=Math.floor((my-v.oy)/v.s);return (x<0||y<0||x>=this.w||y>=this.h)?null:{x,y};},
+ onHover(mx,my){const cell=this.cell(mx,my);this.hover=cell;const tp=$('maptip');if(!tp)return;
+  if(!cell){tp.style.display='none';this.draw();return;}
+  const ag=this.agents.find(a=>a.x===cell.x&&a.y===cell.y),ch=(this.rows[cell.y]||'')[cell.x]||' ';let label;
+  if(ag)label='▸ '+esc(ag.name||('#'+ag.id))+' ('+cell.x+','+cell.y+')';
+  else if(this.RESC[ch])label=(this.RESNAME[ch]||'deposit')+' ('+cell.x+','+cell.y+')';
+  else if(this.MARK[ch])label='structure/vehicle ('+cell.x+','+cell.y+')';
+  else label=(this.BIOMENAME[ch]||'?')+' ('+cell.x+','+cell.y+')';
+  tp.innerHTML=label+(ag?' <span style="color:#8b949e">click→profile</span>':'');tp.style.display='block';
+  tp.style.left=Math.max(2,Math.min(mx+12,this.cw-tp.offsetWidth-4))+'px';tp.style.top=(my+12)+'px';this.draw();},
+ onClick(mx,my){const cell=this.cell(mx,my);if(!cell)return;const ag=this.agents.find(a=>a.x===cell.x&&a.y===cell.y);if(ag&&window.loadProfile)loadProfile(ag.id);},
+ chips(){const ctl=$('mapctl');if(ctl){const L=this.layers;ctl.innerHTML=['terrain','resources','agents','heat'].map(k=>'<span class="mapchip'+(L[k]?' on':'')+'" onclick="MAP.toggle(\''+k+'\')">'+k+'</span>').join('');}
+  const z=$('mapzoom');if(z&&!z.dataset.init){z.dataset.init='1';z.innerHTML='<span class=mapbtn onclick="MAP.zoom(1.3)">+</span><span class=mapbtn onclick="MAP.zoom(0.77)">&minus;</span><span class=mapbtn title=fit onclick="MAP.fit();MAP.draw()">&#9633;</span>';}},
+ toggle(k){this.layers[k]=!this.layers[k];if(k==='terrain'||k==='resources')this.buildBase();if(k==='heat'&&this.layers.heat&&!this.heat)this.buildHeat();this.chips();this.draw();},
+ bind(){if(this.bound)return;const c=this.cv();if(!c)return;this.bound=true;const self=this;
+  c.addEventListener('wheel',e=>{e.preventDefault();const r=c.getBoundingClientRect();self.zoom(e.deltaY<0?1.15:0.87,e.clientX-r.left,e.clientY-r.top);},{passive:false});
+  c.addEventListener('mousedown',e=>{self.drag={x:e.clientX,y:e.clientY,ox:self.view.ox,oy:self.view.oy,moved:false};c.style.cursor='grabbing';});
+  window.addEventListener('mousemove',e=>{if(!self.drag)return;const dx=e.clientX-self.drag.x,dy=e.clientY-self.drag.y;if(Math.abs(dx)+Math.abs(dy)>3)self.drag.moved=true;self.view.ox=self.drag.ox+dx;self.view.oy=self.drag.oy+dy;self.draw();});
+  window.addEventListener('mouseup',()=>{if(self.drag){self._moved=self.drag.moved;self.drag=null;c.style.cursor='grab';}});
+  c.addEventListener('mousemove',e=>{if(self.drag)return;const r=c.getBoundingClientRect();self.onHover(e.clientX-r.left,e.clientY-r.top);});
+  c.addEventListener('mouseleave',()=>{self.hover=null;const tp=$('maptip');if(tp)tp.style.display='none';self.draw();});
+  c.addEventListener('click',e=>{if(self._moved){self._moved=false;return;}const r=c.getBoundingClientRect();self.onClick(e.clientX-r.left,e.clientY-r.top);});   // a pan (mousedown->drag->mouseup) must NOT count as a click-through to a profile
+  let pinch=null;const dist=e=>{const a=e.touches[0],b=e.touches[1];return {d:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)||1,cx:(a.clientX+b.clientX)/2,cy:(a.clientY+b.clientY)/2};};
+  c.addEventListener('touchstart',e=>{if(e.touches.length===1){const t=e.touches[0];self.drag={x:t.clientX,y:t.clientY,ox:self.view.ox,oy:self.view.oy,moved:false};}else if(e.touches.length===2){pinch=dist(e);self.drag=null;}},{passive:true});
+  c.addEventListener('touchmove',e=>{if(e.touches.length===2&&pinch){e.preventDefault();const nd=dist(e),r=c.getBoundingClientRect();self.zoom(nd.d/pinch.d,nd.cx-r.left,nd.cy-r.top);pinch=nd;}else if(e.touches.length===1&&self.drag){const t=e.touches[0];self.view.ox=self.drag.ox+(t.clientX-self.drag.x);self.view.oy=self.drag.oy+(t.clientY-self.drag.y);self.draw();}},{passive:false});
+  c.addEventListener('touchend',e=>{if(e.touches.length===0){if(self.drag)self._moved=self.drag.moved;self.drag=null;pinch=null;}},{passive:true});},
+};
+function fitMap(){if(window.MAP)MAP.onResize();}   // shim: tab-switch / resize hooks refit the canvas map
 window.addEventListener('resize',fitMap);
 async function j(p){try{const r=await fetch(p);return r.ok?await r.json():null;}catch(e){return null;}}
 async function tick(){
@@ -696,7 +765,7 @@ async function tick(){
  if(ro){ro.agents.forEach(a=>{names[a.id]=a.name;});const on=ro.agents.filter(a=>a.online).length;
   $('roster').innerHTML=`<span class=sub>${on} ${t('lbl_online_of')} / ${ro.agents.length} ${t('lbl_total')} &mdash; </span>`+ro.agents.map(a=>`<a style="cursor:pointer;color:${a.online?'#3fb950':'#7d8590'}" onclick="loadProfile(${a.id})">${a.id} ${esc(a.name||'?')}${a.title?' <span style="color:#b9a3ff" title="prestige title">&#127894;'+esc(a.title)+'</span>':''}${a.in_space?' ['+t('lbl_space_tag')+']':''}</a>`).join(' &middot; ')||`<span class=sub>${t('ph_no_agents_short')}</span>`;}
  if(need('/map')){const m=await j('/map');
-  if(m){$('map').innerHTML=colorize(m.ascii); $('map').dataset.w=m.w; $('map').dataset.h=m.h; fitMap(); (m.agents||[]).forEach(x=>by[x.id]=x);}}
+  if(m){MAP.setData(m); (m.agents||[]).forEach(x=>by[x.id]=x);}}
  if(need('/agents')){const a=await j('/agents');
  if(a){
   const inSpace=a.agents.filter(g=>g.in_space).map(g=>g.name);
