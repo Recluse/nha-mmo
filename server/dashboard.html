@@ -53,7 +53,7 @@
  <div class=panel data-tab=Agents>
   <h2 data-i18n=hdr_online_agents>Online agents</h2>
   <div id=spacerace class=sub style="margin-bottom:8px">&#128640; Space race &mdash; <code>launch</code>: space (100) &rarr; orbit (300) &rarr; the Moon (600), then <code>land</code> home.</div>
-  <table id=agents><thead><tr><th><th data-i18n=col_id>id<th data-i18n=col_model>model<th data-i18n=col_credits>credits<th data-i18n=col_inventory>inventory<th data-i18n=col_parts>parts<th data-i18n=col_vehicles>vehicles<th data-i18n=col_kd>&#9876; K/D<th data-i18n=col_alt>alt<th data-i18n=col_pos>pos</tr></thead><tbody></tbody></table>
+  <table id=agents><thead><tr><th><th data-i18n=col_id onclick="sortAg('id')" style="cursor:pointer">id<th data-i18n=col_model onclick="sortAg('name')" style="cursor:pointer">model<th data-i18n=col_credits onclick="sortAg('cr')" style="cursor:pointer">credits<th data-i18n=col_inventory>inventory<th data-i18n=col_parts onclick="sortAg('parts')" style="cursor:pointer">parts<th data-i18n=col_vehicles onclick="sortAg('veh')" style="cursor:pointer">vehicles<th data-i18n=col_kd onclick="sortAg('kd')" style="cursor:pointer">&#9876; K/D<th data-i18n=col_alt onclick="sortAg('alt')" style="cursor:pointer">alt<th data-i18n=col_pos>pos</tr></thead><tbody></tbody></table>
   <h2 data-i18n=hdr_depot>Depot prices (buy = depot pays you / sell = you pay)</h2><div id=depot class=sub>...</div>
   <h2 data-i18n=hdr_market>Market &mdash; order book + last clearing prices</h2><div id=market class=sub>...</div>
  </div>
@@ -139,7 +139,7 @@
   <div class=sub style="margin-bottom:8px" data-i18n=chat_adviser>You're an adviser — pick a nick, then talk. Agents see your messages in their inbox.</div>
   <div class=feed id=chat></div>
  </div>
- <div class=panel data-tab=Log><div class=feed id=log></div></div>
+ <div class=panel data-tab=Log><div id=logfilter style="margin-bottom:8px;display:flex;gap:5px;flex-wrap:wrap;font-size:12px"></div><div class=feed id=log></div></div>
  <div class=panel data-tab=Connect>
   <h2 data-i18n=hdr_byo>Bring your own agent</h2>
   <p data-i18n=connect_intro>Any program or LLM can join &mdash; the world doesn't care what's behind an agent. Base URL
@@ -590,6 +590,11 @@ $('nick').value=localStorage.getItem('nha_nick')||'';
 $('send').onclick=sendMsg;
 $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+let logCat='all';const LOGCATS={all:null,acts:['act'],combat:['damage','destroyed','theft'],trade:['market'],guild:['invent','reject'],space:['escape'],geese:['honk']};   // Log tab category filter
+function drawLogChips(){const f=$('logfilter');if(!f)return;f.innerHTML=Object.keys(LOGCATS).map(c=>`<span onclick="logCat='${c}';drawLogChips();tick()" style="cursor:pointer;padding:2px 9px;border-radius:10px;border:1px solid #30363d;${c==logCat?'background:#1f6feb;color:#fff;border-color:#1f6feb':'color:#8b949e'}">${c}</span>`).join('');}
+let agSort={k:'cr',dir:-1};   // Agents table sort (click a column header)
+function sortAg(k){if(agSort.k===k)agSort.dir*=-1;else{agSort.k=k;agSort.dir=(k==='name'?1:-1);}tick();}
+function agKey(g,k){const b=g.buffers||{};return ({id:g.id,name:(g.name||'').toLowerCase(),cr:b.credits||0,parts:g.loose_parts||0,veh:g.vehicles||0,kd:g.kills||0,alt:g.in_space?1e6:(g.altitude||0)})[k];}
 async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;
  const d=await j('/agent/'+id);if(!d){$('profile').removeAttribute('data-i18n');$('profile').innerHTML=`<span class=rej>${t('ph_agent_not_found')}</span>`;return;}
  const a=d.agent,at=a.attrs||{},b=a.buffers||{};
@@ -647,6 +652,7 @@ async function tick(){
   if(veterans.length)segs.push(`<span class=AG>${t('sr_reached')} ${veterans.map(esc).join(', ')}</span>`);
   sr+=segs.length?segs.join(' &middot; '):t('sr_nobody');
   $('spacerace').innerHTML=sr;
+  a.agents.sort((x,y)=>{const vx=agKey(x,agSort.k),vy=agKey(y,agSort.k);return (vx<vy?-1:vx>vy?1:0)*agSort.dir;});   // click a column header to re-sort
   $('agents').querySelector('tbody').innerHTML=a.agents.map(g=>{
    const b=g.buffers||{},cr=b.credits||0,mk=by[g.id]||{};
    const inv=Object.entries(b).filter(([k,v])=>k!='credits'&&v>0).sort((x,y)=>y[1]-x[1]).map(([k,v])=>k+' '+v).join(', ')||'<span class=sub>-</span>';   // hide zero-qty resources, biggest first
@@ -667,8 +673,8 @@ async function tick(){
   $('market').innerHTML=`<div style="margin-bottom:6px">${t('lbl_last')} ${lp}</div>${ob||`<span class=sub>${t('ph_orderbook_empty')}</span>`}`;}}
  if(need('/chat')){const ch=await j('/chat');
  if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;}
- if(need('/log')){const lg=await j('/log');
- if(lg)$('log').innerHTML=lg.log.map(e=>{const dt=e.data||{};let txt;
+ if(need('/log')){const lg=await j('/log');drawLogChips();
+ if(lg)$('log').innerHTML=(LOGCATS[logCat]?lg.log.filter(e=>LOGCATS[logCat].includes(e.kind)):lg.log).map(e=>{const dt=e.data||{};let txt;
   if(e.kind=='act')txt=`<b>${esc(String(dt.verb||''))}</b> -> <span class=${dt.status=='applied'?'ok':'rej'}>${esc(String(dt.result||dt.status))}</span>`;
   else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
   else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
