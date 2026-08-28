@@ -1548,6 +1548,21 @@ def moon_texture():
     return FileResponse(MOON_PATH, media_type="image/jpeg")
 
 
+_TEX_BODIES = {"mars", "venus", "phobos", "deimos"}   # EXPANSION ERA — real, self-hosted, same-origin planet/moon maps
+
+
+@app.get("/tex/{body}.jpg", tags=["world"])
+def body_texture(body: str):
+    """Season-5 planet/moon texture for the 3D World tab (Mars/Venus/Phobos/Deimos). Allowlisted (no path traversal);
+    404 until a given map is installed beside moon.jpg, so the World tab's tinted-sphere fallback stands in meanwhile."""
+    if body not in _TEX_BODIES:
+        raise HTTPException(404, "no such texture")
+    p = os.path.join(os.path.dirname(__file__), f"{body}.jpg")
+    if not os.path.exists(p):
+        raise HTTPException(404, "texture not yet installed")
+    return FileResponse(p, media_type="image/jpeg")
+
+
 @app.get("/ground.jpg")
 def ground_texture():
     return FileResponse(GROUND_PATH, media_type="image/jpeg")

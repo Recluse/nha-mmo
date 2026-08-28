@@ -114,6 +114,7 @@
    <span style="display:inline-block;width:11px;height:11px;background:#a371f7;vertical-align:middle"></span> <span data-i18n=leg_octahedra>glowing octahedra = ancient artifacts</span>
    <br><span data-i18n=leg_controls>Drag (1 finger) to orbit &middot; scroll / pinch to zoom. If blank, the CDN was blocked &mdash; use the <b>Map</b> tab.</span>
    <br><span class=sub style="opacity:0.55">&#128034; Great A'Tuin &amp; the world-elephants below the disc &mdash; turtle &amp; elephant models by <b>Poly by Google</b> (CC-BY 3.0, via poly.pizza)</span>
+   <br><span class=sub style="opacity:0.55">&#127760; Mars &amp; Venus textures &copy; <b>Solar System Scope</b> (CC-BY 4.0); Moon: NASA. &#128640; The <b>Expansion Era</b> worlds &mdash; Mars, Venus, Phobos &amp; Deimos &mdash; are appearing in the sky.</span>
   </div>
  </div>
  <div class=panel data-tab=Map>
@@ -1069,6 +1070,18 @@ function initWorld3D(){
  new T.TextureLoader().load('/moon.jpg',function(tx){moonMat.map=tx;moonMat.color.setHex(0xffffff);moonMat.needsUpdate=true;});
  const moon=new T.Mesh(new T.SphereGeometry(9,48,32),moonMat);
  moon.position.set(0,72,-28); sc.add(moon);
+ // EXPANSION ERA (Season 5) — four new worlds, textured exactly like the Moon (real maps at /tex/*.jpg, same-origin,
+ // loaded async onto a sphere; a tinted stand-in shows until the map arrives — or stays, if the texture isn't installed).
+ function addBody(url,radius,pos,fallback){
+   const m=new T.MeshLambertMaterial({color:fallback,emissive:0x0a0a0c});
+   new T.TextureLoader().load(url,function(tx){m.map=tx;m.color.setHex(0xffffff);m.needsUpdate=true;},undefined,function(){});
+   const mesh=new T.Mesh(new T.SphereGeometry(radius,48,32),m);
+   mesh.position.set(pos[0],pos[1],pos[2]); sc.add(mesh); return mesh;
+ }
+ addBody('/tex/mars.jpg',   7.0,[ 95,62,-120],0xa0522d);   // Mars — rust
+ addBody('/tex/venus.jpg',  8.0,[-115,82, -55],0xd8b878);  // Venus — amber
+ addBody('/tex/phobos.jpg', 2.2,[ 42,66,  12],0x6b6660);   // Phobos — grey
+ addBody('/tex/deimos.jpg', 1.6,[-28,58,  32],0x777066);   // Deimos — grey
  const stormMesh=new T.Mesh(new T.SphereGeometry(14,16,12),new T.MeshBasicMaterial({color:0x8aa0b8,transparent:true,opacity:0.16}));
  stormMesh.visible=false; sc.add(stormMesh);                                  // drifting storm — mining/chopping under it is halved
  const depG=new T.Group(), agG=new T.Group(), vehG=new T.Group(), strG=new T.Group(), astG=new T.Group(), artG=new T.Group(), gooseG=new T.Group();

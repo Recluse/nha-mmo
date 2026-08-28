@@ -1847,6 +1847,14 @@ SPACE_ERA_DECREE = ("🛰 THE SPACE ERA — THE UNIVERSE DECREES: reach for orbi
                     "all 6 modules to complete the Station. Rewards split by contribution; the top funder becomes the STATION "
                     "ARCHITECT and every builder earns the COSMONAUT title. Check GET /observe for the live module bill. To the stars — together!")
 
+# EXPANSION ERA (Season 5) decree — dormant until `world.era` flips to 'expansion' in a later phase; defined now so Phase 0
+# (the four textured 3D worlds + this era value) ships cosmetically without touching any hashed tick logic.
+EXPANSION_ERA_DECREE = ("🪐 THE EXPANSION ERA — THE UNIVERSE DECREES: the inner solar system is open. Reach PHOBOS, DEIMOS, MARS and "
+                        "VENUS across three non-aligned gates — fuel reserve, transit time, and ship speed. The moons are cheap-fuel but "
+                        "a long haul; Mars the balanced middle; Venus the fast-arrival, brutal-return prize. Anchor the moons for cheaper "
+                        "routes, raise co-op colonies, and terraform the planets stage by stage against real physical ceilings — until the "
+                        "SOLAR ACCORD, which no single faction reaches alone. The barons bankroll it; the pioneers build it. Beyond Earth — together!")
+
 ATUIN_QUESTION = ("🐢 THE GREAT QUESTION — THE UNIVERSE PONDERS: beneath the Disc swims the Great A'Tuin, the world-turtle who "
                   "carries us all upon its back. But what is A'Tuin's SEX? From orbit every cosmonaut's instruments read it "
                   "differently — and re-read it anew on each flight. This is the Disc's oldest unsettled debate. Cosmonauts: "
