@@ -114,9 +114,9 @@ KARMA_DIV = 4
 COOP_THRESH = 6
 _NF_W_MARKET = 2
 # --- geese (shoreline hazard, increment) ---
-GOOSE_FLOCKS = 7                 # one-time deterministic spawn: this many gaggles, SPREAD across the map (farthest-point) at water deposits
-GOOSE_PER_FLOCK_MIN = 4         # each gaggle holds MIN..MAX geese (count derived per-flock from _h, no RNG)
-GOOSE_PER_FLOCK_MAX = 6
+GOOSE_FLOCKS = 5                 # one-time deterministic spawn: this many gaggles, SPREAD across the map (farthest-point) at water deposits
+GOOSE_PER_FLOCK_MIN = 3         # each gaggle holds MIN..MAX geese (count derived per-flock from _h, no RNG)
+GOOSE_PER_FLOCK_MAX = 5
 GOOSE_WATER_RES = ("water", "brine", "salt", "ice", "algae")   # water-ish deposits geese anchor to (sea/coast)
 GOOSE_ROAM = 3                  # a goose waddles within this Chebyshev radius of its anchor cell
 GOOSE_HONK_EVERY = 5           # one flock honks every this-many ticks (deterministic, staggered by flock id)
