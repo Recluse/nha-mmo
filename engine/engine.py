@@ -232,13 +232,22 @@ def del_entity(ents, cur, eid):
     cur.execute("DELETE FROM entities WHERE id=%s", (eid,))
     ents.pop(eid, None)
 
+def _entity_canon(e):
+    """Canonical per-entity JSON string — the shared unit of BOTH the state hash and per-tick change detection.
+    P0: computed ONCE per entity per tick and reused for both, instead of ~5 separate json.dumps (2 for the
+    dirty snapshot + 2 for the dirty diff + 1 for the hash). token = API-owned, excluded (as before)."""
+    return json.dumps([e["id"], e["type"], e["x"], e["y"], e.get("owner"), e["buffers"],
+                       {k: v for k, v in e["attrs"].items() if k != "token"}],
+                      sort_keys=True, separators=(",", ":"), default=str)
+
+def _world_hash(canon_by_id):
+    """sha256 of the id-sorted per-entity canons — byte-IDENTICAL to the old json.dumps(list-of-lists) form
+    (json list == '['+','.join(dumps(elem))+']' with these separators), so the tick_hash chain is unchanged."""
+    return hashlib.sha256(("[" + ",".join(canon_by_id[i] for i in sorted(canon_by_id)) + "]").encode()).hexdigest()[:16]
+
 def state_hash(ents):
     """Deterministic 16-hex digest of world state → per-tick audit/replay chain (same inputs ⇒ same hash)."""
-    rows = sorted(ents.values(), key=lambda e: e["id"])
-    canon = json.dumps([[e["id"], e["type"], e["x"], e["y"], e.get("owner"), e["buffers"],
-                         {k: v for k, v in e["attrs"].items() if k != "token"}] for e in rows],  # token = API-owned, not world state
-                        sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(canon.encode()).hexdigest()[:16]
+    return _world_hash({e["id"]: _entity_canon(e) for e in ents.values()})
 
 def depot_price(depot, r):
     """Floating depot price for resource r: glut (recent sells) pushes the buy price down."""
@@ -1903,6 +1912,7 @@ def _transient_reason(result):
 _WORLD = None              # the carried entities dict (id -> row); None until first load
 _WORLD_MAX_ID = 0          # cross-process insert-merge watermark (pre-systems max id folded into _WORLD)
 _WORLD_LOADED_TICK = None  # tick of the last full reload (drift-check + safety-net boundary)
+_CANON = {}                # P0: persisted {id -> _entity_canon(e)} = last tick's serialized state; baseline for dirty-tracking AND the hash
 RELOAD_EVERY = 10          # full SELECT*-reload every N ticks: drift-check vs carried + self-heal (raise once proven)
 
 def _load_world(cur):
@@ -1921,15 +1931,15 @@ def tick(conn):
     """Advance the world one tick. On ANY failure, DROP the carried in-memory world so the next tick does a
     clean full reload — the failed tick's uncommitted _WORLD mutations are rolled back by the caller, and
     leaving a stale _WORLD would diverge from the DB for up to RELOAD_EVERY ticks (adversarial-review finding)."""
-    global _WORLD, _WORLD_LOADED_TICK
+    global _WORLD, _WORLD_LOADED_TICK, _CANON
     try:
         return _tick_body(conn)
     except Exception:
-        _WORLD = _WORLD_LOADED_TICK = None
+        _WORLD = _WORLD_LOADED_TICK = None; _CANON = {}    # drop the canon baseline too → next tick rebuilds it on the clean reload
         raise
 
 def _tick_body(conn):
-    global _WORLD, _WORLD_MAX_ID, _WORLD_LOADED_TICK
+    global _WORLD, _WORLD_MAX_ID, _WORLD_LOADED_TICK, _CANON
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("UPDATE world SET tick = tick + 1 WHERE id = 1 RETURNING tick")
     t = cur.fetchone()["tick"]
@@ -1944,15 +1954,14 @@ def _tick_body(conn):
             print(f"[INMEM] tick {t}: carried/db DRIFT carried={state_hash(_WORLD)} db={state_hash(fresh)} "
                   f"db_only={list(set(fresh) - set(_WORLD))[:6]} ram_only={list(set(_WORLD) - set(fresh))[:6]} — reloaded", flush=True)
         _WORLD, _WORLD_LOADED_TICK = fresh, t
+        _CANON = {eid: _entity_canon(e) for eid, e in fresh.items()}   # P0: reset the dirty/hash baseline to the freshly-loaded (authoritative) state
     else:
         cur.execute("SELECT * FROM entities WHERE id > %s", (_WORLD_MAX_ID,))
         for e in cur.fetchall():
             e["attrs"].pop("token", None)
-            _WORLD[e["id"]] = e
+            _WORLD[e["id"]] = e                            # merged rows aren't in _CANON → flagged dirty once (harmless: they're already in the DB)
     _WORLD_MAX_ID = max(_WORLD) if _WORLD else 0           # watermark for next tick's insert-merge
     ents = _WORLD
-    _clean = {eid: (e["x"], e["y"], json.dumps(e["buffers"], sort_keys=True), json.dumps(e["attrs"], sort_keys=True))
-              for eid, e in ents.items()}                 # snapshot for dirty-tracking — only CHANGED entities written back
     events = []
     _pc = time.perf_counter; _pm = _pc(); _pd = {}         # [PROF] coarse per-phase timing — behavior-neutral, logged every 100 ticks (P0 measurement)
     cur.execute("SELECT * FROM intents WHERE status = 'pending' ORDER BY id")
@@ -2009,9 +2018,10 @@ def _tick_body(conn):
     move_geese(ents, cur, t, events)                      # shoreline goose flocks: spawn-once + waddle + honk + peck (deterministic)
     decay_loot(ents, cur, t)
     _pd["systems"] = _pc() - _pm; _pm = _pc()
-    dirty = [(e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), eid) for eid, e in ents.items()
-             if _clean.get(eid) != (e["x"], e["y"], json.dumps(e["buffers"], sort_keys=True), json.dumps(e["attrs"], sort_keys=True))]
-    _pd["dirty_detect"] = _pc() - _pm; _pm = _pc()         # cost of the O(N) json.dumps diff
+    _new_canon = {eid: _entity_canon(e) for eid, e in ents.items()}   # P0: ONE serialize per entity, reused for BOTH dirty detection and the hash
+    dirty = [(e["x"], e["y"], Json(e["buffers"]), Json(e["attrs"]), eid)
+             for eid, e in ents.items() if _CANON.get(eid) != _new_canon[eid]]
+    _pd["dirty_detect"] = _pc() - _pm; _pm = _pc()         # cost of the O(N) canon build + compare (was 2 full json.dumps/entity here + 2 in the snapshot)
     execute_batch(cur, "UPDATE entities SET x=%s, y=%s, buffers=%s, "
                        "attrs = (%s::jsonb - 'token') || (CASE WHEN jsonb_exists(entities.attrs, 'token') "
                        "THEN jsonb_build_object('token', entities.attrs->'token') ELSE '{}'::jsonb END) "
@@ -2024,8 +2034,9 @@ def _tick_body(conn):
         execute_batch(cur, "INSERT INTO events(tick, entity, kind, data) VALUES(%s,%s,%s,%s)",
                       [(tk, eid, kind, Json(data)) for (tk, eid, kind, data) in events], page_size=500)
     cur.execute("INSERT INTO tick_hashes(tick, hash) VALUES(%s,%s) "
-                "ON CONFLICT (tick) DO UPDATE SET hash=EXCLUDED.hash", (t, state_hash(ents)))
-    _pd["events_hash"] = _pc() - _pm                       # events INSERT + state_hash serialize
+                "ON CONFLICT (tick) DO UPDATE SET hash=EXCLUDED.hash", (t, _world_hash(_new_canon)))
+    _CANON = _new_canon                                    # P0: this tick's canon becomes next tick's baseline (deleted ids drop out here)
+    _pd["events_hash"] = _pc() - _pm                       # events INSERT + hash (now a join+sha256, no re-serialize)
     if t % 200 == 0:                                        # lightweight ongoing telemetry: where each tick's work goes (dirty_detect+events_hash = the serialization that bounds density)
         print(f"[PROF] t{t} ents={len(ents)} " + " ".join(f"{k}={v*1000:.0f}" for k, v in _pd.items())
               + f" | total={sum(_pd.values()) * 1000:.0f}ms", flush=True)
