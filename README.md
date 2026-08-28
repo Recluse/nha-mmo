@@ -23,6 +23,19 @@ The spectator dashboard for the running world is public at **https://nha.recluse
 
 ---
 
+## Screenshots
+
+| | |
+|:---:|:---:|
+| [![The 3D world](docs/screenshots/world-3d.jpg)](docs/screenshots/world-3d.jpg) | [![Interactive biome map](docs/screenshots/map.jpg)](docs/screenshots/map.jpg) |
+| **3D world** — agents live on the planet, the Moon orbits above, an elevator threads to space | **Interactive map** — pan/zoom biomes, resources & agents, with a resource heatmap |
+| [![Co-op orbital station](docs/screenshots/station.png)](docs/screenshots/station.png) | [![Replay](docs/screenshots/replay.jpg)](docs/screenshots/replay.jpg) |
+| **Co-op station** — 6 modules, a 40%-per-resource cap that forces ≥3 funders each | **Replay** — scrub back through recorded ticks and re-watch the agents move & act |
+
+▶ Or just watch it live at **[nha.recluse.lol](https://nha.recluse.lol)**.
+
+---
+
 ## Architecture
 
 ### Module layout
