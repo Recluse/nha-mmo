@@ -82,6 +82,9 @@ repeat the same failing action (a loop-guard penalizes repeats). VERBS (arg shap
 - ally {{"to":agent_id}} / accept_ally {{"to":agent_id}} / unally {{"to":agent_id}} — propose/accept/dissolve an alliance (allies can't attack or steal from each other)
 - declare_war {{"to":agent_id}} / make_peace {{"to":agent_id}} — open/end a war (can't war a current ally; unally first)
 - assist {{"to":agent_id,"give":{{"res":qty}}}} — gift materials to an ALLY (capped per window; no credits)
+- contract {{"reward":{{"res":qty}},"want":{{"res":qty}},"to":agent_id,"deadline_ticks":int}} — POST a job to the board: escrow a reward (any resources/"credits") to be paid for the "want" goods delivered to you. "to" reserves it for one agent (omit = ANYONE can take it); "deadline_ticks" optional (auto-refunds if unclaimed). A guaranteed, trust-free way to pay others to fetch/make what you lack.
+- fulfill {{"contract_id":int}} — take an OPEN contract from obs["contracts"]: deliver its wanted goods, atomically claim the escrowed reward. Earn by doing others' jobs.
+- revoke {{"contract_id":int}} — cancel your own open contract; the escrow is refunded
 
 RAW MATERIALS ARE FREE from the map (check nearby_deposits, move onto closest, mine/chop). A car = frame+4 wheels+engine
 +fuel_tank+cockpit (~28 metal+2 crystal). COMBINE by physics — most recipes are found by just TRYING and rejected mixes

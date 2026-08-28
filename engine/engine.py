@@ -176,6 +176,10 @@ CREATE INDEX IF NOT EXISTS market_open_idx ON market_orders(resource, side, stat
 CREATE TABLE IF NOT EXISTS trades (id bigserial PRIMARY KEY, proposer bigint NOT NULL,
   target bigint NOT NULL, give jsonb NOT NULL, want jsonb NOT NULL,
   status text NOT NULL DEFAULT 'open', created int);
+CREATE TABLE IF NOT EXISTS contracts (id bigserial PRIMARY KEY, poster bigint NOT NULL,
+  reward jsonb NOT NULL, want jsonb NOT NULL, target bigint,
+  status text NOT NULL DEFAULT 'open', fulfiller bigint, created int, deadline int);
+CREATE INDEX IF NOT EXISTS contracts_open_idx ON contracts(status);   -- open-board scan in observe() + expire_contracts
 CREATE TABLE IF NOT EXISTS messages (id bigserial PRIMARY KEY, tick int NOT NULL,
   sender bigint NOT NULL, recipient bigint, text text NOT NULL);
 CREATE TABLE IF NOT EXISTS discoveries (rule_key text PRIMARY KEY, name text NOT NULL,
@@ -431,6 +435,57 @@ def apply_intent(it, ents, cur, t, events):
             addb(a, res, int(q))                         # 'give' was escrowed from the proposer
         cur.execute("UPDATE trades SET status='accepted' WHERE id=%s", (_ai(args, "trade_id", 0),))
         return "applied", f"accepted trade #{args['trade_id']}"
+    if verb == "contract":                               # post an OPEN job on the board: escrow a reward, name the goods you want delivered
+        reward, want = args.get("reward", {}), args.get("want", {})
+        target = _aid(args, "to") if args.get("to") is not None else None   # optional: reserve for one agent; else open to anyone
+        if not (isinstance(reward, dict) and isinstance(want, dict) and reward and want) or \
+                any(not isinstance(q, (int, float)) or q < 1 for q in list(reward.values()) + list(want.values())):
+            return "rejected", "contract needs a non-empty reward{} and want{} with positive quantities"   # guard: junk qty would dupe/steal on escrow
+        if target is not None and target not in ents:
+            return "rejected", "no such target"
+        if any(get(a, res) < int(q) for res, q in reward.items()):
+            return "rejected", "insufficient to escrow the reward"
+        dl = _ai(args, "deadline_ticks", 0)
+        deadline = t + dl if dl > 0 else None
+        for res, q in reward.items():
+            addb(a, res, -int(q))                         # escrow the reward up front — the guarantee
+        cur.execute("INSERT INTO contracts(poster,reward,want,target,created,deadline) VALUES(%s,%s,%s,%s,%s,%s) RETURNING id",
+                    (a["id"], Json(reward), Json(want), target, t, deadline))
+        cid = cur.fetchone()["id"]
+        events.append((t, a["id"], "contract", {"event": "posted", "contract_id": cid, "reward": reward, "want": want, "target": target}))
+        return "applied", f"contract #{cid}: reward {reward} for delivery of {want}" + (f" by #{target}" if target else " (open)")
+    if verb == "fulfill":                                # deliver the wanted goods, atomically claim the escrowed reward
+        cid = _ai(args, "contract_id", 0)
+        cur.execute("SELECT poster,reward,want,target,status FROM contracts WHERE id=%s", (cid,))
+        c = cur.fetchone()
+        if not c or c["status"] != "open":
+            return "rejected", "no such open contract"
+        if c["poster"] == a["id"]:
+            return "rejected", "can't fulfill your own contract"
+        if c["target"] is not None and c["target"] != a["id"]:
+            return "rejected", "this contract is reserved for another agent"
+        if any(get(a, res) < int(q) for res, q in c["want"].items()):
+            return "rejected", "you don't hold the goods this contract wants"
+        poster = ents.get(c["poster"])
+        for res, q in c["want"].items():                 # deliver wanted goods to the poster (conserved; voids if poster is gone, mirroring accept)
+            addb(a, res, -int(q))
+            if poster:
+                addb(poster, res, int(q))
+        for res, q in c["reward"].items():               # escrowed reward -> fulfiller
+            addb(a, res, int(q))
+        cur.execute("UPDATE contracts SET status='fulfilled', fulfiller=%s WHERE id=%s", (a["id"], cid))
+        events.append((t, a["id"], "contract", {"event": "fulfilled", "contract_id": cid, "poster": c["poster"], "reward": c["reward"], "want": c["want"]}))
+        return "applied", f"fulfilled contract #{cid} — delivered {c['want']}, earned {c['reward']}"
+    if verb == "revoke":                                 # cancel your own open contract, get the escrow back
+        cid = _ai(args, "contract_id", 0)
+        cur.execute("SELECT poster,reward,status FROM contracts WHERE id=%s", (cid,))
+        c = cur.fetchone()
+        if not c or c["status"] != "open" or c["poster"] != a["id"]:
+            return "rejected", "no such open contract of yours"
+        for res, q in c["reward"].items():
+            addb(a, res, int(q))                         # refund the escrow
+        cur.execute("UPDATE contracts SET status='revoked' WHERE id=%s", (cid,))
+        return "applied", f"revoked contract #{cid} — reward refunded"
     if verb in ("say", "tell"):                          # agent↔agent communication (observable)
         cur.execute("SELECT 1 FROM messages WHERE sender=%s AND tick=%s LIMIT 1", (a["id"], t))
         if cur.fetchone():
@@ -1506,6 +1561,19 @@ def expire_trades(ents, cur, t, ttl=80):
                 addb(prop, res, int(q))
         cur.execute("UPDATE trades SET status='expired' WHERE id=%s", (tr["id"],))
 
+def expire_contracts(ents, cur, t, ttl=400):
+    """Refund the escrowed reward for open contracts past their deadline (or after `ttl` ticks if none was set).
+    Contracts are standing jobs, so their default lifetime is much longer than a P2P trade offer's."""
+    cur.execute("SELECT id,poster,reward FROM contracts WHERE status='open' "
+                "AND ((deadline IS NOT NULL AND deadline < %s) OR (deadline IS NULL AND created < %s))",
+                (t, t - ttl))
+    for c in cur.fetchall():
+        poster = ents.get(c["poster"])
+        if poster:
+            for res, q in c["reward"].items():
+                addb(poster, res, int(q))
+        cur.execute("UPDATE contracts SET status='expired' WHERE id=%s", (c["id"],))
+
 def resolve_proposals(ents, cur, t, events):
     """Apply Inventors' Guild verdicts. The async LLM referee only WRITES a verdict onto the proposal
     (status approved/rejected + the item it blessed); the tick — the single authoritative world-writer —
@@ -2025,6 +2093,7 @@ def _tick_body(conn, s):
         behave(e)
     match_market(ents, cur, t, events)
     expire_trades(ents, cur, t)
+    expire_contracts(ents, cur, t)
     resolve_proposals(ents, cur, t, events)
     roam_autonomous(ents, cur, t, events)
     universe_broadcast(ents, cur, t, events)              # GIGACHRUSCH: the Universe periodically re-decrees in the world chat

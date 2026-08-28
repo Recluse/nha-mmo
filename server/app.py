@@ -105,6 +105,8 @@ class RulesOut(ApiModel):
     resources: Any = None; pending: Any = None; dynamic: Any = None
 class GuildPendingOut(ApiModel):
     pending: List[Any] = []
+class ContractsOut(ApiModel):
+    open: List[Any] = []; fulfilled: List[Any] = []
 class RecordsOut(ApiModel):
     """The records board — space firsts, fastest aircraft, top inventor/builder, richest, wonders. Free-form; keys vary."""
 class StationOut(ApiModel):
@@ -683,6 +685,31 @@ def _relations():
 @app.get("/relations", response_model=RelationsOut, tags=["social"])
 def relations():
     return _cached("relations", _relations)
+
+
+def _contracts():
+    """The contract board — open jobs (escrowed reward for delivered goods) + recently fulfilled ones,
+    with poster / target / fulfiller names resolved for the spectator view."""
+    with _db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT c.id, c.poster, p.attrs->>'name' poster_name, c.reward, c.want, "
+                    "c.target, tt.attrs->>'name' target_name, c.created, c.deadline "
+                    "FROM contracts c LEFT JOIN entities p ON p.id=c.poster "
+                    "LEFT JOIN entities tt ON tt.id=c.target "
+                    "WHERE c.status='open' ORDER BY c.id DESC LIMIT 60")
+        open_c = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT c.id, c.poster, p.attrs->>'name' poster_name, c.reward, c.want, "
+                    "c.fulfiller, f.attrs->>'name' fulfiller_name "
+                    "FROM contracts c LEFT JOIN entities p ON p.id=c.poster "
+                    "LEFT JOIN entities f ON f.id=c.fulfiller "
+                    "WHERE c.status='fulfilled' ORDER BY c.id DESC LIMIT 20")
+        done_c = [dict(r) for r in cur.fetchall()]
+    return {"open": open_c, "fulfilled": done_c}
+
+
+@app.get("/contracts", response_model=ContractsOut, tags=["economy"])
+def contracts_ep():
+    return _cached("contracts", _contracts)
 
 
 def _station_status(cur):
