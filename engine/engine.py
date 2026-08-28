@@ -1894,13 +1894,16 @@ def decay_loot(ents, cur, t):
             del_entity(ents, cur, e["id"])
 
 # ---------- tick ----------
+EVENTS_KEEP_TICKS = int(os.environ.get("EVENTS_KEEP_TICKS", "0"))   # Replay: 0 = keep the FULL event history (~0.5 GB/month at current rates); >0 bounds non-milestone events to N recent ticks if disk gets tight
 def prune_tables(cur, t):
     """Keep the DB bounded: drop old high-frequency log rows, preserve milestone events, recipe caches,
     and recent history (loop-guard + spectator feeds). Entity state is untouched, so the hash chain holds."""
-    # Drop ALL old high-frequency log rows, keeping only milestone kinds (the spectator/achievement feed).
-    cur.execute("DELETE FROM events WHERE tick < %s AND kind NOT IN "
-                "('escape','invent','land','build','war','peace','attune','destroyed','generate')",
-                (t - 1000,))
+    # Event history: keep it ALL for Replay/scrub by default (EVENTS_KEEP_TICKS=0 → no prune). Only when a bound is
+    # configured do we drop old NON-milestone events (milestone kinds are always kept as the achievement feed).
+    if EVENTS_KEEP_TICKS > 0:
+        cur.execute("DELETE FROM events WHERE tick < %s AND kind NOT IN "
+                    "('escape','invent','land','build','war','peace','attune','destroyed','generate')",
+                    (t - EVENTS_KEEP_TICKS,))
     cur.execute("DELETE FROM tick_hashes WHERE tick < %s", (t - 20000,))
     cur.execute("DELETE FROM intents WHERE status <> 'pending' AND id < (SELECT COALESCE(MAX(id),0) FROM intents) - 5000")
     cur.execute("DELETE FROM messages WHERE id < (SELECT COALESCE(MAX(id),0) FROM messages) - 2000")
