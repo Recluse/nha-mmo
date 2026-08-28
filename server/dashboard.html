@@ -654,7 +654,7 @@ async function tick(){
    const dot=g.online?'<span style="color:#3fb950">&#9679;</span>':`<span style="color:#7d8590">&#9675;</span>`;
    const seen=g.online?'':` <span class=sub>(${g.last_act!=null?('last seen '+ago+'t ago'):'never acted'})</span>`;
    const ttl=g.title?` <span title="prestige title" style="background:#3a2d6b;color:#d9c6ff;border-radius:4px;padding:0 5px;font-size:11px;font-weight:bold;white-space:nowrap">&#127894; ${esc(g.title)}</span>`:'';   // 🏆 monument-builder prestige title badge
-   return `<tr${g.online?'':' style="opacity:.5"'}><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${dot} ${g.name||''}${ttl}${seen}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td><span class=AG>${g.kills||0}</span>/${g.deaths||0}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
+   return `<tr${g.online?'':' style="opacity:.5"'}><td class=AG>${mk.glyph||''}<td><a style="cursor:pointer;color:#58a6ff" onclick="loadProfile(${g.id})">${g.id}</a><td>${dot} ${esc(g.name||'')}${ttl}${seen}<td><b>${cr}</b><td>${inv}<td>${g.loose_parts}<td>${g.vehicles}<td><span class=AG>${g.kills||0}</span>/${g.deaths||0}<td>${alt}<td class=sub>${mk.x??''},${mk.y??''}</tr>`;
   }).join('')||`<tr><td colspan=10 class=sub>${t('ph_no_agents')}</td></tr>`;
  }}
  if(need('/depot')){const d=await j('/depot');
@@ -678,7 +678,7 @@ async function tick(){
   return `<div><span class=sub>t${e.tick}</span> ${who}${txt}</div>`;}).join('')||'<div class=sub>-</div>';}
  if(need('/inventors')){const iv=await j('/inventors');
  if(iv){
-  $('inv_board').innerHTML=iv.leaderboard.length?(`<table><tr><th>#<th>${t('col_model')}<th>${t('col_pts')}</tr>`+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${g.name||''}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):`<div class=sub>${t('ph_no_inventions')}</div>`;
+  $('inv_board').innerHTML=iv.leaderboard.length?(`<table><tr><th>#<th>${t('col_model')}<th>${t('col_pts')}</tr>`+iv.leaderboard.map((g,i)=>`<tr><td>${i+1}<td>${esc(g.name||'')}<td><b>${g.pts}</b></tr>`).join('')+'</table>'):`<div class=sub>${t('ph_no_inventions')}</div>`;
   $('inv_disc').innerHTML=iv.discoveries.map(d=>`<div>${d.guild?'&#129514; ':''}<b>${esc(d.name)}</b> <span class=sub>(${esc(d.key)})</span> &mdash; <span class=AG>${d.by||'?'}</span> +${d.points}</div>`).reverse().join('')||`<div class=sub>${t('ph_nothing_invented')}</div>`;
  }}
  if(need('/station')){const st=await j('/station');

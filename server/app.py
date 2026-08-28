@@ -1059,6 +1059,8 @@ def agent_profile(agent_id: int):
         a = cur.fetchone()
         if not a:
             raise HTTPException(404, "no such agent")
+        if a.get("attrs"):                               # SECURITY: never expose the per-agent secret token — it authorizes /intent (would let anyone puppet the agent)
+            a["attrs"] = {k: v for k, v in a["attrs"].items() if k != "token"}
         cur.execute("SELECT attrs->>'name' name, (attrs->>'flies')::boolean flies, (attrs->>'drives')::boolean drives, "
                     "(attrs->>'v_air')::int v_air, (attrs->>'mass')::int mass, (attrs->>'autonomous')::boolean autonomous "
                     "FROM entities WHERE type='vehicle' AND owner=%s ORDER BY id DESC LIMIT 60", (agent_id,))
