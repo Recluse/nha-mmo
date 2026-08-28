@@ -1073,11 +1073,22 @@ def apply_intent(it, ents, cur, t, events):
         row = cur.fetchone()
         if not row:
             return "rejected", "no completed orbital elevator on this cell (stand at its base)"
+        # TWO-WAY elevator: if you're already up in space, riding from the base takes you back DOWN to the ground —
+        # fast, no fuel, no waiting for altitude to decay. (Return to the elevator's base cell first.) This is the
+        # cheap round-trip home so an agent can cycle mine→ride up→build→ride down→mine without a rocket.
+        if a["attrs"].get("in_space") and int(a["attrs"].get("altitude", 0)) > 0:
+            a["attrs"]["altitude"] = 0
+            a["attrs"]["in_space"] = False
+            a["attrs"]["space_level"] = 0
+            a["attrs"].pop("on_moon", None)
+            a["attrs"].pop("docked_to", None)
+            a["attrs"]["round_trip"] = True
+            return "applied", "rode the orbital elevator back DOWN to the ground — no fuel, no waiting"
         a["attrs"]["altitude"] = max(int(a["attrs"].get("altitude", 0)), min(SKY_TOP, row["h"]))
         if not a["attrs"].get("in_space"): a["attrs"]["atuin_seed"] = t   # new spaceflight -> /observe re-rolls the A'Tuin sex reading for this trip
         a["attrs"]["in_space"] = True
         a["attrs"]["space_level"] = max(int(a["attrs"].get("space_level", 0)), 1)
-        return "applied", f"rode the orbital elevator to space (altitude {a['attrs']['altitude']}) — no rocket needed!"
+        return "applied", f"rode the orbital elevator to space (altitude {a['attrs']['altitude']}) — ride again from this base cell to come back DOWN (no fuel)"
     if verb == "land_moon":                              # descend from high lunar orbit onto the Moon surface
         if int(a["attrs"].get("altitude", 0)) < SKY_TOP:
             return "rejected", "climb to lunar orbit (altitude 600) first — the Moon is reached from the top of the sky"
