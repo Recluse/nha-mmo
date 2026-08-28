@@ -698,9 +698,11 @@ async function tick(){
   else{
    const pc=(h,n)=>n>0?Math.min(100,Math.round(h*100/n)):100;
    const bar=(h,n)=>`<div style="background:#0b0e14;border:1px solid #21262d;border-radius:4px;height:8px;overflow:hidden;margin-top:1px"><div style="height:100%;width:${pc(h,n)}%;background:${pc(h,n)>=100?'#3fb950':'#58a6ff'}"></div></div>`;
-   const mods=st.modules.map(m=>{const tn=Object.values(m.need).reduce((a,b)=>a+b,0),th=Object.keys(m.need).reduce((a,r)=>a+(m.have[r]||0),0);
-    const res=Object.keys(m.need).map(r=>`<div style="margin:3px 0"><span class=sub>${r} ${m.have[r]||0}/${m.need[r]}</span>${bar(m.have[r]||0,m.need[r])}</div>`).join('');
-    return `<div style="border:1px solid #21262d;border-radius:6px;padding:8px;margin:6px 0;background:${m.complete?'#10261a':'#11161f'}"><div><b>${m.complete?'&#9989; ':''}${esc(m.label)}</b> <span class=sub>&middot; ${pc(th,tn)}% &middot; ${m.funders} ${t('station_funders')}</span></div>${res}</div>`;}).join('');
+   const mods=st.modules.map(m=>{const tneed=Object.values(m.need).reduce((a,b)=>a+b,0),th=Object.keys(m.need).reduce((a,r)=>a+(m.have[r]||0),0);
+    const res=Object.keys(m.need).map(r=>{const df=(m.remaining||{})[r]||0;return `<div style="margin:3px 0"><span class=sub>${r} ${m.have[r]||0}/${m.need[r]}${df&&!m.complete?` <span style="color:#f0883e">&minus;${df}</span>`:''}</span>${bar(m.have[r]||0,m.need[r])}</div>`;}).join('');
+    const fs=Object.entries(m.contrib||{}).map(([aid,rs])=>({aid,rs,tot:Object.values(rs).reduce((s,v)=>s+(+v||0),0)})).sort((a,b)=>b.tot-a.tot);
+    const flist=fs.length?`<div class=sub style="margin-top:5px;border-top:1px solid #21262d;padding-top:4px">${t('station_funders')}: ${fs.map(f=>`<span class=AG>${tn(f.aid)}</span> <span class=sub>(${Object.entries(f.rs).map(([r,v])=>r+' '+v).join(', ')})</span>`).join(' &middot; ')}</div>`:'';
+    return `<div style="border:1px solid #21262d;border-radius:6px;padding:8px;margin:6px 0;background:${m.complete?'#10261a':'#11161f'}"><div><b>${m.complete?'&#9989; ':''}${esc(m.label)}</b> <span class=sub>&middot; ${pc(th,tneed)}% &middot; ${m.funders} ${t('station_funders')}</span></div>${res}${flist}</div>`;}).join('');
    $('station_panel').innerHTML=`<div class=sub style="margin-bottom:6px">${t('station_intro').replace('{cap}',st.cap_pct_per_agent).replace('{min}',st.min_funders_per_module)}</div><div style="margin-bottom:4px"><b>${st.modules_done}/${st.modules_total}</b> ${t('station_progress')}${st.complete?` &mdash; <span style="color:#3fb950"><b>${t('station_complete')}</b></span>`:''}</div>${mods}`;
   }
  }catch(e){if($('station_panel'))$('station_panel').innerHTML=`<div class=rej>station render error: ${esc(String((e&&e.message)||e))}</div>`;}}

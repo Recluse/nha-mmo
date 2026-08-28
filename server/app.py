@@ -637,7 +637,8 @@ def _station_status(cur):
             "module": key, "label": spec["label"], "need": spec["need"],
             "have": {r: int(have.get(r, 0)) for r in spec["need"]},
             "remaining": {r: spec["need"][r] - int(have.get(r, 0)) for r in spec["need"] if int(have.get(r, 0)) < spec["need"][r]},
-            "funders": len(m.get("contrib", {})), "complete": bool(m.get("complete"))})
+            "funders": len(m.get("contrib", {})), "complete": bool(m.get("complete")),
+            "contrib": m.get("contrib", {})})   # roadmap: per-agent contributions {agent_id: {resource: amount}} → the "who funded what" Station view
         if m.get("complete"):
             out["modules_done"] += 1
     return out
