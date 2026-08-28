@@ -914,12 +914,28 @@ void main(){
   sc.add(new T.Mesh(g,new T.MeshLambertMaterial({color:0x6d7d4c,side:T.DoubleSide,flatShading:true})));
  }
  const gBox=new T.BoxGeometry(0.85,0.85,0.85), gTree=new T.ConeGeometry(0.55,1.8,6), gAg=new T.SphereGeometry(0.95,12,10), gPlant=new T.SphereGeometry(0.42,8,6);
+ // dispose per-build materials + InstancedMeshes on rebuild (shared geometries gBox/gTree/... are reused, never disposed)
+ function clearInst(g){while(g.children.length){const c=g.children[0];g.remove(c);if(c.material&&c.material.dispose)c.material.dispose();if(c.dispose)c.dispose();}}
+ // PERF: instead of one THREE.Mesh + material per deposit (~8.5k meshes => ~8.5k draw calls, slow to build AND
+ // render), bucket deposits by (geometry, colour) and draw each bucket as ONE InstancedMesh. ~15-20 draw calls
+ // total for the whole deposit field. setMatrixAt is pure matrix math (no per-item object allocation) so the
+ // build no longer freezes the tab on load, and the GPU draws the field in a handful of calls => smooth FPS.
  function buildDeposits(ds){
-  while(depG.children.length)depG.remove(depG.children[0]);
-  ds.forEach(d=>{const p=P(d.x,d.y);
-   if(d.res==='wood'){const m=new T.Mesh(gTree,new T.MeshLambertMaterial({color:0x2f8f3a}));m.position.set(p[0],p[1]+0.9,p[2]);depG.add(m);}
-   else if(PLANTRES[d.res]){const m=new T.Mesh(gPlant,new T.MeshLambertMaterial({color:PLANTCOL[d.res]||0x7bd66a}));m.position.set(p[0],p[1]+0.3,p[2]);m.scale.y=0.6;depG.add(m);}  // low flora tufts (herb/lichen/fungus/algae)
-   else{const m=new T.Mesh(gBox,new T.MeshLambertMaterial({color:RESCOL[d.res]||0xcccccc}));m.position.set(p[0],p[1]+0.5,p[2]);depG.add(m);}});
+  clearInst(depG);
+  const buckets={};
+  (ds||[]).forEach(d=>{
+   let geo,col,yoff,sy;
+   if(d.res==='wood'){geo=gTree;col=0x2f8f3a;yoff=0.9;sy=1;}
+   else if(PLANTRES[d.res]){geo=gPlant;col=PLANTCOL[d.res]||0x7bd66a;yoff=0.3;sy=0.6;}   // low flora tufts (herb/lichen/fungus/algae)
+   else{geo=gBox;col=RESCOL[d.res]||0xcccccc;yoff=0.5;sy=1;}
+   const key=(geo===gTree?'t':geo===gPlant?'p':'b')+col;
+   (buckets[key]||(buckets[key]={geo,col,yoff,sy,items:[]})).items.push(d);
+  });
+  const M=new T.Matrix4();
+  Object.keys(buckets).forEach(k=>{const b=buckets[k];
+   const im=new T.InstancedMesh(b.geo,new T.MeshLambertMaterial({color:b.col}),b.items.length);
+   for(let i=0;i<b.items.length;i++){const d=b.items[i],p=P(d.x,d.y);M.makeScale(1,b.sy,1);M.setPosition(p[0],p[1]+b.yoff,p[2]);im.setMatrixAt(i,M);}
+   im.instanceMatrix.needsUpdate=true;im.frustumCulled=false;depG.add(im);});
  }
  function label(txt){const c=document.createElement('canvas');c.width=512;c.height=128;const g=c.getContext('2d');g.fillStyle='rgba(8,10,18,0.72)';g.fillRect(0,0,512,128);g.font='bold 52px ui-monospace,monospace';g.fillStyle='#ffd866';g.textBaseline='middle';g.fillText(String(txt).slice(0,19),14,70);const tx=new T.CanvasTexture(c);tx.minFilter=T.LinearFilter;tx.anisotropy=4;const sp=new T.Sprite(new T.SpriteMaterial({map:tx,depthTest:false}));sp.scale.set(13,3.2,1);return sp;}
  function buildAgents(as){
@@ -932,10 +948,14 @@ void main(){
  }
  const gVeh=new T.OctahedronGeometry(0.7,0);
  function buildVehicles(vs){
-  while(vehG.children.length)vehG.remove(vehG.children[0]);
-  (vs||[]).forEach(v=>{const p=P(v.x,v.y),yy=p[1]+0.9+(v.alt||0)/9;
-   const m=new T.Mesh(gVeh,new T.MeshLambertMaterial({color:v.fly?0x58a6ff:0xf0883e,emissive:0x111111}));
-   m.position.set(p[0],yy,p[2]);vehG.add(m);});
+  clearInst(vehG);                                          // PERF: instanced by colour (fly vs ground) — 2 draw calls instead of one mesh per vehicle
+  const G={};
+  (vs||[]).forEach(v=>{const c=v.fly?0x58a6ff:0xf0883e;(G[c]||(G[c]=[])).push(v);});
+  const M=new T.Matrix4();
+  Object.keys(G).forEach(c=>{const arr=G[c];
+   const im=new T.InstancedMesh(gVeh,new T.MeshLambertMaterial({color:+c,emissive:0x111111}),arr.length);
+   for(let i=0;i<arr.length;i++){const v=arr[i],p=P(v.x,v.y),yy=p[1]+0.9+(v.alt||0)/9;M.identity();M.setPosition(p[0],yy,p[2]);im.setMatrixAt(i,M);}
+   im.instanceMatrix.needsUpdate=true;im.frustumCulled=false;vehG.add(im);});
  }
  // A Mesopotamian stepped-pyramid ziggurat — a few stacked, shrinking regolith tiers — that grows from a
  // squat foundation to a tall monument as attrs.height -> ZIG_TOP(120). It's a Moon-only megastructure
