@@ -123,6 +123,8 @@ GOOSE_HONK_EVERY = 5           # one flock honks every this-many ticks (determin
 GOOSE_PECK_MIN_CLUSTER = 2     # an agent on/adjacent to this many geese of a flock gets pecked
 GOOSE_PECK_MAX = 5            # peck damage is capped at this (scales with cluster size, never one-shots)
 COMBINE_BATCH_MAX = 20       # combine{n} may craft up to this many copies of an ALREADY-KNOWN recipe in one intent (grind relief)
+AUTO_MINE_EVERY = 3          # a deployed autonomous vehicle harvests on every this-many-th tick (deterministic, staggered by id)
+AUTO_MINE_N = 3              # units a mining rig scoops per harvest tick (ground deposit it's on/near, or a docked asteroid in orbit)
 # ============================================================================
 
 # ===================== SEASON 4 — THE SPACE ERA (co-op orbital station) =====================
@@ -796,7 +798,9 @@ def apply_intent(it, ents, cur, t, events):
         v = max(cand, key=lambda e: e["id"])
         v["attrs"]["autonomous"] = True
         v["x"], v["y"] = a["x"], a["y"]                  # it sets off from where you stand
-        return "applied", f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own"
+        kind = "a flyer — send it up so it mines asteroids in orbit" if v["attrs"].get("flies") else "it mines ground deposits it roams over (and paves roads)"
+        return "applied", (f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own, "
+                           f"MINING into your inventory as it goes ({kind}). Deploy it where the resource is.")
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
         if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city"):
@@ -1664,22 +1668,53 @@ def resolve_proposals(ents, cur, t, events):
 def roam_autonomous(ents, cur, t, events):
     """Deployed autonomous vehicles wander the world on their own each tick. DETERMINISTIC (no RNG, so the
     replay/state-hash chain stays valid): heading varies with tick+id; flyers also drift altitude.
+    MINING RIGS: an automaton also HARVESTS as it roams (every AUTO_MINE_EVERY ticks) into its OWNER's inventory —
+    a grounded rig mines a ground deposit on/beside it; a flyer IN ORBIT mines a nearby asteroid. Deploy a rig on a
+    titanium patch / in orbit by an iridium rock and it gathers while you do something else.
     GIGACHRUSCH: grounded automatons also pave roads as they roam, funded by the OWNER's metal → owner earns builder_points."""
     mkt = next((x for x in ents.values() if x["type"] == "market"), None)
     w = int(mkt["attrs"].get("w", 156)) if mkt else 156
     h = int(mkt["attrs"].get("h", 156)) if mkt else 156
-    for v in ents.values():
-        if v["type"] != "vehicle" or not v["attrs"].get("autonomous"):
-            continue
+    autos = [v for v in ents.values() if v["type"] == "vehicle" and v["attrs"].get("autonomous")]   # id-ordered (ents load id-ordered)
+    if not autos:
+        return
+    dep_at = {}                                               # cell -> a live mineable deposit, built once for O(1) rig harvest lookups
+    for e in ents.values():
+        if e["type"] == "deposit" and int(e["attrs"].get("amount", 0)) > 0 and e["attrs"].get("resource") not in PLANT_RESOURCES:
+            dep_at.setdefault((e["x"], e["y"]), e)
+    asts = [e for e in ents.values() if e["type"] == "asteroid" and int(e["attrs"].get("amount", 0)) > 0]
+    for v in autos:
         v["x"] = max(0, min(w - 1, v["x"] + ((t + v["id"]) % 3) - 1))
         v["y"] = max(0, min(h - 1, v["y"] + ((t * 2 + v["id"] * 3) % 3) - 1))
+        owner = ents.get(v["owner"])
+        owner_ok = owner is not None and owner["type"] == "agent"
+        harvest = owner_ok and (t + v["id"]) % AUTO_MINE_EVERY == 0
         if v["attrs"].get("flies"):
-            v["attrs"]["alt"] = max(0, min(600, int(v["attrs"].get("alt", 0)) + (((t + v["id"]) % 5) - 2) * 6))
-            continue                                          # flyers cruise; only grounded automatons build the GIGACHRUSCH road grid
+            alt = max(0, min(600, int(v["attrs"].get("alt", 0)) + (((t + v["id"]) % 5) - 2) * 6))
+            v["attrs"]["alt"] = alt
+            if harvest and ORBIT_LO <= alt < ORBIT_HI:        # ORBITAL RIG: mine the nearest asteroid within dock range
+                cand = [(abs(a["x"] - v["x"]) + abs(a["y"] - v["y"]), a["id"], a) for a in asts
+                        if abs(a["x"] - v["x"]) + abs(a["y"] - v["y"]) <= DOCK_RANGE and int(a["attrs"].get("amount", 0)) > 0]
+                if cand:
+                    a2 = min(cand)[2]; res = a2["attrs"].get("resource", "iron"); take = min(AUTO_MINE_N, int(a2["attrs"]["amount"]))
+                    a2["attrs"]["amount"] = int(a2["attrs"]["amount"]) - take; addb(owner, res, take)
+                    events.append((t, owner["id"], "act", {"verb": "auto_mine", "status": "applied",
+                                   "result": f"drone mined {take} {res} from asteroid #{a2['id']}"}))
+            continue                                          # flyers cruise (+ orbital mining); only grounded automatons pave roads
+        if harvest:                                           # GROUND RIG: mine a deposit on its cell or a 4-neighbour
+            best = None
+            for dx, dy in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)):
+                d = dep_at.get((v["x"] + dx, v["y"] + dy))
+                if d and int(d["attrs"].get("amount", 0)) > 0:
+                    best = d; break
+            if best:
+                res = best["attrs"].get("resource", "iron"); take = min(AUTO_MINE_N, int(best["attrs"]["amount"]))
+                best["attrs"]["amount"] = int(best["attrs"]["amount"]) - take; addb(owner, res, take)
+                events.append((t, owner["id"], "act", {"verb": "auto_mine", "status": "applied",
+                               "result": f"drone mined {take} {res} at ({best['x']},{best['y']})"}))
         if (t + v["id"]) % 4 != 0:                            # pave on every 4th tick (deterministic throttle)
             continue
-        owner = ents.get(v["owner"])
-        if not owner or owner["type"] != "agent" or get(owner, "metal") < 1:
+        if not owner_ok or get(owner, "metal") < 1:
             continue
         cur.execute("SELECT 1 FROM entities WHERE type='structure' AND x=%s AND y=%s AND COALESCE((attrs->>'alt')::int,0)=0 LIMIT 1", (v["x"], v["y"]))
         if cur.fetchone():                                    # cell already built on -> skip (no stacking roads)
