@@ -1105,8 +1105,14 @@ def agent_profile(agent_id: int):
         milestones = [dict(r) for r in cur.fetchall()]
         cur.execute("SELECT count(*) c FROM entities WHERE type='vehicle' AND owner=%s", (agent_id,))
         nveh = cur.fetchone()["c"]
+        # recent activity: powers the profile's action-mix chart, activity sparkline and personal feed.
+        # Bounded to a true ~200-row index scan by events_entity_id_idx (entity, id) — WHERE entity + ORDER BY id DESC;
+        # the (entity,kind,tick) index can't serve ORDER BY id, so without the dedicated index this would sort an
+        # agent's whole (now full-history) event set per click. On-demand only (/agent/{id} isn't polled or cached).
+        cur.execute("SELECT tick, kind, data FROM events WHERE entity=%s ORDER BY id DESC LIMIT 200", (agent_id,))
+        recent = [dict(r) for r in cur.fetchall()]
     return {"agent": dict(a), "vehicles": vehicles, "vehicle_count": nveh,
-            "discoveries": discoveries, "milestones": milestones}
+            "discoveries": discoveries, "milestones": milestones, "recent": recent}
 
 
 def _timeline(limit):

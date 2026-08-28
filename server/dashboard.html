@@ -362,7 +362,7 @@ const I18N={
   ph_no_guild_inv:"no Guild inventions yet — novel mixes are escrowed and judged by the referee",
   col_resource:"resource",
   ph_agent_not_found:"agent not found", lbl_empty:"(empty)", lbl_none:"none",
-  hdr_inventory:"Inventory", hdr_vehicles:"Vehicles", hdr_milestones:"Milestones",
+  hdr_inventory:"Inventory", hdr_vehicles:"Vehicles", hdr_milestones:"Milestones", prof_activity:"Activity", prof_recent:"Recent activity", prof_events:"events",
   rec_first_space:"&#128640; First to space", rec_reached_space:"&#128640; Reached space", rec_fastest_air:"&#9992; Fastest aircraft",
   rec_flying_veh:"&#128736; Flying vehicles", rec_top_inv:"&#127942; Top inventor", rec_most_veh:"&#128666; Most vehicles", rec_richest:"&#128176; Richest",
   rec_nobody_yet:"nobody yet", rec_none_flying:"none flying yet", rec_agents_count:"agent(s)", rec_of_built:"built", rec_credits:"credits",
@@ -449,7 +449,7 @@ const I18N={
   ph_no_guild_inv:"ще немає винаходів Гільдії — новаторські суміші депоновано й оцінює рефері",
   col_resource:"ресурс",
   ph_agent_not_found:"агента не знайдено", lbl_empty:"(порожньо)", lbl_none:"немає",
-  hdr_inventory:"Інвентар", hdr_vehicles:"Транспорт", hdr_milestones:"Віхи",
+  hdr_inventory:"Інвентар", hdr_vehicles:"Транспорт", hdr_milestones:"Віхи", prof_activity:"Активність", prof_recent:"Остання активність", prof_events:"подій",
   rec_first_space:"&#128640; Перший у космосі", rec_reached_space:"&#128640; Досягли космосу", rec_fastest_air:"&#9992; Найшвидший літак",
   rec_flying_veh:"&#128736; Літаючий транспорт", rec_top_inv:"&#127942; Топ винахідник", rec_most_veh:"&#128666; Найбільше транспорту", rec_richest:"&#128176; Найбагатший",
   rec_nobody_yet:"поки що ніхто", rec_none_flying:"поки що ніхто не літає", rec_agents_count:"агент(ів)", rec_of_built:"збудовано", rec_credits:"кредитів",
@@ -536,7 +536,7 @@ const I18N={
   ph_no_guild_inv:"пока нет изобретений Гильдии — новые смеси депонированы и оцениваются рефери",
   col_resource:"ресурс",
   ph_agent_not_found:"агент не найден", lbl_empty:"(пусто)", lbl_none:"нет",
-  hdr_inventory:"Инвентарь", hdr_vehicles:"Транспорт", hdr_milestones:"Вехи",
+  hdr_inventory:"Инвентарь", hdr_vehicles:"Транспорт", hdr_milestones:"Вехи", prof_activity:"Активность", prof_recent:"Последняя активность", prof_events:"событий",
   rec_first_space:"&#128640; Первый в космосе", rec_reached_space:"&#128640; Достигли космоса", rec_fastest_air:"&#9992; Самый быстрый самолёт",
   rec_flying_veh:"&#128736; Летающий транспорт", rec_top_inv:"&#127942; Топ изобретатель", rec_most_veh:"&#128666; Больше всего транспорта", rec_richest:"&#128176; Самый богатый",
   rec_nobody_yet:"пока никто", rec_none_flying:"пока никто не летает", rec_agents_count:"агент(ов)", rec_of_built:"построено", rec_credits:"кредитов",
@@ -662,16 +662,35 @@ async function sinceLastVisit(){   // "what changed since your last visit" diges
   if(now)localStorage.setItem('nha_seen',now);   // never clobber a real last-seen tick with 0 on a failed /world fetch
  }catch(e){}
 }
+// ---- richer Profile: action-mix, activity sparkline, personal feed (all from the bounded /agent recent[]) ----
+const VERBCOL={attack:'#f85149',steal:'#f85149',mine:'#e3b341',gather:'#7bd66a',sell:'#3fb950',buy:'#58a6ff',move:'#6e7681',build:'#d29922',craft:'#d2a8ff',launch:'#a371f7'};
+function profMix(rec){const m={};for(const e of rec){const k=(e.data&&e.data.verb)||e.kind||'?';m[k]=(m[k]||0)+1;}
+ const arr=Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,10);if(!arr.length)return `<div class=sub>${t('lbl_none')}</div>`;const mx=arr[0][1];
+ return arr.map(([k,c])=>`<div style="display:flex;align-items:center;gap:8px;margin:2px 0"><span class=sub style="width:78px;text-align:right;font-size:12px">${esc(k)}</span><span style="flex:1;background:#0b0e14;border-radius:3px;overflow:hidden"><span style="display:block;height:11px;width:${Math.max(3,Math.round(c*100/mx))}%;background:${VERBCOL[k]||'#1f6feb'}"></span></span><span class=AG style="width:34px;font-size:12px">${c}</span></div>`).join('');}
+function profSpark(rec){if(rec.length<2)return '';const ts=rec.map(e=>e.tick),lo=Math.min.apply(null,ts),hi=Math.max.apply(null,ts);if(hi<=lo)return '';
+ const N=30,bins=new Array(N).fill(0);for(const tk of ts)bins[Math.floor((tk-lo)/(hi-lo)*(N-1))]++;const mx=Math.max.apply(null,bins)||1;
+ const bars=bins.map(v=>`<span title="${v}" style="flex:1;height:${Math.max(1,Math.round(v*26/mx))}px;background:#58a6ff;opacity:${v?0.85:0.15}"></span>`).join('');
+ return `<div style="display:flex;align-items:flex-end;gap:1px;height:28px;margin:4px 0">${bars}</div><div class=sub style="display:flex;justify-content:space-between;font-size:11px"><span>t${lo}</span><span>${rec.length} ${t('prof_events')}</span><span>t${hi}</span></div>`;}
+function profFeed(rec,tn){return rec.slice(0,24).map(e=>`<div><span class=sub>t${e.tick}</span> ${logTxt(e,tn).txt}</div>`).join('')||`<div class=sub>${t('lbl_none')}</div>`;}
 async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;pageURL();
  const d=await j('/agent/'+id);if(!d){$('profile').removeAttribute('data-i18n');$('profile').innerHTML=`<span class=rej>${t('ph_agent_not_found')}</span>`;return;}
- const a=d.agent,at=a.attrs||{},b=a.buffers||{};
+ const a=d.agent,at=a.attrs||{},b=a.buffers||{},rec=d.recent||[];
  const inv=Object.entries(b).filter(([k,v])=>v).map(([k,v])=>esc(k)+' '+v).join(', ')||t('lbl_empty');
  const veh=(d.vehicles||[]).map(v=>esc(v.name||'?')+(v.flies?' [fly]':'')+(v.drives?' [drive]':'')+(v.autonomous?' [auto]':'')).join(', ')||t('lbl_none');
  const disc=(d.discoveries||[]).map(x=>`<div><b>${esc(x.name)}</b> <span class=sub>t${x.tick}</span> +${x.points}</div>`).reverse().join('')||`<div class=sub>${t('lbl_none')}</div>`;
  const ms=(d.milestones||[]).map(e=>`<div><span class=sub>t${e.tick}</span> ${evTx(e)}</div>`).join('')||`<div class=sub>${t('lbl_none')}</div>`;
  $('profile').removeAttribute('data-i18n');
  const ptitle=at.title?` <span title="prestige title" style="background:#3a2d6b;color:#d9c6ff;border-radius:5px;padding:1px 7px;font-size:13px;font-weight:bold">&#127894; ${esc(at.title)}</span>`:'';   // 🏆 prestige title (monument builder)
- $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span>${ptitle}</h2><div>pos (${a.x},${a.y}) &middot; <span class=O>&#10084; ${at.hp||0}/${at.hp_max||100} hp</span> &middot; <span class=AG>&#9876; ${at.kills||0} kills / ${at.deaths||0} deaths</span> &middot; alt ${at.altitude||0}${at.in_space?` <span class=AG>${t('lbl_space_tag')}</span>`:''} &middot; ${at.inventor_points||0} pts</div><h2>${t('hdr_inventory')}</h2><div class=sub>${inv}</div><h2>${t('hdr_vehicles')} (${d.vehicle_count})</h2><div class=sub>${veh}</div><h2>${t('hdr_discoveries')}</h2><div class=feed>${disc}</div><h2>${t('hdr_milestones')}</h2><div class=feed>${ms}</div>`;}
+ const cr=b.credits||0, fuel=(b.fuel!=null?b.fuel:(at.fuel!=null?at.fuel:0));
+ const tnp=x=>String(x)===String(a.id)?esc(at.name||('#'+a.id)):('#'+x);   // profile-local id->name: this agent by name, others by #id
+ $('profile').innerHTML=`<h2>${esc(at.name||('#'+a.id))} <span class=sub>#${a.id}</span>${ptitle}</h2>`
+  +`<div>pos (${a.x},${a.y}) &middot; <span class=O>&#10084; ${at.hp||0}/${at.hp_max||100} hp</span> &middot; <span class=AG>&#9876; ${at.kills||0} / ${at.deaths||0} k/d</span> &middot; alt ${at.altitude||0}${at.in_space?` <span class=AG>${t('lbl_space_tag')}</span>`:''} &middot; &#128176; ${cr} &middot; &#9889; ${fuel} &middot; ${at.inventor_points||0} pts</div>`
+  +`<h2>${t('prof_activity')}</h2>${profSpark(rec)}${profMix(rec)}`
+  +`<h2>${t('hdr_inventory')}</h2><div class=sub>${inv}</div>`
+  +`<h2>${t('hdr_vehicles')} (${d.vehicle_count})</h2><div class=sub>${veh}</div>`
+  +`<h2>${t('prof_recent')}</h2><div class=feed>${profFeed(rec,tnp)}</div>`
+  +`<h2>${t('hdr_discoveries')}</h2><div class=feed>${disc}</div>`
+  +`<h2>${t('hdr_milestones')}</h2><div class=feed>${ms}</div>`;}
 $('pload').onclick=()=>loadProfile($('pid').value);
 // ===== Interactive Map (canvas: pan/zoom, layer toggles, resource heatmap). Fed by /map (ascii grid + agent legend). =====
 const MAP={

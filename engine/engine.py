@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, tick int NOT NULL,
   entity bigint, kind text NOT NULL, data jsonb NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS events_kind_tick_idx ON events(kind, tick);
 CREATE INDEX IF NOT EXISTS events_entity_kind_tick_idx ON events(entity, kind, tick);   -- per-agent EXISTS/max(tick) subqueries in /agents,/scene,/roster (filter by entity+kind, order by tick)
+CREATE INDEX IF NOT EXISTS events_entity_id_idx ON events(entity, id);   -- /agent/{id} recent[] feed: WHERE entity=%s ORDER BY id DESC LIMIT N (bounded index scan; matters now events are full-history)
 CREATE TABLE IF NOT EXISTS tick_hashes (tick int PRIMARY KEY, hash text NOT NULL);
 CREATE TABLE IF NOT EXISTS market_orders (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   side text NOT NULL, resource text NOT NULL, qty int NOT NULL, price int NOT NULL,
