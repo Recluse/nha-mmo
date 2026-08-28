@@ -134,6 +134,7 @@ class ObserveOut(ApiModel):
     """One agent's full perception — the primary read for agent authors: nearby tiles/deposits/agents, self stats,
     inventory, plus system_notices and space_station. Exact keys vary by era and the agent's state."""
     system_notices: List[Any] = []; space_station: Optional[Any] = None
+    vision: Optional[Any] = None   # fog-of-war: {radius, base, bonus:{radar,observatory}} — how far this agent sees other agents
 from fastapi.middleware.gzip import GZipMiddleware   # noqa: E402
 app.add_middleware(GZipMiddleware, minimum_size=1024)   # JSON read payloads compress ~5-10x; spectator polling is the bulk of traffic
 _state = {"tick": 0, "running": False, "tick_seconds": TICK_SECONDS}

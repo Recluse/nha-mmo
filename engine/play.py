@@ -11,7 +11,10 @@ Read-only over engine.py's `entities` schema; the caller passes a psycopg2 RealD
 # weapons the agent may hold (crafted items) + their consumable ammo — surfaced so attack/arm are usable.
 _WEAPON_ITEMS = ("kinetic_gun", "energy_weapon", "bomb")
 _AMMO_ITEMS = ("slug", "energy_cell")
-_NEARBY_RADIUS = 9          # Manhattan reach for nearby agents/loot/artifacts (covers max weapon range 9)
+_NEARBY_RADIUS = 9          # Manhattan reach for nearby agents/loot/artifacts (covers max weapon range 9) — the BASE sight (fog of war)
+# FOG OF WAR is ADDITIVE: base sight is 9 and nobody ever sees less; effort BUYS a wider agent/threat scan.
+_RADAR_VISION_BONUS = 8         # a crafted `radar` (a finished magnet + a chip) widens the nearby_agents/threat scan 9 -> 17
+_OBSERVATORY_VISION_BONUS = 4   # an `observatory` doubles as a watchtower — a modest sight bump ON TOP of its forecast
 _ORBIT_LO, _ORBIT_HI = 300, 600   # an agent only sees asteroids while it is in orbit (mirror of engine constants)
 # --- season 3 medicine branch (mirror of engine constants) — surfaced so gather/heal are targetable ---
 _PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant deposits (renewable botany)
@@ -76,14 +79,25 @@ def observe(cur, agent_id):
     nearby = [dict(r) for r in cur.fetchall()]
 
     # --- season 3: who/what is in reach (so attack/steal/ally/collect/attune/dock are targetable) ---
-    # nearby agents (others within radius): id/name/x/y/hp/wanted — NO karma/yield_buff/notoriety surfaced.
+    # FOG OF WAR — how far this agent can SEE other agents: base 9, widened by a held radar / observatory (additive).
+    radar_bonus = _RADAR_VISION_BONUS if int(inv.get("radar", 0)) > 0 else 0
+    obs_bonus = _OBSERVATORY_VISION_BONUS if int(inv.get("observatory", 0)) > 0 else 0
+    vision_radius = _NEARBY_RADIUS + radar_bonus + obs_bonus
+    # a wider scan must be allowed to RETURN more, or the radar's extra reach is silently capped away in a crowd
+    # (the `vision` block would advertise a bonus the list never delivers). Base 12; lift it when sight is extended.
+    agent_limit = 12 if vision_radius == _NEARBY_RADIUS else 30
+    # nearby agents (others within the VISION radius): id/name/x/y/hp/wanted — NO karma/yield_buff/notoriety surfaced.
     cur.execute("SELECT id, attrs->>'name' name, x, y, COALESCE((attrs->>'hp')::int, 100) hp, "
                 "(COALESCE((attrs->>'wanted_until')::int,0) > %s) wanted, "
                 "(abs(x-%s)+abs(y-%s)) dist FROM entities "
-                "WHERE type='agent' AND id<>%s AND (abs(x-%s)+abs(y-%s)) <= %s ORDER BY dist, id LIMIT 12",
-                (now, ax, ay, agent_id, ax, ay, _NEARBY_RADIUS))
+                "WHERE type='agent' AND id<>%s AND (abs(x-%s)+abs(y-%s)) <= %s ORDER BY dist, id LIMIT %s",
+                (now, ax, ay, agent_id, ax, ay, vision_radius, agent_limit))
     nearby_agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
                       "hp": r["hp"], "wanted": bool(r["wanted"]), "dist": r["dist"]} for r in cur.fetchall()]
+    vision = {"radius": vision_radius, "base": _NEARBY_RADIUS,
+              "bonus": {k: v for k, v in (("radar", radar_bonus), ("observatory", obs_bonus)) if v},
+              "note": "fog of war: you only see agents within this Manhattan radius. craft a radar "
+                      "(a finished magnet + a chip) to widen it — base sight is 9, a radar adds +8."}
 
     # held weapons + ammo counts (drawn from inventory buffers, so the agent knows it can attack/arm).
     weapons = {w: int(inv.get(w, 0)) for w in _WEAPON_ITEMS if int(inv.get(w, 0)) > 0}
@@ -187,4 +201,4 @@ def observe(cur, agent_id):
             "alerts": alerts, "last_robbed_by": last_robbed_by,
             "loot": loot, "artifacts": artifacts, "asteroids": asteroids,
             "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin, "forecast": forecast,
-            "updates": updates, "elevators": elevators, "nearby_structures": nearby_structures}
+            "updates": updates, "elevators": elevators, "nearby_structures": nearby_structures, "vision": vision}

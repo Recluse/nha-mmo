@@ -75,6 +75,7 @@ ITEM_PROPS = {
     "cryo_fuel":     {"energy": 9, "coolant": 8, "frozen": 1},                        # ice + energy source — cold rocket fuel
     "ion_thruster":  {"power": 2, "thrust_field": 1, "light": 1},                     # fusion + power + semiconductor — orbital drive
     "observatory":   {"instrument": 1, "optics": 1, "logic": 1},                      # lens + chip — a forecasting instrument (unlocks obs.forecast: the world's deterministic dynamics, computed ahead)
+    "radar":         {"instrument": 1, "sensor": 1, "detects": 1},                     # a finished magnet + chip — a sensor that WIDENS sight (observe.vision radius). No 'logic'/'focus'/'semiconductor' tag on purpose, so a radar can't stand in for a chip/lens; its 'instrument' tag is what the radar rule's `not instrument` guard reads to refuse consuming a finished instrument (observatory/radar) into another radar
     # --- season 3 medicine + chemistry (HP healing branch; 'heal' = HP restored on use, capped HP_MAX engine-side) ---
     # unique tags (organic/medicinal/antiseptic/potent/heal/cures_toxin/topical/buff/revive) keep these
     # recipes off every existing season-2/3 mix (none of which carries an organic/medicinal property).
@@ -99,6 +100,7 @@ RULE_NOTE = {
     "glass": "silicon or crystal + heat",
     "lens": "a highly refractive material",
     "observatory": "a lens + a chip — a forecasting instrument (see the storm's future track in observe.forecast)",
+    "radar": "a finished magnet (or electromagnet) + a chip — a sensor that WIDENS your sight (bigger nearby_agents/threat radius in observe.vision)",
     "engine": "fuel (energy) + a hard metal frame",
     "wire": "a ductile conductor metal (copper/aluminum), drawn out",
     "acid": "sulfur + water — a corrosive reagent",
@@ -175,6 +177,13 @@ RULES = [
     ("cryo_fuel",     lambda a: a["has"]("frozen") and a["has"]("energy") and a["n_metals"] == 0),  # ice + an energy source
     ("ion_thruster",  lambda a: a["has"]("fusion") and a["has"]("power") and a["has"]("semiconductor")),  # fusion fuel + motor + chip/silicon
     ("observatory",   lambda a: a["has"]("focus") and a["has"]("logic")),  # lens(focus) + chip(logic) — a forecasting instrument. Unique tags → no collision; BEFORE lens/glass so lens+chip resolves here
+    # radar: a FINISHED magnet (9) / electromagnet (10) + a CHIP. Raw iron is magnetic 8 so it can't reach this
+    # ({iron,chip} still smelts to a chip). The chip is pinned by BOTH `logic` AND `semiconductor`: the observatory
+    # also carries `logic` (with `optics`, not `focus`), so `logic` alone would let a magnet+observatory become a
+    # radar with no chip — requiring `semiconductor` (which the observatory lacks) blocks that, and `not instrument`
+    # additionally bars any finished instrument (observatory OR another radar) from being consumed into one. Before
+    # this rule {magnet,chip} fell through to the bottom `magnet` rule (re-forging the magnet, wasting the chip).
+    ("radar",         lambda a: a["mx"]("magnetic") >= 9 and a["has"]("logic") and a["has"]("semiconductor") and not a["has"]("instrument")),
     # --- season 3 medicine (ABOVE the generic acid/electrolyte/steam/salt rules so they win; every
     #     predicate REQUIRES a medicine-only tag (organic/medicinal/antiseptic/potent/heal) so it can
     #     never resolve a season-2/3 mix — those carry zero organic/medicinal properties) ---
