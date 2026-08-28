@@ -439,6 +439,60 @@ def register(model, mats=None):
     return r["agent_id"], tok
 
 
+# ---- Expansion financing: the rich scripted barons (Trader/Miner) bankroll the co-op station ----
+_INVEST_PRICES = {"titanium", "composite", "chip", "metal", "silicon", "crystal", "ice", "iridium"}  # fixed-price fundable lines
+INVEST_RESERVE = 50000     # keep a working float; only surplus above this is ever risked
+INVEST_SLICE   = 0.05      # sink ~5% of the surplus per investment — a slow, watchable bleed
+INVEST_PERIOD  = 20        # invest at most once per this-many world ticks (per baron)
+_last_invest_window = {}   # agent_id -> last tick-window it invested in (throttle)
+
+
+def baron_invest(obs, aid):
+    """If this (rich) agent has surplus credits and the co-op station has an open, still-fundable material line,
+    return an `invest` intent that buys the neediest scarce material and funds it — else None (fall through to
+    normal behaviour). Throttled to ~once per INVEST_PERIOD ticks. The engine enforces the 40% funder cap, so a
+    baron only ever funds its share; the barons fire on different ticks (id-staggered) and cover the >=3-funder gate."""
+    try:
+        cr = int((obs.get("inventory") or {}).get("credits", 0))
+        if cr - INVEST_RESERVE <= 0:
+            return None
+        win = int(obs.get("tick", 0)) // INVEST_PERIOD
+        if _last_invest_window.get(aid) == win:                 # already invested this window
+            return None
+        st = api("/station")
+        if not st or st.get("complete"):
+            return None
+        best = None                                             # (module, resource, fundable_qty) — biggest open line I'm not capped on
+        for m in (st.get("modules") or []):
+            if m.get("complete"):
+                continue
+            need = m.get("need") or {}
+            mine = (m.get("contrib") or {}).get(str(aid)) or {}
+            for r, q in (m.get("remaining") or {}).items():
+                if int(q) <= 0 or r not in _INVEST_PRICES:
+                    continue
+                cap = (int(need.get(r, 0)) * 40 + 99) // 100     # ceil(40%) — my hard per-line ceiling
+                room = cap - int(mine.get(r, 0))
+                if room <= 0:                                    # already at my cap on this line — skip so I never spam a reject
+                    continue
+                fundable = min(int(q), room)
+                if best is None or fundable > best[2]:
+                    best = (m["module"], r, fundable)
+        if not best:
+            return None
+        _last_invest_window[aid] = win
+        budget = max(1, min(int((cr - INVEST_RESERVE) * INVEST_SLICE), 25000))   # 5% of surplus, capped at INVEST_TICK_CAP
+        return "invest", {"module": best[0], "resource": best[1], "credits": budget}
+    except Exception:
+        return None
+
+
+# keys we always keep verbatim if present, even when empty/zero — the model needs them to plan
+_OBS_KEEP = {"position", "pos", "x", "y", "hp", "hp_max", "inventory", "nearby_deposits",
+             "nearby_agents", "nearby_threats", "threats", "in_space", "altitude", "weapons",
+             "ammo", "medicines", "credits", "inventor_points"}
+
+
 # keys we always keep verbatim if present, even when empty/zero — the model needs them to plan
 _OBS_KEEP = {"position", "pos", "x", "y", "hp", "hp_max", "inventory", "nearby_deposits",
              "nearby_agents", "nearby_threats", "threats", "in_space", "altitude", "weapons",

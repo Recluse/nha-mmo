@@ -106,9 +106,14 @@ def main():
         try:
             obs = runner.api(f"/observe/{aid}")
             depot = runner.api("/depot")
-            # priority: answer a chat mention → accept a good trade (eager=merchant) → routine dealing + chatter
-            verb, args = runner.smart_turn(aid, NAME, obs, depot, lambda o: deal(o, depot),
-                                           LINES, replies=REPLIES, eager=True)
+            # a rich barыga BANKROLLS the space race: skim surplus credits into the neediest station line (throttled).
+            binv = runner.baron_invest(obs, aid)
+            if binv:
+                verb, args = binv
+            else:
+                # priority: answer a chat mention → accept a good trade (eager=merchant) → routine dealing + chatter
+                verb, args = runner.smart_turn(aid, NAME, obs, depot, lambda o: deal(o, depot),
+                                               LINES, replies=REPLIES, eager=True)
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             print(f"[барыга #{aid}] {verb} {args}", flush=True)
         except urllib.error.HTTPError as e:

@@ -139,6 +139,10 @@ STATION_CAP_FRAC = 40              # max % of any one resource a single agent ma
 STATION_MIN_CONTRIB = 3            # min distinct funders a module needs before it can complete
 STATION_MODULE_REWARD = 160        # inventor_points pool split (by share) among a module's funders on completion
 STATION_FINISH_REWARD = 1400       # inventor_points mega-pool split among ALL funders when the LAST module lands
+# ---- Expansion-Era financing: rich agents `invest{module,credits}` — credits buy the scarce materials at a FIXED
+# price (never the live depot, so a whale can't move prices) and fund a station module under the SAME 40% cap. ----
+EXPANSION_PRICES = {"titanium": 14, "composite": 14, "chip": 24, "metal": 10, "silicon": 12, "crystal": 16, "ice": 2, "iridium": 40}
+INVEST_TICK_CAP = 25000            # max credits one agent may sink into a module in a single tick (rate limit — no one-tick hoard dump)
 STATION_MODULES = {                # insertion order is fixed → deterministic display/iteration
     # 2026-06-23 rebalance: composite (a 1-craft/tick item) was the grind wall, so its amounts were cut and
     # a CHIP requirement added (chip = silicon + a conductor metal, e.g. copper — both mineable). This diversifies
@@ -801,6 +805,89 @@ def apply_intent(it, ents, cur, t, events):
         kind = "a flyer — send it up so it mines asteroids in orbit" if v["attrs"].get("flies") else "it mines ground deposits it roams over (and paves roads)"
         return "applied", (f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own, "
                            f"MINING into your inventory as it goes ({kind}). Deploy it where the resource is.")
+    if verb == "invest":                                 # EXPANSION FINANCING: bankroll a co-op station module with CREDITS.
+        # Credits buy the scarce materials at a FIXED price and fund the module under the SAME 40% cap / >=3-funder gate
+        # as construct — the rich pay for their 40% instead of mining it (never buys them out of cooperation). A pure
+        # credit SINK: bought materials never land in the agent's buffer, so there is no credit->material->credit loop.
+        cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
+        erow = cur.fetchone()
+        if not erow or (erow.get("era") or "architect") != "space":
+            return "rejected", "investing in the Orbital Station needs the SPACE ERA"
+        module = str(args.get("module", "")).lower()
+        if module not in STATION_MODULES:
+            return "rejected", "invest needs module=one of: " + "/".join(STATION_MODULES)
+        st = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "station"), None)
+        if st is None or st["attrs"].get("complete"):
+            return "rejected", "no incomplete Orbital Station to invest in (found it via observe.space_station)"
+        mod = st["attrs"]["modules"].get(module)
+        if mod is None or mod.get("complete"):
+            return "rejected", f"the {STATION_MODULES[module]['label']} is complete or unbuilt — invest in another module"
+        want_res = str(args.get("resource", "")).lower() or None            # optional: focus one resource line
+        held_cr = int(get(a, "credits")); req = _ai(args, "credits", 0)
+        budget = min(held_cr, INVEST_TICK_CAP)
+        if req > 0:
+            budget = min(budget, req)
+        if budget <= 0:
+            return "rejected", "you hold no credits to invest"
+        need = STATION_MODULES[module]["need"]
+        have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {}); ct = st["attrs"].setdefault("ctotal", {})
+        aid = str(a["id"]); moved = {}; spent = 0
+        for r in sorted(need):                                              # sorted → replay-stable; same greedy cap loop as construct
+            if want_res and r != want_res:
+                continue
+            price = EXPANSION_PRICES.get(r)
+            if not price:                                                   # not a fixed-price-buyable material (skip)
+                continue
+            tgt = need[r]; cur_have = int(have.get(r, 0))
+            if cur_have >= tgt:
+                continue
+            cap = (tgt * STATION_CAP_FRAC + 99) // 100                      # ceil(40% of target) — the SAME per-resource ceiling
+            already = int(contrib.get(aid, {}).get(r, 0))
+            units = min(tgt - cur_have, max(0, cap - already), (budget - spent) // price)
+            if units > 0:
+                spent += units * price
+                have[r] = cur_have + units
+                contrib.setdefault(aid, {})[r] = already + units
+                ct[aid] = int(ct.get(aid, 0)) + units
+                moved[r] = units
+        if not moved:
+            return "rejected", (f"invested nothing to the {STATION_MODULES[module]['label']} — you may be at your "
+                                f"{STATION_CAP_FRAC}% cap on its fundable lines (others must chip in), the module needs no "
+                                f"fixed-price material, or your budget is too small.")
+        addb(a, "credits", -spent)                                         # THE SINK: credits are gone, converted to materials
+        msg = f"invested {spent} credits → funded {moved} to the {STATION_MODULES[module]['label']}"
+        imm = sum(moved.values()) // 10                                     # same immediate points as construct funding
+        if imm > 0:
+            a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
+            msg += f" — +{imm} pts"
+        if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= STATION_MIN_CONTRIB and not mod.get("complete"):
+            mod["complete"] = True                                          # completion cascade — identical to construct's
+            tot = sum(sum(v.values()) for v in contrib.values()) or 1
+            for fid in sorted(contrib):
+                pts = STATION_MODULE_REWARD * sum(contrib[fid].values()) // tot
+                fe = ents.get(int(fid))
+                if fe and pts > 0:
+                    fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+            cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                        (t, a["id"], Json({"station_module": module, "complete": True, "funders": len(contrib), "invested": True})))
+            msg += f" — MODULE COMPLETE! {STATION_MODULES[module]['label']} online ({len(contrib)} funders)"
+            if all(st["attrs"]["modules"].get(k, {}).get("complete") for k in STATION_MODULES):
+                st["attrs"]["complete"] = True
+                grand = sum(ct.values()) or 1
+                order = sorted(ct, key=lambda k: (-ct[k], int(k)))
+                for fid in order:
+                    fe = ents.get(int(fid)); pts = STATION_FINISH_REWARD * ct[fid] // grand
+                    if fe and pts > 0:
+                        fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+                        if not fe["attrs"].get("title"):
+                            fe["attrs"]["title"] = "Cosmonaut"
+                arch = ents.get(int(order[0])) if order else None
+                if arch and not arch["attrs"].get("title"):
+                    arch["attrs"]["title"] = "Station Architect"
+                cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                            (t, a["id"], Json({"station": True, "complete": True, "architect": order[0] if order else None})))
+                msg += " — 🛰 THE ORBITAL STATION IS COMPLETE!"
+        return "applied", msg
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
         if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city"):

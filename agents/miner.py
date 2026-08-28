@@ -281,7 +281,12 @@ def main():
             # the phase machine and only do reaction-chatter, so a trade/chat never derails a launch or a dock.
             if int(obs.get("altitude", 0) or 0) == 0:
                 depot = runner.api("/depot")
-                verb, args = runner.smart_turn(aid, NAME, obs, depot, act, LINES, replies=REPLIES)
+                # a rich shахтёр BANKROLLS the station: skim surplus credits into its neediest line (throttled) before mining
+                binv = runner.baron_invest(obs, aid)
+                if binv:
+                    verb, args = binv
+                else:
+                    verb, args = runner.smart_turn(aid, NAME, obs, depot, act, LINES, replies=REPLIES)
             else:
                 verb, args = runner.reactive_say(aid, act, obs, LINES)   # speak only when others just spoke
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
