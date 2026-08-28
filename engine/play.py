@@ -53,8 +53,10 @@ def observe(cur, agent_id):
                 "WHERE m.recipient IS NULL OR m.recipient=%s ORDER BY m.id DESC LIMIT 15", (agent_id,))
     inbox = [dict(r) for r in cur.fetchall()]
     cur.execute("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
-                "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='deposit' AND (attrs->>'amount')::int > 0 "
-                "ORDER BY dist LIMIT 6", (ax, ay))
+                "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='deposit' "
+                "AND x BETWEEN %s AND %s AND y BETWEEN %s AND %s "     # audit(perf): sargable box → uses the entities_deposit_xy index instead of scanning every deposit; ±72 always holds >=6 on a live world and mining navigates within it
+                "AND (attrs->>'amount')::int > 0 "
+                "ORDER BY dist LIMIT 6", (ax, ay, ax - 72, ax + 72, ay - 72, ay + 72))
     nearby = [dict(r) for r in cur.fetchall()]
 
     # --- season 3: who/what is in reach (so attack/steal/ally/collect/attune/dock are targetable) ---
@@ -110,10 +112,11 @@ def observe(cur, agent_id):
     # (these also appear in nearby_deposits; this is the gather-specific, biome-tagged subset.)
     cur.execute("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
                 "(abs(x-%s)+abs(y-%s)) dist FROM entities "
-                "WHERE type='deposit' AND (attrs->>'amount')::int > 0 "
+                "WHERE type='deposit' AND x BETWEEN %s AND %s AND y BETWEEN %s AND %s "   # audit(perf): sargable box (= gather reach) uses the (x,y) index; exact Manhattan <=range kept below as the post-filter → identical results
+                "AND (attrs->>'amount')::int > 0 "
                 "AND attrs->>'resource' = ANY(%s) AND (abs(x-%s)+abs(y-%s)) <= %s "
                 "ORDER BY dist, id LIMIT 6",
-                (ax, ay, list(_PLANT_RESOURCES), ax, ay, _GATHER_RANGE))
+                (ax, ay, ax - _GATHER_RANGE, ax + _GATHER_RANGE, ay - _GATHER_RANGE, ay + _GATHER_RANGE, list(_PLANT_RESOURCES), ax, ay, _GATHER_RANGE))
     nearby_plants = [dict(r) for r in cur.fetchall()]
 
     # crafted medicines I hold (counts from inventory buffers) — so `heal` knows what's spendable.

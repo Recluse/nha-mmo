@@ -35,6 +35,8 @@ GUILD_TOKEN  = os.environ.get("GUILD_TOKEN", "")    # if set, /guild/verdict req
                                                     # Provision the SAME value on this server AND on the off-cluster
                                                     # referee (agents/guild.py). Unset = fail-open (logs a warning).
 TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
+TICK_MAX_FAILS  = int(os.environ.get("TICK_MAX_FAILS", "20"))     # audit(liveness): after this many CONSECUTIVE tick failures the writer exits so k8s restarts it
+TICK_STALL_SECS = float(os.environ.get("TICK_STALL_SECS", "120")) # ...or if this long passes with no committed tick — a systemic freeze must not stay invisible
 ONLINE_TICKS = int(os.environ.get("ONLINE_TICKS", "180"))   # "online" = acted within this many ticks (~6 min @2s/tick) — covers the ~2-min cloud cadence + the odd 429-skip
 WORLD_W      = int(os.environ.get("WORLD_W", "220"))   # season 3: grown 156->220 (square) — non-wipe frontier expansion
 WORLD_H      = int(os.environ.get("WORLD_H", "220"))
@@ -356,17 +358,26 @@ def _ensure_world():
 
 def _tick_loop():
     conn = _connect()
+    fails = 0; last_ok = time.monotonic()
     while True:
         _start = time.perf_counter()
         try:
             t, _ = engine.tick(conn)
             _state["tick"] = t
-        except Exception as e:                        # never let the world stop on a transient error
-            print(f"tick error: {e}")
+            fails = 0; last_ok = time.monotonic()
+        except Exception as e:                        # a TRANSIENT error must not stop the world...
+            fails += 1
+            print(f"tick error #{fails}: {e}", flush=True)
             try:
                 conn.rollback()
             except Exception:
                 conn = _connect()
+            # ...but a SYSTEMIC (recurring) failure must NOT be swallowed forever. This is the single authoritative
+            # writer; deploy/server-tick.yaml relies on a crash to recover, and this loop otherwise never crashes.
+            # Exit so k8s restarts the pod — audit(liveness): a frozen tick can no longer hide behind a "healthy" PID 1.
+            if fails >= TICK_MAX_FAILS or (time.monotonic() - last_ok) > TICK_STALL_SECS:
+                print(f"[FATAL] tick stalled: {fails} consecutive failures, {time.monotonic()-last_ok:.0f}s since last commit — exiting for k8s restart", flush=True)
+                os._exit(1)
         # Rate-limit to the TICK_SECONDS target instead of sleeping a FIXED TICK_SECONDS *on top of* the work:
         # when a tick's work is under budget the world holds a steady ~2s/tick (was ~2s+work≈3s); when the world
         # is dense enough that work exceeds the budget it just runs back-to-back (graceful degrade, as before).
@@ -432,7 +443,8 @@ async def _count_visitor(request, call_next):
 
 @app.get("/healthz")
 async def healthz():                                     # async + lightweight → served on the event loop, NEVER queues
-    return {"ok": True, "tick": _state.get("tick", 0), "running": _state.get("running", False)}
+    return {"ok": True, "tick": _state.get("tick", 0), "running": _state.get("running", False),
+            "drift": getattr(engine, "_DRIFT_COUNT", 0)}   # audit(observability): surface carried/DB drift self-heals (meaningful on the RUN_TICK pod)
     # was `def healthz(): return _state` (sync → ran in the threadpool and queued behind heavy /observe under load →
     # readiness probe timed out → API flapped 0/1 → 502 even though the process was healthy). Keep it dependency-free.
 
@@ -719,6 +731,13 @@ def _reg_rate_exceeded(cid):
         hits = [t for t in reg_log.get(cid, []) if now - t < _REG_WINDOW_SECS]
         hits.append(now)
         reg_log[cid] = hits
+        if len(reg_log) > 20000:                          # audit(unbounded-cache): evict cids whose window has fully expired, then hard-cap — mirrors _seen_ips
+            for k in [k for k, v in list(reg_log.items()) if now - (v[-1] if v else 0) >= _REG_WINDOW_SECS]:
+                reg_log.pop(k, None)
+            if len(reg_log) > 20000:
+                reg_log.clear()
+        if len(banned_cids) > 50000:                      # bans reset on restart anyway; this is only a memory guard
+            banned_cids.clear()
         return len(hits) > _REG_MAX_NEW
 
 

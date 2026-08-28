@@ -11,7 +11,7 @@ durable, authoritative store. Self-creates the schema and seeds a tiny demo worl
 
 Run:  PG_DSN='host=127.0.0.1 dbname=nhamoo user=postgres' python engine.py [ticks]
 """
-import os, sys, json, hashlib, time
+import os, sys, json, hashlib, time, re
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json, execute_batch
 import vehicles   # PART / BUILD_COST / finalize() — for the build & finalize intents
@@ -188,6 +188,10 @@ CREATE INDEX IF NOT EXISTS proposals_status_idx ON proposals(status);
 CREATE TABLE IF NOT EXISTS dynamic_rules (sig text PRIMARY KEY, item_key text NOT NULL, name text NOT NULL,
   props jsonb NOT NULL DEFAULT '{}', discoverer bigint NOT NULL, discoverer_name text, points int NOT NULL DEFAULT 0, tick int NOT NULL);
 ALTER TABLE dynamic_rules ADD COLUMN IF NOT EXISTS discoverer_name text;
+-- audit: the persisted biome-grid cache (server/app.py::_grid). Was only ever created implicitly by the app's
+-- INSERT; version it here so a fresh DB gets it and operators have a schema reference (else _grid silently
+-- falls back to the ~12-30s worldgen on every request).
+CREATE TABLE IF NOT EXISTS world_grid (seed int NOT NULL, fx int NOT NULL, fy int NOT NULL, grid jsonb NOT NULL, PRIMARY KEY (seed, fx, fy));
 """
 
 # ---------- buffer helpers (integer, conserved) ----------
@@ -613,7 +617,7 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", "this mixture is already before the Inventors' Guild — try another"
         for k, q in ings.items():                        # escrow the inputs while the Guild reviews
             addb(a, k, -q)
-        item_name = str(args.get("name", "")).strip()[:32]
+        item_name = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 _-]", "", str(args.get("name", "")))).strip()[:32]   # SECURITY: this flows into the Guild LLM prompt — strip anything that could inject instructions (newlines/punct/unicode)
         cur.execute("INSERT INTO proposals(agent, ings, sig, proposed_name, tick) VALUES(%s,%s,%s,%s,%s)",
                     (a["id"], Json(ings), sig, item_name, t))
         return "applied", f"submitted '{item_name or sig}' to the Inventors' Guild for review"
@@ -645,6 +649,10 @@ def apply_intent(it, ents, cur, t, events):
                 if tier_alt >= ATMOSPHERE_TOP:
                     if not a["attrs"].get("in_space"): a["attrs"]["atuin_seed"] = t   # new spaceflight -> /observe re-rolls the A'Tuin sex reading for this trip
                     a["attrs"]["in_space"] = True
+                awarded = a["attrs"].setdefault("space_awarded", [])   # audit(exploit): PERMANENT per-agent record — points for a milestone are paid ONCE, so land/decay/relaunch can't farm them (the physical space_level/in_space above still update every time)
+                if label in awarded:
+                    continue
+                awarded.append(label)
                 cur.execute("SELECT 1 FROM events WHERE kind='escape' AND COALESCE(data->>'milestone','space')=%s LIMIT 1", (label,))
                 first = cur.fetchone() is None
                 pts = (250 if first else 60) if idx == 1 else (idx * 150 if first else idx * 40)
@@ -975,6 +983,9 @@ def apply_intent(it, ents, cur, t, events):
         if a["attrs"].get("on_moon"):
             return "rejected", "already on the Moon"
         a["attrs"]["on_moon"] = True
+        if a["attrs"].get("moon_awarded"):               # audit(exploit): moon-landing points paid ONCE per agent — no land/relaunch/re-land farming (on_moon above still set so mining/ziggurats work)
+            return "applied", "set down on the Moon again — mine helium-3/regolith, raise a ziggurat"
+        a["attrs"]["moon_awarded"] = True
         cur.execute("SELECT 1 FROM events WHERE kind='moon_landing' LIMIT 1")
         first = cur.fetchone() is None
         pts = 300 if first else 80
@@ -1634,6 +1645,8 @@ def orbital_decay(ents, t, events, cur=None):
     for a in ents.values():
         if a["type"] != "agent" or not a["attrs"].get("in_space"):
             continue
+        if int(a["attrs"].get("downed_until", 0)) > t:    # a downed agent (corpse) must not take a fresh fall-hit / re-die (double loot + respawn reset) — mirrors explode's guard
+            continue
         if int(a["attrs"].get("stasis", 0)) > 0:          # stasis_relic artifact: skip orbital decay, spend one of its charges
             a["attrs"]["stasis"] = int(a["attrs"]["stasis"]) - 1
             if a["attrs"]["stasis"] <= 0:
@@ -1915,11 +1928,12 @@ _WORLD_LOADED_TICK = None  # tick of the last full reload (drift-check + safety-
 _CANON = {}                # P0: persisted {id -> _entity_canon(e)} = last tick's serialized state; baseline for dirty-tracking AND the hash
 _DEP_AMT = {}              # P2: {deposit id -> last-serialized amount}. `amount` is a deposit's ONLY mutable field, so amount unchanged ⇒ canon unchanged ⇒ skip re-serializing it (an int compare vs the huge static deposit bulk)
 RELOAD_EVERY = 10          # full SELECT*-reload every N ticks: drift-check vs carried + self-heal (raise once proven)
+_DRIFT_COUNT = 0           # audit(observability): count of carried/DB drift self-heals — a nonzero value means the hash chain was written wrong for up to RELOAD_EVERY ticks; exposed on /healthz
 
 def _load_world(cur):
     """Full load of the entities table into an id-keyed dict, with the API-owned `token` stripped — the tick
     treats token as read-through (never holds/hashes/persists it). Returns (world, max_id)."""
-    cur.execute("SELECT * FROM entities")
+    cur.execute("SELECT * FROM entities ORDER BY id")     # audit(determinism): id-ordered so equidistant-deposit tie-breaks (mine/chop/gather pick the FIRST min) are stable across reloads + replay
     w, mx = {}, 0
     for e in cur.fetchall():
         e["attrs"].pop("token", None)
@@ -1940,7 +1954,7 @@ def tick(conn):
         raise
 
 def _tick_body(conn):
-    global _WORLD, _WORLD_MAX_ID, _WORLD_LOADED_TICK, _CANON, _DEP_AMT
+    global _WORLD, _WORLD_MAX_ID, _WORLD_LOADED_TICK, _CANON, _DEP_AMT, _DRIFT_COUNT
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("UPDATE world SET tick = tick + 1 WHERE id = 1 RETURNING tick")
     t = cur.fetchone()["tick"]
@@ -1951,14 +1965,17 @@ def _tick_body(conn):
     # an API insert whose id interleaved BELOW a same-tick tick-creation (else it'd be skipped until reload).
     if _WORLD is None or _WORLD_LOADED_TICK is None or (t - _WORLD_LOADED_TICK) >= RELOAD_EVERY:
         fresh, _mx = _load_world(cur)
-        if _WORLD is not None and state_hash(fresh) != state_hash(_WORLD):
-            print(f"[INMEM] tick {t}: carried/db DRIFT carried={state_hash(_WORLD)} db={state_hash(fresh)} "
-                  f"db_only={list(set(fresh) - set(_WORLD))[:6]} ram_only={list(set(_WORLD) - set(fresh))[:6]} — reloaded", flush=True)
+        if _WORLD is not None:
+            carried, db = _world_hash(_CANON), state_hash(fresh)   # audit(perf): reuse the cached canon — identical to state_hash(_WORLD) here (pre-mutation), avoids a redundant full re-serialize on the reload tick
+            if carried != db:
+                _DRIFT_COUNT += 1                                  # audit(observability): drift must be LOUD + countable (exposed on /healthz), not a lone print that scrolls away
+                print(f"[INMEM][ERROR] tick {t}: carried/db DRIFT #{_DRIFT_COUNT} carried={carried} db={db} "
+                      f"db_only={list(set(fresh) - set(_WORLD))[:6]} ram_only={list(set(_WORLD) - set(fresh))[:6]} — self-healed to db", flush=True)
         _WORLD, _WORLD_LOADED_TICK = fresh, t
         _CANON = {eid: _entity_canon(e) for eid, e in fresh.items()}   # P0: reset the dirty/hash baseline to the freshly-loaded (authoritative) state
         _DEP_AMT = {eid: e["attrs"].get("amount") for eid, e in fresh.items() if e["type"] == "deposit"}   # P2: reset the deposit-amount baseline too
     else:
-        cur.execute("SELECT * FROM entities WHERE id > %s", (_WORLD_MAX_ID,))
+        cur.execute("SELECT * FROM entities WHERE id > %s ORDER BY id", (_WORLD_MAX_ID,))   # audit(determinism): keep merge order id-stable
         for e in cur.fetchall():
             e["attrs"].pop("token", None)
             _WORLD[e["id"]] = e                            # merged rows aren't in _CANON → flagged dirty once (harmless: they're already in the DB)
