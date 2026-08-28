@@ -121,6 +121,7 @@
   <div id=station_panel class=sub>...</div>
  </div>
  <div class=panel data-tab=Codex>
+  <input id=codexq placeholder="&#128270; search items, ingredients, properties, inventor…" oninput="codexQ=this.value.trim().toLowerCase();tick()" style="width:100%;max-width:440px;margin-bottom:10px;padding:6px 10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:13px">
   <h2 data-i18n=hdr_codex_rec>Recipes &mdash; built-in physics patterns (the discoverer's name shown)</h2><div id=codex_rec>...</div>
   <h2 data-i18n=hdr_codex_dyn>&#129514; Guild inventions &mdash; novel mixes, LLM-judged (<span id=codex_pending>0</span> pending review)</h2><div id=codex_dyn class=sub>...</div>
   <h2 data-i18n=hdr_codex_res>Resources &amp; their properties</h2><div id=codex_res class=sub>...</div>
@@ -595,6 +596,7 @@ function drawLogChips(){const f=$('logfilter');if(!f)return;f.innerHTML=Object.k
 let agSort={k:'cr',dir:-1};   // Agents table sort (click a column header)
 function sortAg(k){if(agSort.k===k)agSort.dir*=-1;else{agSort.k=k;agSort.dir=(k==='name'?1:-1);}tick();}
 function agKey(g,k){const b=g.buffers||{};return ({id:g.id,name:(g.name||'').toLowerCase(),cr:b.credits||0,parts:g.loose_parts||0,veh:g.vehicles||0,kd:g.kills||0,alt:g.in_space?1e6:(g.altitude||0)})[k];}
+let codexQ='';   // Codex search filter (items / ingredients / properties / inventor)
 async function loadProfile(id){id=String(id||'').replace(/[^0-9]/g,'');if(!id)return;active='Profile';localStorage.setItem('nha_tab',active);drawTabs();$('pid').value=id;
  const d=await j('/agent/'+id);if(!d){$('profile').removeAttribute('data-i18n');$('profile').innerHTML=`<span class=rej>${t('ph_agent_not_found')}</span>`;return;}
  const a=d.agent,at=a.attrs||{},b=a.buffers||{};
@@ -732,11 +734,11 @@ async function tick(){
  if(tl){
   $('timeline').innerHTML=[...tl.timeline].reverse().map(e=>`<div><span class=sub>t${e.tick}</span> <span class=pill>${esc(e.name||'?')}</span> ${evTx(e,tn)}</div>`).join('')||`<div class=sub>${t('ph_nothing_yet')}</div>`;}}   // /timeline returns newest-first (id DESC); reverse for the labelled oldest-first chronological reading
  if(need('/rules')){const rl=await j('/rules');
- if(rl){
-  $('codex_rec').innerHTML=`<table><tr><th>${t('col_item')}<th>${t('col_recipe_phys')}<th>${t('col_inventor')}</tr>`+rl.recipes.map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:`<span class=sub>${t('lbl_undiscovered')}</span>`}</tr>`).join('')+'</table>';
+ if(rl){const cq=codexQ,cmatch=s=>!cq||String(s).toLowerCase().includes(cq);
+  $('codex_rec').innerHTML=`<table><tr><th>${t('col_item')}<th>${t('col_recipe_phys')}<th>${t('col_inventor')}</tr>`+rl.recipes.filter(x=>cmatch(x.item+' '+(x.needs||'')+' '+(x.discovered?x.discovered.name+' '+(x.discovered.discoverer||''):''))).map(x=>`<tr><td>${x.discovered?`<b>${esc(x.discovered.name)}</b>`:'<span class=sub>?</span>'} <span class=sub>(${x.item})</span><td>${x.needs}<td>${x.discovered?`<span class=AG>${x.discovered.discoverer||''}</span> +${x.discovered.points}`:`<span class=sub>${t('lbl_undiscovered')}</span>`}</tr>`).join('')+'</table>';
   $('codex_pending').textContent=rl.pending||0;
-  $('codex_dyn').innerHTML=(rl.dynamic&&rl.dynamic.length)?(`<table><tr><th>${t('col_invention')}<th>${t('col_recipe_ing')}<th>${t('col_properties')}<th>${t('col_inventor')}</tr>`+rl.dynamic.map(x=>`<tr><td><b>${esc(x.name)}</b> <span class=sub>(${esc(x.item_key)})</span><td class=sub>${esc(x.sig)}<td class=sub>${Object.entries(x.props||{}).map(([k,v])=>k+' '+v).join(', ')}<td><span class=AG>${x.by||'?'}</span> +${x.points}</tr>`).join('')+'</table>'):`<span class=sub>${t('ph_no_guild_inv')}</span>`;
-  $('codex_res').innerHTML=`<table><tr><th>${t('col_resource')}<th>${t('col_properties')}</tr>`+Object.entries(rl.resources).map(([r,p])=>`<tr><td><b>${r}</b><td class=sub>${Object.entries(p).map(([k,v])=>k+' '+v).join(', ')}</tr>`).join('')+'</table>';
+  $('codex_dyn').innerHTML=(rl.dynamic&&rl.dynamic.length)?(`<table><tr><th>${t('col_invention')}<th>${t('col_recipe_ing')}<th>${t('col_properties')}<th>${t('col_inventor')}</tr>`+rl.dynamic.filter(x=>cmatch(x.name+' '+x.item_key+' '+x.sig+' '+Object.keys(x.props||{}).join(' ')+' '+(x.by||''))).map(x=>`<tr><td><b>${esc(x.name)}</b> <span class=sub>(${esc(x.item_key)})</span><td class=sub>${esc(x.sig)}<td class=sub>${Object.entries(x.props||{}).map(([k,v])=>k+' '+v).join(', ')}<td><span class=AG>${x.by||'?'}</span> +${x.points}</tr>`).join('')+'</table>'):`<span class=sub>${t('ph_no_guild_inv')}</span>`;
+  $('codex_res').innerHTML=`<table><tr><th>${t('col_resource')}<th>${t('col_properties')}</tr>`+Object.entries(rl.resources).filter(([r,p])=>cmatch(r+' '+Object.keys(p).join(' '))).map(([r,p])=>`<tr><td><b>${r}</b><td class=sub>${Object.entries(p).map(([k,v])=>k+' '+v).join(', ')}</tr>`).join('')+'</table>';
  }}
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)tick();});   // refresh immediately when the tab regains focus
