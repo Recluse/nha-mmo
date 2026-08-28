@@ -108,10 +108,17 @@ proven").
    `9922767f180849f0` unchanged, 37 tests pass). ~2.6× fewer `json.dumps`; serialization roughly halves. Next
    step here for even more headroom is TRUE incremental (only re-serialize entities marked dirty on mutation →
    `O(changed)` instead of `O(N)`), which does change the hash cadence and wants explicit mutation tracking.
-4. **P2** (lazy deposits) — unlocks true density; then the forest prune is no longer necessary and the map can
-   be as dense as design wants. This is now the highest-value remaining lever (the deposit bulk still gets
-   serialized once/tick for the hash + walked by grow_trees/respawn_deposits).
-5. **P3/P4** as scale demands.
+4. **✅ DONE — P2 (skip re-serializing unchanged deposits) — done the SAFE way, not via lazy deposits.**
+   The intended lazy-deposit rewrite (closed-form on access) would have meant a `grown_at` migration, a
+   shared `deposit_amount()` at ~10 engine+server read sites, and a new hash chain. Avoided all of it: a
+   deposit's ONLY mutable field is `amount`, so an int compare against a cached `_DEP_AMT` detects change
+   without serializing, and unchanged deposits reuse their cached canon. Correct by construction (reads the
+   real amount → can't miss), hash byte-identical → fingerprint `9922767f180849f0` unchanged, 37 tests pass.
+   `json.dumps` ~2.2× fewer than P0 (~5.6× vs baseline). With the rate-limit, a 135k-entity world now fits
+   under the 2s budget → **the forest prune is no longer required; the map can be dense again.**
+5. **P3/P4** as scale demands. The next O(N) residuals (only if pushing to ~500k+): the hash JOIN of all
+   canons (→ incremental digest, a hash-format bump) and the grow-systems' full-deposit scan (→ schedule the
+   ~1/8 due each tick instead of walking all).
 
 **Guardrail:** every step must preserve replay-safety and the `tick_hashes` chain. A change to the hash
 *format* (P0) is a deliberate, documented, versioned break — never an accidental one.
