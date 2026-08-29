@@ -2551,11 +2551,17 @@ ATUIN_QUESTION = ("🐢 THE GREAT QUESTION — THE UNIVERSE PONDERS: beneath the
                   "differently — and re-read it anew on each flight. This is the Disc's oldest unsettled debate. Cosmonauts: "
                   "broadcast your reading (say) and ARGUE — is the Great A'Tuin male or female?")
 
+UNIVERSE_SPEAK_EVERY = 5400   # the Universe posts to world chat this often (5400 ticks × 2s = ~3h). Was 900 (~30 min) —
+                              # too chatty for a mostly-quiet chat (the workers don't talk back). It alternates the standing
+                              # decree (every 2× = ~6h) with the Great A'Tuin Question on the offset. t=0 still fires (so the
+                              # deterministic seed test is byte-identical), only the LATER cadence is sparser.
+
+
 def universe_broadcast(ents, cur, t, events):
-    """The Universe re-broadcasts its standing decree into the world chat each hour (1800 ticks at 2s/tick), and — in the SPACE
-    ERA — poses the Great A'Tuin Question on the half-hour offset so cosmonauts bicker. Decree tracks world.era. Deterministic
-    (tick-gated); self-heals."""
-    if t % 900 != 0:
+    """The Universe re-broadcasts its standing decree into the world chat every ~3h (UNIVERSE_SPEAK_EVERY), and — in the SPACE/
+    EXPANSION/ACCORD eras — poses the Great A'Tuin Question on the offset so cosmonauts bicker. Decree tracks world.era.
+    Deterministic (tick-gated); self-heals. Kept sparse so it doesn't drown a quiet chat."""
+    if t % UNIVERSE_SPEAK_EVERY != 0:
         return
     cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # to_jsonb → NULL (not error) if the era column is absent on a restored DB
     erow = cur.fetchone()
@@ -2563,10 +2569,10 @@ def universe_broadcast(ents, cur, t, events):
     is_space = (era == "space"); is_expansion = (era == "expansion"); is_accord = (era == "accord")
     uni = next((e for e in ents.values() if e["type"] == "universe"), None)
     uid = uni["id"] if uni else new_entity(ents, cur, "universe", 0, 0, None, {"name": "🌌 THE UNIVERSE"})
-    if t % 1800 == 0:                                          # the standing decree, hourly (unchanged cadence)
+    if t % (2 * UNIVERSE_SPEAK_EVERY) == 0:                    # the standing decree (~every 6h)
         decree = ACCORD_ERA_DECREE if is_accord else (EXPANSION_ERA_DECREE if is_expansion else (SPACE_ERA_DECREE if is_space else GIGACHRUSCH_DECREE))
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, decree))
-    elif is_space or is_expansion or is_accord:               # offset +900: the Great A'Tuin Question (space, expansion AND accord eras) — keeps the cosmonauts' debate alive
+    elif is_space or is_expansion or is_accord:               # the offset: the Great A'Tuin Question (space/expansion/accord) — keeps the cosmonauts' debate alive
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, ATUIN_QUESTION))
 
 def grow_trees(by_type, t):
