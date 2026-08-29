@@ -89,6 +89,9 @@ ITEM_PROPS = {
     "heat_shield":   {"ablative": 1, "hardness": 9, "shaped": 1, "sheds_heat": 1},    # EXPANSION EDL — ablative re-entry shield (consumed at Mars/Venus arrival)
     "acid_skin":     {"acid_proof": 1, "insulator": 6, "shielding": 1},               # EXPANSION — H2SO4-proof hull coat (consumed at Venus arrival)
     "graphite":      {"carbon": 9, "hardness": 4, "conductivity": 4, "shaped": 1},    # EXPANSION — co2 reduced with heat → structural carbon "from thin air" (feeds composite; Venus/Mars colony material)
+    "o2":            {"breathable": 1, "oxygen": 1, "gas": 1},                         # EXPANSION P3 — perchlorate scrubbed / co2 split → breathable oxygen (terraform biosphere)
+    "mars_brick":    {"hardness": 6, "shaped": 1, "shield": 1, "sintered": 1},         # EXPANSION P3 — sintered Mars regolith → dome shell + radiation shield
+    "hydrogen":      {"gas": 1, "light": 10, "reductant": 1, "volatile": 1},           # EXPANSION P3 — electrolysed water/ice → the Venus ocean feedstock (Bosch: co2+H2 → water)
     "observatory":   {"instrument": 1, "optics": 1, "logic": 1},                      # lens + chip — a forecasting instrument (unlocks obs.forecast: the world's deterministic dynamics, computed ahead)
     "radar":         {"instrument": 1, "sensor": 1, "detects": 1},                     # a finished magnet + chip — a sensor that WIDENS sight (observe.vision radius). No 'logic'/'focus'/'semiconductor' tag on purpose, so a radar can't stand in for a chip/lens; its 'instrument' tag is what the radar rule's `not instrument` guard reads to refuse consuming a finished instrument (observatory/radar) into another radar
     # --- season 3 medicine + chemistry (HP healing branch; 'heal' = HP restored on use, capped HP_MAX engine-side) ---
@@ -142,6 +145,9 @@ RULE_NOTE = {
     "heat_shield": "a superalloy (heat-proof) + a composite (shaped, hard) — an ablative re-entry shield for Mars/Venus arrival",
     "acid_skin": "acid + rubber — an H₂SO₄-proof hull coat for the Venus cloud deck",
     "graphite": "co2 (mined at Mars/Venus) reduced with a fuel (heat) — structural carbon from thin air; feeds composite + colony builds",
+    "o2": "perchlorate (Mars) scrubbed with water or heat — breathable oxygen for terraforming",
+    "mars_brick": "mars_regolith sintered with a fuel (heat) — dome shell + radiation shield",
+    "hydrogen": "water electrolysed by a power source (a motor/engine, no metal) — the Venus-oceans feedstock",
     "extract": "a plant (herb/lichen/fungus/algae) steeped in a solvent (water) — a base medicine",
     "tincture": "an extract fixed with salt or acid — a concentrated base medicine",
     "salve": "a medicinal plant + water, cooked with heat — a mild topical heal",
@@ -199,6 +205,9 @@ RULES = [
     ("heat_shield",   lambda a: a["has"]("heat_proof") and a["has"]("shaped") and a["mx"]("hardness") >= 8),  # superalloy(heat_proof) + composite(shaped,hard) → an ablative EDL shield (Mars/Venus entry)
     ("acid_skin",     lambda a: a["has"]("acid_former") and a["has"]("grip") and a["has"]("elastic")),  # acid + rubber(grip/elastic) → an H2SO4-proof hull coat (Venus cloud deck)
     ("graphite",      lambda a: a["has"]("carbon_ox") and a["heat"] and a["n_metals"] == 0),  # co2 (carbon_ox) reduced with a fuel → structural carbon (Venus/Mars build material)
+    ("o2",            lambda a: a["has"]("oxygen_store") and (a["heat"] or a["has"]("solvent")) and a["n_metals"] == 0),  # perchlorate scrubbed with water/heat → breathable oxygen
+    ("mars_brick",    lambda a: a["has"]("silica") and a["heat"] and a["n_metals"] == 0),  # mars_regolith sintered with heat → dome brick / radiation shield
+    ("hydrogen",      lambda a: a["has"]("solvent") and a["has"]("power") and a["n_metals"] == 0),  # water electrolysed by a power source (motor/engine) → hydrogen (Venus oceans feedstock)
     ("observatory",   lambda a: a["has"]("focus") and a["has"]("logic")),  # lens(focus) + chip(logic) — a forecasting instrument. Unique tags → no collision; BEFORE lens/glass so lens+chip resolves here
     # radar: a FINISHED magnet (9) / electromagnet (10) + a CHIP. Raw iron is magnetic 8 so it can't reach this
     # ({iron,chip} still smelts to a chip). The chip is pinned by BOTH `logic` AND `semiconductor`: the observatory

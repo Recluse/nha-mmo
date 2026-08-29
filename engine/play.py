@@ -217,7 +217,9 @@ def observe(cur, agent_id):
             "how": ("depart{dest} from Earth orbit (altitude 300-600) to a body; carry an ion_thruster ship, fuel (cryo_fuel/helium3) "
                     "and — for Mars/Venus — a heat_shield (+acid_skin for Venus). land_body on arrival. On a body, `mine` yields its "
                     "unique resources; fund the co-op colony with construct{shape:'colony',body,module} (see observe.colony). "
-                    "depart{dest:'earth'} to return. Completing a moon Forward Base cheapens the Mars/Venus routes for everyone."),
+                    "depart{dest:'earth'} to return. Completing a moon Forward Base cheapens the Mars/Venus routes for everyone. "
+                    "Once a Mars/Venus colony is COMPLETE, terraform it in sequential co-op stages via construct{shape:'terraform',body,stage} "
+                    "(see observe.terraform). Mars greened + Venus held + a moon base = THE SOLAR ACCORD."),
         }
     return {"tick": now, "position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
             "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,

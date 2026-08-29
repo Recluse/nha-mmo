@@ -276,6 +276,80 @@ def _route_discount(ents):
     return 5 * n
 
 
+# ===================== EXPANSION ERA — Phase 3: terraforming (staged planetary programs + the Solar Accord) =====================
+# A per-planet SEQUENTIAL co-op board: a stage rejects funding until the prior stage is complete (real physics — you can't
+# melt water before warming + thickening), and completing a stage bumps a MONOTONIC integer planetary index (no per-tick
+# float → determinism-safe). Bills are tuned DOWN ~3-4× from the research dossier so the season is winnable without the
+# (Phase-4) auto-extractor producers. Gated behind a COMPLETE colony on that body; floors widen vs a colony.
+TERRAFORM_CAP = 20                 # ceil-% one funder may cover per resource line on a terraform stage (tighter than a colony)
+TERRAFORM_MIN = 5                  # distinct funders a stage needs — matched to the cap: ceil(100/20)==5, so 5 funders both
+TERRAFORM_FLAG_CAP = 13            # the final (flagship) stage tightens further. CAP↔MIN are matched: ceil(100/13)==8, so 8
+TERRAFORM_FLAG_MIN = 8             # funders are BOTH necessary and sufficient. (A cap that lets <MIN funders cover the bill
+#                                    would DEADLOCK — the bill fills before MIN distinct funders can join. Keep ceil(100/CAP)>=MIN.)
+TERRAFORM_STAGE_REWARD = 400       # points pool split among a stage's funders on completion
+TERRAFORM_WIN_REWARD = {"mars": 3000, "venus": 8000}
+TERRAFORM_TITLE = {"mars": "Areoformer", "venus": "Terran of Venus"}
+ACCORD_POOL = 10000                # THE SOLAR ACCORD mega-pool, split across every qualifying-board funder
+# each stage: (key, label, need, {index_stat: +bump}); the LAST stage in a body's list is the flagship (tighter floor + the win)
+TERRAFORM_STAGES = {
+    "mars": [
+        ("warm",      "Warm the Poles",         {"nanohematite": 400, "co2": 600, "glass": 400, "aluminum": 500, "composite": 300}, {"warmth": 1}),
+        ("thicken",   "Thicken the Atmosphere", {"co2": 1200, "nitrogen": 500, "o2": 400, "perchlorate": 400, "mars_brick": 300},   {"pressure": 1}),
+        ("water",     "Liquid Water",           {"ice": 1600, "mars_ice": 800, "iridium": 120, "nickel": 300, "superalloy": 200},   {"water": 1}),
+        ("biosphere", "Seed the Biosphere",     {"algae": 800, "herb": 600, "o2": 1000, "ice": 700},                                {"biosphere": 1}),
+    ],
+    "venus": [
+        ("sunshade",  "Sun–Venus L1 Sunshade",  {"composite": 800, "glass": 600, "aluminum": 800, "acid_skin": 300},               {"temperature": 1}),
+        ("freeze",    "Freeze Out the CO₂",     {"cloud_acid": 600, "nitrogen": 600, "graphite": 500, "crystal": 400},             {"pressure": 1}),
+        ("oceans",    "Import Hydrogen → Oceans", {"hydrogen": 1000, "mars_ice": 1200, "graphite": 600, "ice": 600},               {"water": 1}),
+        ("soletta",   "Soletta Day/Night Ring", {"composite": 1000, "glass": 800, "crystal": 700, "iridium": 150},                {"light": 1}),
+    ],
+}
+TERRAFORM_INDEX0 = {"mars": {"warmth": 0, "pressure": 0, "water": 0, "biosphere": 0},
+                    "venus": {"temperature": 0, "pressure": 0, "water": 0, "light": 0}}
+
+
+def _colony_done(ents, body):
+    return any(e["type"] == "structure" and e["attrs"].get("shape") == "colony"
+              and e["attrs"].get("body") == body and e["attrs"].get("complete") for e in ents.values())
+
+
+def _terraform_done(ents, body):
+    return any(e["type"] == "structure" and e["attrs"].get("shape") == "terraform"
+              and e["attrs"].get("body") == body and e["attrs"].get("complete") for e in ents.values())
+
+
+def _check_solar_accord(a, ents, cur, t):
+    """THE ERA META-WIN. Fires ONCE, when Mars is terraformed (Biosphere) AND Venus is held (Cloud City colony OR its
+    surface terraform) AND ≥1 moon Forward Base stands — the moons pay for the routes, the routes let the planets be
+    terraformed, no faction wins alone. Splits ACCORD_POOL across every qualifying-board funder, crowns the single
+    largest lifetime contributor "Solar Architect", and records a world 'accord' event. Does NOT flip the era (which
+    would break the still-gated station/invest/expansion systems) — it is a celebratory apex, not a hard season reset."""
+    if not (_terraform_done(ents, "mars") and (_colony_done(ents, "venus") or _terraform_done(ents, "venus"))
+            and (_colony_done(ents, "phobos") or _colony_done(ents, "deimos"))):
+        return ""
+    cur.execute("SELECT 1 FROM events WHERE kind='accord' LIMIT 1")
+    if cur.fetchone():
+        return ""                                             # already declared — fire exactly once, ever
+    tally = {}                                                # sum each agent's lifetime units across ALL colony + terraform boards
+    for e in ents.values():
+        if e["type"] == "structure" and e["attrs"].get("shape") in ("colony", "terraform"):
+            for fid, u in (e["attrs"].get("ctotal") or {}).items():
+                tally[fid] = tally.get(fid, 0) + int(u)
+    grand = sum(tally.values()) or 1
+    order = sorted(tally, key=lambda k: (-tally[k], int(k)))  # deterministic: most units, then lowest id
+    for fid in order:
+        fe = ents.get(int(fid)); pts = ACCORD_POOL * tally[fid] // grand
+        if fe and pts > 0:
+            fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+    arch = ents.get(int(order[0])) if order else None
+    if arch:
+        arch["attrs"]["title"] = "Solar Architect"            # the era-defining crown — overrides any prior title
+    cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'accord',%s)",
+                (t, a["id"], Json({"solar_accord": True, "architect": order[0] if order else None, "funders": len(tally)})))
+    return " — 🌞 THE SOLAR ACCORD IS DECLARED! Mars greened, Venus held, the moons manned — humanity's machines span the inner system."
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
 ALTER TABLE world ADD COLUMN IF NOT EXISTS notices jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -1128,8 +1202,8 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", msg
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
-        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city", "colony"):
-            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city/colony"
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city", "colony", "terraform"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city/colony/terraform"
         if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
             cost = {"metal": 15, "composite": 8}; seg = 20
             if any(get(a, r) < q for r, q in cost.items()):
@@ -1308,6 +1382,95 @@ def apply_intent(it, ents, cur, t, events):
                                 (t, a["id"], Json({"colony": body, "complete": True, "architect": order[0] if order else None})))
                     extra = " Mars & Venus routes are now cheaper for EVERYONE (−5 Δv per moon base)." if body in ("phobos", "deimos") else ""
                     msg += f" — 🪐 {COLONY_LABEL[body].upper()} IS COMPLETE!{extra}"
+                    msg += _check_solar_accord(a, ents, cur, t)   # a colony finishing last can complete the Accord too
+            return "applied", msg
+        if shape == "terraform":                         # EXPANSION ERA Phase 3: staged, planet-scale co-op terraforming
+            if _era_now(cur) not in ("space", "expansion"):
+                return "rejected", "terraforming needs the SPACE / EXPANSION era"
+            body = str(args.get("body", "")).lower()
+            if body not in TERRAFORM_STAGES:
+                return "rejected", "terraform body must be one of: " + "/".join(TERRAFORM_STAGES)
+            if a["attrs"].get("at_body") != body:
+                return "rejected", f"you must be ON {BODY_LABEL[body]} to terraform it (arrive + land_body there first)"
+            if not _colony_done(ents, body):
+                return "rejected", f"terraforming {BODY_LABEL[body]} unlocks only once its colony (the {COLONY_LABEL[body]}) is COMPLETE"
+            stages_def = TERRAFORM_STAGES[body]; keys = [s[0] for s in stages_def]
+            stage_key = str(args.get("stage", "")).lower()
+            if stage_key not in keys:
+                return "rejected", "stage must be one of (funded IN ORDER): " + " → ".join(keys)
+            si = keys.index(stage_key)
+            tf = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "terraform"
+                       and e["attrs"].get("body") == body), None)
+            if tf is None:
+                stages = {k: {"have": {}, "contrib": {}, "complete": False} for k in keys}
+                sid = new_entity(ents, cur, "structure", W // 2, H // 2, a["id"],
+                                 {"shape": "terraform", "body": body, "name": f"{BODY_LABEL[body]} Terraform Program",
+                                  "stages": stages, "index": dict(TERRAFORM_INDEX0[body]), "ctotal": {}, "complete": False,
+                                  "alt": SKY_TOP, "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
+                tf = ents[sid]
+            if tf["attrs"].get("complete"):
+                return "rejected", f"{BODY_LABEL[body]} is already fully terraformed"
+            stages = tf["attrs"]["stages"]
+            for k in keys[:si]:                          # SEQUENTIAL: every earlier stage must be complete
+                if not stages.get(k, {}).get("complete"):
+                    return "rejected", f"complete '{next(s[1] for s in stages_def if s[0] == k)}' first — terraforming is sequential"
+            stg = stages.setdefault(stage_key, {"have": {}, "contrib": {}, "complete": False})
+            if stg.get("complete"):
+                return "rejected", f"the {stages_def[si][1]} stage is already complete — fund the next stage"
+            need = stages_def[si][2]; bumps = stages_def[si][3]
+            is_flag = (si == len(keys) - 1)              # the last stage is the flagship (tighter floor + the planetary win)
+            cap_frac = TERRAFORM_FLAG_CAP if is_flag else TERRAFORM_CAP
+            min_contrib = TERRAFORM_FLAG_MIN if is_flag else TERRAFORM_MIN
+            have = stg.setdefault("have", {}); contrib = stg.setdefault("contrib", {}); ct = tf["attrs"].setdefault("ctotal", {})
+            aid = str(a["id"]); moved = {}
+            for r in sorted(need):                       # sorted → replay-stable; same greedy cap loop as the station
+                tgt = need[r]; cur_have = int(have.get(r, 0))
+                if cur_have >= tgt:
+                    continue
+                cap = (tgt * cap_frac + 99) // 100
+                already = int(contrib.get(aid, {}).get(r, 0))
+                give = min(get(a, r), tgt - cur_have, max(0, cap - already))
+                if give > 0:
+                    addb(a, r, -give)
+                    have[r] = cur_have + give
+                    contrib.setdefault(aid, {})[r] = already + give
+                    ct[aid] = int(ct.get(aid, 0)) + give
+                    moved[r] = give
+            if not moved:
+                short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
+                return "rejected", (f"funded nothing to '{stages_def[si][1]}' — it still needs {short}. "
+                                    f"You may be at your {cap_frac}% per-resource cap (this stage needs ≥{min_contrib} funders), or hold none of these.")
+            msg = f"funded {moved} to {BODY_LABEL[body]} Terraform · {stages_def[si][1]}"
+            imm = sum(moved.values()) // 10
+            if imm > 0:
+                a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
+                msg += f" — +{imm} pts now"
+            if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= min_contrib and not stg.get("complete"):
+                stg["complete"] = True
+                for stat, d in bumps.items():            # bump the monotonic planetary index (integer, no drift)
+                    tf["attrs"]["index"][stat] = int(tf["attrs"]["index"].get(stat, 0)) + d
+                tot = sum(sum(v.values()) for v in contrib.values()) or 1
+                for fid in sorted(contrib):
+                    pts = TERRAFORM_STAGE_REWARD * sum(contrib[fid].values()) // tot
+                    fe = ents.get(int(fid))
+                    if fe and pts > 0:
+                        fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+                cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                            (t, a["id"], Json({"terraform": body, "stage": stage_key, "complete": True, "index": tf["attrs"]["index"], "funders": len(contrib)})))
+                msg += f" — STAGE COMPLETE! {stages_def[si][1]} ({len(contrib)} funders); planetary index {tf['attrs']['index']}"
+                if is_flag:                              # the whole planet is terraformed — the body win
+                    tf["attrs"]["complete"] = True
+                    grand = sum(ct.values()) or 1
+                    order = sorted(ct, key=lambda k: (-ct[k], int(k)))
+                    for fid in order:
+                        fe = ents.get(int(fid)); pts = TERRAFORM_WIN_REWARD[body] * ct[fid] // grand
+                        if fe and pts > 0:
+                            fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+                            fe["attrs"]["title"] = TERRAFORM_TITLE[body]    # the terraform crown overrides a lesser title
+                    cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                                (t, a["id"], Json({"terraform": body, "complete": True, "architect": order[0] if order else None})))
+                    msg += f" — 🌍 {BODY_LABEL[body].upper()} IS TERRAFORMED! ({TERRAFORM_TITLE[body]})"
+                    msg += _check_solar_accord(a, ents, cur, t)
             return "applied", msg
         if shape == "ziggurat":                          # Moon-only collaborative monument: stack regolith tiers on one cell
             if not a["attrs"].get("on_moon"):

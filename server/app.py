@@ -138,6 +138,7 @@ class ObserveOut(ApiModel):
     vision: Optional[Any] = None   # fog-of-war: {radius, base, bonus:{radar,observatory}} — how far this agent sees other agents
     expansion: Optional[Any] = None  # EXPANSION ERA: {location, transit, at_body, windows{body:{open,dv_need,transit_ticks}}, how} — null off-era. depart{dest}/land_body
     colony: Optional[Any] = None     # EXPANSION ERA: the co-op colony board for the body you're ON (Forward Base/Ares Base/Aphrodite Terrace); null unless at_body. Fund via construct{shape:'colony',body,module}
+    terraform: Optional[Any] = None  # EXPANSION ERA Phase 3: Mars/Venus staged terraforming board + planetary index (null unless at_body on Mars/Venus). Fund via construct{shape:'terraform',body,stage} — sequential, unlocks after the colony completes
 from fastapi.middleware.gzip import GZipMiddleware   # noqa: E402
 app.add_middleware(GZipMiddleware, minimum_size=1024)   # JSON read payloads compress ~5-10x; spectator polling is the bulk of traffic
 _state = {"tick": 0, "running": False, "tick_seconds": TICK_SECONDS}
@@ -827,6 +828,44 @@ def _colony_status(cur, body):
     return out
 
 
+def _terraform_status(cur, body):
+    """EXPANSION Phase 3: one planet's staged terraforming board — the sequential stages, live per-stage progress, and
+    the monotonic planetary index. Returns None off-era or for a body with no terraform program. Mirrors _colony_status."""
+    body = (body or "").lower()
+    if body not in engine.TERRAFORM_STAGES:
+        return None
+    cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
+    erow = cur.fetchone()
+    if not erow or (erow["era"] or "") not in ("space", "expansion"):
+        return None
+    cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='terraform' AND attrs->>'body'=%s LIMIT 1", (body,))
+    srow = cur.fetchone()
+    live = (srow["attrs"].get("stages", {}) if srow else {})
+    defs = engine.TERRAFORM_STAGES[body]
+    out = {"body": body, "unlocked": None, "exists": bool(srow),
+           "complete": bool(srow and srow["attrs"].get("complete")),
+           "index": (srow["attrs"].get("index") if srow else dict(engine.TERRAFORM_INDEX0[body])),
+           "stages_total": len(defs), "stages_done": 0, "stages": []}
+    prev_done = True
+    for i, (key, label, need, bumps) in enumerate(defs):
+        m = live.get(key, {}); have = m.get("have", {})
+        is_flag = (i == len(defs) - 1)
+        done = bool(m.get("complete"))
+        out["stages"].append({
+            "stage": key, "label": label, "need": need, "index_effect": bumps,
+            "flagship": is_flag,
+            "cap_pct_per_agent": (engine.TERRAFORM_FLAG_CAP if is_flag else engine.TERRAFORM_CAP),
+            "min_funders": (engine.TERRAFORM_FLAG_MIN if is_flag else engine.TERRAFORM_MIN),
+            "have": {r: int(have.get(r, 0)) for r in need},
+            "remaining": {r: need[r] - int(have.get(r, 0)) for r in need if int(have.get(r, 0)) < need[r]},
+            "funders": len(m.get("contrib", {})), "complete": done,
+            "fundable": prev_done and not done})   # sequential: only the first not-yet-done stage (after all prior complete) accepts funding
+        if done:
+            out["stages_done"] += 1
+        prev_done = prev_done and done
+    return out
+
+
 _colony_cache = {"t": -999.0, "v": {}}
 @app.get("/colony/{body}", tags=["world"])
 def colony_ep(body: str):
@@ -842,6 +881,24 @@ def colony_ep(body: str):
     if now - _colony_cache["t"] >= 4.0:
         _colony_cache["t"] = now; _colony_cache["v"] = {}
     _colony_cache["v"][key] = v
+    return v
+
+
+_terraform_cache = {"t": -999.0, "v": {}}
+@app.get("/terraform/{body}", tags=["world"])
+def terraform_ep(body: str):
+    """Spectator view of a planet's EXPANSION terraforming program (Mars/Venus) — sequential stages, progress, planetary
+    index. Returns null off-era / unknown body. Cached 4s in-process like /station."""
+    now = time.monotonic()
+    key = (body or "").lower()
+    hit = _terraform_cache["v"].get(key)
+    if hit and now - _terraform_cache["t"] < 4.0:
+        return hit
+    with _db() as conn:
+        v = _terraform_status(conn.cursor(cursor_factory=RealDictCursor), key)
+    if now - _terraform_cache["t"] >= 4.0:
+        _terraform_cache["t"] = now; _terraform_cache["v"] = {}
+    _terraform_cache["v"][key] = v
     return v
 
 
@@ -861,6 +918,7 @@ def observe_ep(agent_id: int):
         _atb = _exp.get("at_body")
         if _atb:
             obs["colony"] = _colony_status(cur, _atb)
+            obs["terraform"] = _terraform_status(cur, _atb)   # Mars/Venus staged terraforming board (null for moons / off-era)
         cur.execute("SELECT (attrs->>'in_space')::bool AS sp, COALESCE((attrs->>'atuin_seed')::bigint,0) AS seed FROM entities WHERE id=%s", (agent_id,))
         srow = cur.fetchone()
         if srow and srow.get("sp"):                          # THE GREAT QUESTION (Discworld): verdict re-rolls EACH SPACEFLIGHT (atuin_seed = entry tick, stamped by the engine) -> a fresh reading per trip, stable while up; the same cosmonaut sees something new next launch
