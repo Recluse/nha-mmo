@@ -137,6 +137,7 @@ class ObserveOut(ApiModel):
     tick: Optional[int] = None     # the world tick this observation reflects — poll GET /intent/{id} once this advances past your intent's tick
     vision: Optional[Any] = None   # fog-of-war: {radius, base, bonus:{radar,observatory}} — how far this agent sees other agents
     expansion: Optional[Any] = None  # EXPANSION ERA: {location, transit, at_body, windows{body:{open,dv_need,transit_ticks}}, how} — null off-era. depart{dest}/land_body
+    colony: Optional[Any] = None     # EXPANSION ERA: the co-op colony board for the body you're ON (Forward Base/Ares Base/Aphrodite Terrace); null unless at_body. Fund via construct{shape:'colony',body,module}
 from fastapi.middleware.gzip import GZipMiddleware   # noqa: E402
 app.add_middleware(GZipMiddleware, minimum_size=1024)   # JSON read payloads compress ~5-10x; spectator polling is the bulk of traffic
 _state = {"tick": 0, "running": False, "tick_seconds": TICK_SECONDS}
@@ -796,6 +797,54 @@ def _station_status(cur):
     return out
 
 
+def _colony_status(cur, body):
+    """EXPANSION ERA: one body's co-op colony board (Forward Base / Ares Base / Aphrodite Terrace) + live per-module
+    progress. Returns None off the space/expansion era or for an unknown body. Mirrors _station_status, keyed on body."""
+    body = (body or "").lower()
+    if body not in engine.COLONY_MODULES:
+        return None
+    cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
+    erow = cur.fetchone()
+    if not erow or (erow["era"] or "") not in ("space", "expansion"):
+        return None
+    cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='colony' AND attrs->>'body'=%s LIMIT 1", (body,))
+    srow = cur.fetchone()
+    live = (srow["attrs"].get("modules", {}) if srow else {})
+    specs = engine.COLONY_MODULES[body]
+    out = {"body": body, "label": engine.COLONY_LABEL[body], "cap_pct_per_agent": engine.COLONY_CAP[body],
+           "min_funders_per_module": engine.COLONY_MIN[body], "colony_exists": bool(srow),
+           "complete": bool(srow and srow["attrs"].get("complete")),
+           "modules_total": len(specs), "modules_done": 0, "modules": []}
+    for key, spec in specs.items():
+        m = live.get(key, {}); have = m.get("have", {})
+        out["modules"].append({
+            "module": key, "label": spec["label"], "need": spec["need"],
+            "have": {r: int(have.get(r, 0)) for r in spec["need"]},
+            "remaining": {r: spec["need"][r] - int(have.get(r, 0)) for r in spec["need"] if int(have.get(r, 0)) < spec["need"][r]},
+            "funders": len(m.get("contrib", {})), "complete": bool(m.get("complete"))})
+        if m.get("complete"):
+            out["modules_done"] += 1
+    return out
+
+
+_colony_cache = {"t": -999.0, "v": {}}
+@app.get("/colony/{body}", tags=["world"])
+def colony_ep(body: str):
+    """Spectator view of a body's EXPANSION colony board (Phobos/Deimos/Mars/Venus). Returns null off-era / unknown body.
+    Cached 4s in-process like /station (spectator dashboards poll it)."""
+    now = time.monotonic()
+    key = (body or "").lower()
+    hit = _colony_cache["v"].get(key)
+    if hit and now - _colony_cache["t"] < 4.0:
+        return hit
+    with _db() as conn:
+        v = _colony_status(conn.cursor(cursor_factory=RealDictCursor), key)
+    if now - _colony_cache["t"] >= 4.0:
+        _colony_cache["t"] = now; _colony_cache["v"] = {}
+    _colony_cache["v"][key] = v
+    return v
+
+
 @app.get("/observe/{agent_id}", response_model=ObserveOut, tags=["agent"])
 def observe_ep(agent_id: int):
     with _db() as conn:
@@ -808,6 +857,10 @@ def observe_ep(agent_id: int):
         nrow = cur.fetchone()
         obs["system_notices"] = (nrow["notices"] if nrow and nrow["notices"] else [])
         obs["space_station"] = _station_status(cur)          # SPACE ERA: co-op orbital-station blueprint + live progress (None outside the era)
+        _exp = obs.get("expansion") or {}                    # EXPANSION: if the agent is ON a body, surface that body's colony board to fund
+        _atb = _exp.get("at_body")
+        if _atb:
+            obs["colony"] = _colony_status(cur, _atb)
         cur.execute("SELECT (attrs->>'in_space')::bool AS sp, COALESCE((attrs->>'atuin_seed')::bigint,0) AS seed FROM entities WHERE id=%s", (agent_id,))
         srow = cur.fetchone()
         if srow and srow.get("sp"):                          # THE GREAT QUESTION (Discworld): verdict re-rolls EACH SPACEFLIGHT (atuin_seed = entry tick, stamped by the engine) -> a fresh reading per trip, stable while up; the same cosmonaut sees something new next launch

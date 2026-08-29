@@ -217,6 +217,65 @@ def dv_capacity(a, ship, dv_need):
     return best
 
 
+# ===================== EXPANSION ERA — Phase 2: colonisation (body mining + co-op colony boards) =====================
+# `mine` while at_body yields that body's UNIQUE resources (mirrors the on-Moon helium3/regolith yield). Deterministic;
+# nanohematite is the storm-only Mars harvest window. All dormant unless an agent is actually at_body.
+BODY_MINE = {
+    "phobos": [("c_regolith", 2), ("stickney_glass", 1)],
+    "deimos": [("c_regolith", 2), ("void_pumice", 1)],
+    "mars":   [("mars_regolith", 2), ("perchlorate", 1), ("mars_ice", 1)],
+    "venus":  [("cloud_acid", 2), ("nitrogen", 1), ("co2", 2)],
+}
+MARS_STORM_PERIOD = 5400          # a planet-encircling dust storm every N ticks…
+MARS_STORM_OPEN = 400             # …lasting this long — the ONLY window nanohematite (terraform warming agent) drops
+
+# Per-body co-op COLONY boards — the station funding engine (cap-fraction / distinct-funder / split-reward), cloned and
+# keyed on `body`. Moons use the loosest floor (2 funders) as the entry rung; Mars/Venus match the station (40%/3).
+COLONY_CAP = {"phobos": 60, "deimos": 60, "mars": 40, "venus": 40}   # ceil-% one funder may cover per resource line
+COLONY_MIN = {"phobos": 2, "deimos": 2, "mars": 3, "venus": 3}       # distinct funders a module needs before it completes
+COLONY_MODULE_REWARD = 180
+COLONY_FINISH_REWARD = 1600
+COLONY_LABEL = {"phobos": "Forward Base (Phobos)", "deimos": "Forward Base (Deimos)", "mars": "Ares Base", "venus": "Aphrodite Terrace"}
+COLONY_TITLE = {"phobos": "Moonwright", "deimos": "Moonwright", "mars": "Areoformer", "venus": "Cytherean"}
+COLONY_MODULES = {
+    "phobos": {
+        "anchor_truss": {"label": "Anchor Truss", "need": {"metal": 200, "titanium": 60, "c_regolith": 120}},
+        "cracker":      {"label": "Ice Cracker",  "need": {"metal": 180, "crystal": 60, "chip": 20, "c_regolith": 100}},
+        "depot":        {"label": "Propellant Depot", "need": {"titanium": 120, "composite": 80, "c_regolith": 140}},
+        "mass_driver":  {"label": "Mass Driver",  "need": {"superalloy": 160, "nickel": 120, "chip": 80, "c_regolith": 100}},
+    },
+    "deimos": {
+        "anchor_truss": {"label": "Anchor Truss", "need": {"metal": 200, "titanium": 60, "c_regolith": 120}},
+        "cracker":      {"label": "Ice Cracker",  "need": {"metal": 180, "crystal": 60, "chip": 20, "c_regolith": 100}},
+        "depot":        {"label": "Propellant Depot", "need": {"titanium": 120, "composite": 80, "c_regolith": 140}},
+        "mass_driver":  {"label": "Mass Driver",  "need": {"superalloy": 160, "nickel": 120, "chip": 80, "c_regolith": 100}},
+    },
+    "mars": {
+        "landing_pad":  {"label": "Landing Pad",   "need": {"metal": 900, "titanium": 400, "composite": 260, "chip": 80}},
+        "pressure_hab": {"label": "Pressure Hab",  "need": {"metal": 800, "mars_regolith": 500, "ice": 200, "composite": 200, "chip": 100}},
+        "isru_plant":   {"label": "ISRU Plant",    "need": {"titanium": 500, "crystal": 300, "chip": 200, "mars_ice": 400, "perchlorate": 200}},
+        "greenhouse":   {"label": "Greenhouse",    "need": {"silicon": 400, "crystal": 350, "mars_ice": 300, "ice": 150, "chip": 120}},
+        "reactor":      {"label": "Reactor",       "need": {"titanium": 450, "crystal": 400, "iridium": 80, "chip": 220, "mars_regolith": 300}},
+    },
+    "venus": {
+        "keel_envelope": {"label": "Keel Envelope", "need": {"acid_skin": 300, "composite": 400, "titanium": 500, "nitrogen": 400}},
+        "acid_shield":   {"label": "Acid Shield",   "need": {"acid_skin": 400, "cloud_acid": 300, "composite": 300, "chip": 100}},
+        "sky_hab":       {"label": "Sky Habitat",   "need": {"graphite": 400, "nitrogen": 500, "ice": 300, "composite": 250, "chip": 150}},
+        "sky_farm":      {"label": "Sky Farm",      "need": {"graphite": 350, "crystal": 400, "mars_ice": 400, "co2": 300, "chip": 120}},
+        "sky_lab":       {"label": "Sky Lab",       "need": {"crystal": 500, "silicon": 450, "iridium": 100, "acid_skin": 200, "chip": 260}},
+        "water_import":  {"label": "Water Import",  "need": {"mars_ice": 800, "ice": 400}},   # the pure-water sink — forces a Mars→Venus supply chain
+    },
+}
+
+
+def _route_discount(ents):
+    """EXPANSION completion effect — "who holds the moons controls the routes": each COMPLETE moon Forward Base
+    discounts Mars/Venus Δv world-wide by 5 (max 10, both moons). Deterministic read of the live colony structures."""
+    n = sum(1 for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "colony"
+            and e["attrs"].get("body") in ("phobos", "deimos") and e["attrs"].get("complete"))
+    return 5 * n
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
 ALTER TABLE world ADD COLUMN IF NOT EXISTS notices jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -641,6 +700,17 @@ def apply_intent(it, ents, cur, t, events):
                 took = took + took // 2
             addb(a, "helium3", took); addb(a, "regolith", took * 2)
             return "applied", f"mined the Moon: +{took} helium-3 (super-fuel), +{took * 2} regolith (lunar building material)"
+        if verb == "mine" and a["attrs"].get("at_body") in BODY_MINE:   # EXPANSION: standing on a body → mine its unique resources
+            body = a["attrs"]["at_body"]
+            took = max(1, min(int(n), 6))
+            if yb:
+                took = took + took // 2
+            got = []
+            for res, mult in BODY_MINE[body]:                # deterministic yields (mirrors the on-Moon branch)
+                addb(a, res, took * mult); got.append(f"+{took * mult} {res}")
+            if body == "mars" and (t % MARS_STORM_PERIOD) < MARS_STORM_OPEN:   # dust storm = the ONLY nanohematite window
+                addb(a, "nanohematite", took); got.append(f"+{took} nanohematite (DUST-STORM harvest — the terraform warming agent!)")
+            return "applied", f"mined {BODY_LABEL[body]}: " + ", ".join(got) + " — fund the colony with construct{shape:'colony'}"
         want_wood = (verb == "chop")
         want_res = str(args.get("resource") or "").strip().lower() or None   # mine{resource:"silicon"} → target THAT mineral; else the nearest of ANY (old behavior)
         deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0
@@ -870,7 +940,10 @@ def apply_intent(it, ents, cur, t, events):
             origin = at_orbit or at_body
             if not origin:
                 return "rejected", "depart{dest:'earth'} is the RETURN leg — you must be at a body (arrive somewhere first)"
-            dv_need = DV_RETURN.get(origin, 130); target = "earth"; win_ok = True
+            dv_need = DV_RETURN.get(origin, 130)
+            if origin in ("mars", "venus"):              # moon Forward Bases discount the Mars/Venus routes world-wide
+                dv_need = max(20, dv_need - _route_discount(ents))
+            target = "earth"; win_ok = True
         else:                                            # OUTBOUND leg: Earth orbit → a body
             if dest not in EXPANSION_BODIES:
                 return "rejected", "dest must be one of: " + "/".join(EXPANSION_BODIES) + " (or 'earth' to return)"
@@ -878,7 +951,10 @@ def apply_intent(it, ents, cur, t, events):
                 return "rejected", "you are already at a body — return to Earth first (depart{dest:'earth'})"
             if not (a["attrs"].get("in_space") and ORBIT_LO <= alt <= ORBIT_HI):
                 return "rejected", f"depart from EARTH ORBIT (altitude {ORBIT_LO}-{ORBIT_HI}: launch or ride the elevator up first)"
-            dv_need = DV_NEED[dest]; target = dest; win_ok = window_open(dest, t)
+            dv_need = DV_NEED[dest]
+            if dest in ("mars", "venus"):                # moon Forward Bases discount the Mars/Venus routes world-wide
+                dv_need = max(20, dv_need - _route_discount(ents))
+            target = dest; win_ok = window_open(dest, t)
         if not win_ok:
             nxt = SYNODIC[dest] - (t % SYNODIC[dest])
             return "rejected", f"the {BODY_LABEL[dest]} launch window is CLOSED — opens again in ~{nxt} ticks (windows last {WINDOW_OPEN} ticks)"
@@ -1052,8 +1128,8 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", msg
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
-        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city"):
-            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city"
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city", "colony"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city/colony"
         if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
             cost = {"metal": 15, "composite": 8}; seg = 20
             if any(get(a, r) < q for r, q in cost.items()):
@@ -1153,6 +1229,85 @@ def apply_intent(it, ents, cur, t, events):
                     cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                                 (t, a["id"], Json({"station": True, "complete": True, "architect": order[0] if order else None})))
                     msg += " — 🛰 THE ORBITAL STATION IS COMPLETE! You live among the stars now."
+            return "applied", msg
+        if shape == "colony":                            # EXPANSION ERA: per-body co-op colony board (Forward Base / Ares Base / Aphrodite Terrace)
+            if _era_now(cur) not in ("space", "expansion"):
+                return "rejected", "colonies are built in the SPACE / EXPANSION era"
+            body = str(args.get("body", "")).lower()
+            if body not in COLONY_MODULES:
+                return "rejected", "colony body must be one of: " + "/".join(COLONY_MODULES)
+            if a["attrs"].get("at_body") != body:
+                return "rejected", f"you must be ON {BODY_LABEL[body]} to build its colony (arrive + land_body there first)"
+            mods_def = COLONY_MODULES[body]
+            module = str(args.get("module", "")).lower()
+            if module not in mods_def:
+                return "rejected", "module must be one of: " + "/".join(mods_def)
+            st = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "colony"
+                       and e["attrs"].get("body") == body), None)   # the ONE structural fix multi-body needs: singleton → body-keyed
+            if st is None:                               # the first funder lays the colony (a per-body singleton)
+                mods = {k: {"have": {}, "contrib": {}, "complete": False} for k in mods_def}
+                sid = new_entity(ents, cur, "structure", W // 2, H // 2, a["id"],
+                                 {"shape": "colony", "body": body, "name": COLONY_LABEL[body],
+                                  "modules": mods, "ctotal": {}, "complete": False, "alt": SKY_TOP,
+                                  "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
+                st = ents[sid]
+            if st["attrs"].get("complete"):
+                return "rejected", f"{COLONY_LABEL[body]} is already COMPLETE — it stands, finished"
+            mod = st["attrs"]["modules"].setdefault(module, {"have": {}, "contrib": {}, "complete": False})
+            if mod.get("complete"):
+                return "rejected", f"the {mods_def[module]['label']} is already complete — fund another module"
+            need = mods_def[module]["need"]
+            have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {}); ct = st["attrs"].setdefault("ctotal", {})
+            cap_frac = COLONY_CAP[body]; min_contrib = COLONY_MIN[body]
+            aid = str(a["id"]); moved = {}
+            for r in sorted(need):                       # sorted → replay-stable; SAME greedy cap loop as the station
+                tgt = need[r]; cur_have = int(have.get(r, 0))
+                if cur_have >= tgt:
+                    continue
+                cap = (tgt * cap_frac + 99) // 100       # ceil(cap% of target)
+                already = int(contrib.get(aid, {}).get(r, 0))
+                give = min(get(a, r), tgt - cur_have, max(0, cap - already))
+                if give > 0:
+                    addb(a, r, -give)
+                    have[r] = cur_have + give
+                    contrib.setdefault(aid, {})[r] = already + give
+                    ct[aid] = int(ct.get(aid, 0)) + give
+                    moved[r] = give
+            if not moved:
+                short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
+                return "rejected", (f"funded nothing to the {mods_def[module]['label']} — it still needs {short}. "
+                                    f"You may be at your {cap_frac}% per-resource cap (others must chip in), or hold none of these "
+                                    f"(mine them here or haul from Earth/another body).")
+            msg = f"funded {moved} to {COLONY_LABEL[body]} · {mods_def[module]['label']}"
+            imm = sum(moved.values()) // 10
+            if imm > 0:
+                a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
+                msg += f" — +{imm} pts now"
+            if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= min_contrib and not mod.get("complete"):
+                mod["complete"] = True
+                tot = sum(sum(v.values()) for v in contrib.values()) or 1
+                for fid in sorted(contrib):
+                    pts = COLONY_MODULE_REWARD * sum(contrib[fid].values()) // tot
+                    fe = ents.get(int(fid))
+                    if fe and pts > 0:
+                        fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+                cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                            (t, a["id"], Json({"colony": body, "colony_module": module, "complete": True, "funders": len(contrib)})))
+                msg += f" — MODULE COMPLETE! {mods_def[module]['label']} online ({len(contrib)} funders)"
+                if all(st["attrs"]["modules"].get(k, {}).get("complete") for k in mods_def):
+                    st["attrs"]["complete"] = True
+                    grand = sum(ct.values()) or 1
+                    order = sorted(ct, key=lambda k: (-ct[k], int(k)))   # deterministic: most units, then lowest id
+                    for fid in order:
+                        fe = ents.get(int(fid)); pts = COLONY_FINISH_REWARD * ct[fid] // grand
+                        if fe and pts > 0:
+                            fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+                            if not fe["attrs"].get("title"):
+                                fe["attrs"]["title"] = COLONY_TITLE[body]
+                    cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                                (t, a["id"], Json({"colony": body, "complete": True, "architect": order[0] if order else None})))
+                    extra = " Mars & Venus routes are now cheaper for EVERYONE (−5 Δv per moon base)." if body in ("phobos", "deimos") else ""
+                    msg += f" — 🪐 {COLONY_LABEL[body].upper()} IS COMPLETE!{extra}"
             return "applied", msg
         if shape == "ziggurat":                          # Moon-only collaborative monument: stack regolith tiers on one cell
             if not a["attrs"].get("on_moon"):
