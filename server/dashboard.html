@@ -1111,7 +1111,7 @@ function initBodyScene(hostId,cfg){
   const host=$(hostId); if(!host||host.clientWidth<10)return;
   let S=_bodyScene.cur;
   if(S&&S.body===cfg.body){ S.ren.setSize(host.clientWidth,host.clientHeight); S.cam.aspect=host.clientWidth/host.clientHeight; S.cam.updateProjectionMatrix(); return; }
-  if(S){ try{ host.removeChild(S.ren.domElement); }catch(e){} try{ S.ren.dispose(); }catch(e){} }   // swap out the old body's canvas
+  if(S){ try{ host.removeChild(S.ren.domElement); }catch(e){} try{ S.ren.dispose(); }catch(e){} try{ clearInterval(S.poll); }catch(e){} }   // swap out the old body's canvas + stop its structure poll
   const ren=new T.WebGLRenderer({antialias:true}); ren.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); ren.setSize(host.clientWidth,host.clientHeight); host.appendChild(ren.domElement);
   const sc=new T.Scene(); sc.background=new T.Color(0x04060e);
   {const N=2200,P=new Float32Array(N*3),C=new Float32Array(N*3);
@@ -1124,6 +1124,7 @@ function initBodyScene(hostId,cfg){
   const R=cfg.radius, pm=new T.MeshLambertMaterial({color:cfg.tint,emissive:0x0a0a0c});
   new T.TextureLoader().load(cfg.tex,function(tx){pm.map=tx;pm.color.setHex(0xffffff);pm.needsUpdate=true;},undefined,function(){});
   const planet=new T.Mesh(new T.SphereGeometry(R,64,48),pm); sc.add(planet);
+  const bstruct=new T.Group(); planet.add(bstruct);   // EXPANSION: colony base + ISRU rigs ride the surface (rotate with the planet); populated by fetchBodyStructures
   const moons=(cfg.moons||[]).map(function(m){const mm=new T.MeshLambertMaterial({color:m.tint,emissive:0x060608});
     if(m.tex)new T.TextureLoader().load(m.tex,function(tx){mm.map=tx;mm.color.setHex(0xffffff);mm.needsUpdate=true;},undefined,function(){});
     const mesh=new T.Mesh(new T.SphereGeometry(m.radius,32,24),mm); sc.add(mesh); return {mesh:mesh,dist:m.dist,speed:m.speed,phase:Math.random()*6.28};});
@@ -1138,13 +1139,82 @@ function initBodyScene(hostId,cfg){
   cv.addEventListener('touchstart',function(e){if(e.touches.length===1)drag={x:e.touches[0].clientX,y:e.touches[0].clientY};},{passive:true});
   cv.addEventListener('touchmove',function(e){if(e.touches.length===1&&drag){yaw-=(e.touches[0].clientX-drag.x)*0.007;pitch=Math.max(-1.35,Math.min(1.35,pitch+(e.touches[0].clientY-drag.y)*0.007));drag={x:e.touches[0].clientX,y:e.touches[0].clientY};place();}},{passive:true});
   cv.addEventListener('touchend',function(){drag=null;},{passive:true});
-  S=_bodyScene.cur={body:cfg.body,ren:ren,cam:cam,sc:sc};
+  S=_bodyScene.cur={body:cfg.body,ren:ren,cam:cam,sc:sc,R:R,bstruct:bstruct,poll:null};
+  fetchBodyStructures(cfg.body);   // draw the colony/rigs/terraform that exist on this body now…
+  S.poll=setInterval(function(){ if(_bodyScene.cur!==S){clearInterval(S.poll);return;} if(active==='World'&&_world3dBody===cfg.body)fetchBodyStructures(cfg.body); },6000);   // …and keep them fresh as agents build
   (function loop(){ if(_bodyScene.cur!==S)return; requestAnimationFrame(loop);
     if(active!=='World'||_world3dBody!==cfg.body||host.offsetParent===null)return;   // pause when hidden
     planet.rotation.y+=cfg.spin;
     for(let i=0;i<moons.length;i++){const m=moons[i];m.phase+=m.speed;m.mesh.position.set(Math.cos(m.phase)*m.dist,Math.sin(m.phase*0.5)*m.dist*0.12,Math.sin(m.phase)*m.dist);m.mesh.rotation.y+=0.02;}
     ren.render(sc,cam);
   })();
+}
+// ===== EXPANSION Era body-view structures: fetch the colony/terraform/extractors for a planet and render them ON its
+// globe, each shaped to its FUNCTION (domes for the base, a drill for the ice well, an O₂ canister for MOXIE, …). =====
+function fetchBodyStructures(body){
+  if(!body||body==='earth'||!window.THREE)return;
+  Promise.all([
+    fetch('/colony/'+body).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
+    fetch('/terraform/'+body).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;})
+  ]).then(function(res){ const S=_bodyScene.cur; if(S&&S.body===body)paintBodyStructures(S,res[0],res[1]); }).catch(function(){});
+}
+function _bodyLabel(txt,color){
+  const T=window.THREE,s=String(txt),c=document.createElement('canvas'),g=c.getContext('2d'),FS=44,PAD=16;
+  g.font='bold '+FS+'px ui-monospace,monospace'; c.width=Math.max(32,Math.ceil(g.measureText(s).width)+PAD*2); c.height=64;
+  g.font='bold '+FS+'px ui-monospace,monospace'; g.fillStyle='rgba(8,10,18,0.80)'; g.fillRect(0,0,c.width,c.height);
+  g.fillStyle=color||'#ffd866'; g.textBaseline='middle'; g.fillText(s,PAD,34);
+  const tx=new T.CanvasTexture(c); tx.minFilter=T.LinearFilter;
+  const sp=new T.Sprite(new T.SpriteMaterial({map:tx,depthTest:false})); const H=1.5; sp.scale.set(H*(c.width/c.height),H,1); return sp;
+}
+function _rigModel(kind){   // a small ISRU rig, shaped to its function (returns a THREE.Group, +Y = up/radial)
+  const T=window.THREE,grp=new T.Group();
+  const M=function(col,e){return new T.MeshLambertMaterial({color:col,emissive:e||0x0a0c10});};
+  const box=function(w,h,d,col,e){return new T.Mesh(new T.BoxGeometry(w,h,d),M(col,e));};
+  const cyl=function(r1,r2,h,col,e){return new T.Mesh(new T.CylinderGeometry(r1,r2,h,10),M(col,e));};
+  const pad=box(0.5,0.12,0.5,0x8a94a0); pad.position.y=0.06; grp.add(pad);
+  if(kind==='co2_collector'){ const p=cyl(0.34,0.34,0.05,0x3a78c0,0x0a1830); p.position.y=0.36; p.rotation.x=0.5; grp.add(p); const s=box(0.07,0.32,0.07,0x9fb0c0); s.position.y=0.22; grp.add(s); }
+  else if(kind==='ice_well'){ const d=new T.Mesh(new T.ConeGeometry(0.2,0.62,4),M(0xbfe6ff,0x0a1a26)); d.position.y=0.43; grp.add(d); const b=cyl(0.06,0.06,0.5,0x9fb0c0); b.position.y=0.30; grp.add(b); }
+  else if(kind==='regolith_rig'){ const a=box(0.5,0.09,0.12,0xd0742e,0x1a0a04); a.position.set(0.16,0.30,0); a.rotation.z=-0.6; grp.add(a); const c=box(0.18,0.18,0.18,0xb0641f); c.position.y=0.22; grp.add(c); }
+  else if(kind==='moxie'){ const t=cyl(0.16,0.16,0.4,0xbfc6cf); t.position.y=0.32; grp.add(t); const gl=cyl(0.18,0.18,0.07,0x36e0e0,0x0f6a6a); gl.position.y=0.55; grp.add(gl); }
+  else if(kind==='cregolith_cracker'){ const b=box(0.32,0.3,0.32,0x9098a0); b.position.y=0.27; grp.add(b); const s1=cyl(0.05,0.05,0.34,0xb8c0c8); s1.position.set(-0.1,0.5,0); grp.add(s1); const s2=cyl(0.05,0.05,0.24,0xb8c0c8); s2.position.set(0.1,0.46,0); grp.add(s2); }
+  else if(kind==='acid_condenser'){ const t=new T.Mesh(new T.SphereGeometry(0.24,16,12),M(0xbcd23a,0x1a2205)); t.position.y=0.40; grp.add(t); const l=cyl(0.05,0.05,0.3,0x9fb0a0); l.position.y=0.22; grp.add(l); }
+  else if(kind==='graphite_reactor'){ const r=cyl(0.2,0.2,0.42,0x2c2c30,0x080808); r.position.y=0.33; grp.add(r); const cap=cyl(0.22,0.16,0.1,0x54545a); cap.position.y=0.58; grp.add(cap); }
+  else { const m=cyl(0.12,0.12,0.4,0xf0883e); m.position.y=0.32; grp.add(m); }
+  return grp;
+}
+function _colonyModel(done,md){   // the base: a central hab tower ringed by pressurised domes (one per completed module)
+  const T=window.THREE,grp=new T.Group(),c=done?0xffcf4a:0xcdb79a;
+  const M=function(col,e){return new T.MeshLambertMaterial({color:col,emissive:e||0x0f0d08});};
+  const plat=new T.Mesh(new T.CylinderGeometry(0.9,0.95,0.08,20),M(0x7a8088)); plat.position.y=0.02; grp.add(plat);
+  const tower=new T.Mesh(new T.CylinderGeometry(0.16,0.2,0.72,8),M(c)); tower.position.y=0.40; grp.add(tower);
+  const cap=new T.Mesh(new T.SphereGeometry(0.2,14,10,0,6.2832,0,1.5708),M(done?0xffe08a:0xdccbb0)); cap.position.y=0.76; grp.add(cap);
+  const nd=Math.min(7,1+(md||0));
+  for(let i=0;i<nd;i++){ const a=i/nd*6.2832; const dome=new T.Mesh(new T.SphereGeometry(0.18,14,8,0,6.2832,0,1.5708),M(c,0x141109)); dome.position.set(Math.cos(a)*0.55,0.04,Math.sin(a)*0.55); grp.add(dome); }
+  return grp;
+}
+function paintBodyStructures(S,col,tf){
+  const T=window.THREE,R=S.R,g=S.bstruct; if(!g)return;
+  while(g.children.length)g.remove(g.children[0]);   // rebuild from scratch each refresh
+  const up=new T.Vector3(0,1,0);
+  function dir(k){ const a=k*2.399963238, z=(((k*0.6180339887)%1)+1)%1*2-1, r=Math.sqrt(Math.max(0,1-z*z)); return new T.Vector3(r*Math.cos(a),z,r*Math.sin(a)); }
+  function sit(mesh,d,lift,scale){ mesh.scale.setScalar(scale||1); mesh.quaternion.setFromUnitVectors(up,d); mesh.position.copy(d).multiplyScalar(R*(lift||1)); g.add(mesh); }
+  if(col&&col.colony_exists){
+    const d=dir(1.0);
+    sit(_colonyModel(col.complete,col.modules_done||0),d,1.0,2.4);
+    const lb=_bodyLabel((col.label||'Base')+'  '+(col.modules_done||0)+'/'+(col.modules_total||'?')+(col.complete?' ✔':''),col.complete?'#ffd866':'#cbd5e1');
+    lb.position.copy(d).multiplyScalar(R+3.0); g.add(lb);
+  }
+  const ex=(col&&col.extractors)||[];
+  for(let i=0;i<ex.length;i++){ sit(_rigModel(ex[i].kind),dir(9+ex[i].id),1.0,1.8); }
+  if(tf&&tf.index){
+    const sum=Object.keys(tf.index).reduce(function(a,k){return a+(+tf.index[k]||0);},0);
+    if(sum>0){
+      const c2=(S.body==='mars')?0x5fbf6a:0x6aa8ff;
+      const atm=new T.Mesh(new T.SphereGeometry(R*1.06,32,24),new T.MeshBasicMaterial({color:c2,transparent:true,opacity:Math.min(0.30,0.07*sum),side:T.BackSide,blending:T.AdditiveBlending,depthWrite:false}));
+      g.add(atm);
+      const lb=_bodyLabel('✦ terraforming '+sum+'/'+(tf.stages_total||4),'#8affa0'); lb.position.set(0,R*1.28,0); g.add(lb);
+    }
+  }
 }
 let S3=null;
 function initWorld3D(){

@@ -826,6 +826,10 @@ def _colony_status(cur, body):
             "funders": len(m.get("contrib", {})), "complete": bool(m.get("complete"))})
         if m.get("complete"):
             out["modules_done"] += 1
+    # ISRU extractors on this body — for the 3D body-view render (little rigs on the globe). Capped for payload/scene.
+    cur.execute("SELECT id, attrs->>'kind' kind, owner FROM entities WHERE type='structure' AND attrs->>'shape'='extractor' "
+                "AND attrs->>'body'=%s ORDER BY id LIMIT 80", (body,))
+    out["extractors"] = [{"id": r["id"], "kind": r["kind"], "owner": r["owner"]} for r in cur.fetchall()]
     return out
 
 
