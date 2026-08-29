@@ -1351,7 +1351,7 @@ void main(){
    for(let i=0;i<b.items.length;i++){const d=b.items[i],p=P(d.x,d.y);M.makeScale(1,b.sy,1);M.setPosition(p[0],p[1]+b.yoff,p[2]);im.setMatrixAt(i,M);}
    im.instanceMatrix.needsUpdate=true;im.frustumCulled=false;depG.add(im);});
  }
- function label(txt){const c=document.createElement('canvas');c.width=512;c.height=128;const g=c.getContext('2d');g.fillStyle='rgba(8,10,18,0.72)';g.fillRect(0,0,512,128);g.font='bold 52px ui-monospace,monospace';g.fillStyle='#ffd866';g.textBaseline='middle';g.fillText(String(txt).slice(0,19),14,70);const tx=new T.CanvasTexture(c);tx.minFilter=T.LinearFilter;tx.anisotropy=4;const sp=new T.Sprite(new T.SpriteMaterial({map:tx,depthTest:false}));sp.scale.set(13,3.2,1);return sp;}
+ function label(txt,H){H=H||3.2;const s=String(txt);const c=document.createElement('canvas');const g=c.getContext('2d');const FS=52,PAD=22;g.font='bold '+FS+'px ui-monospace,monospace';c.width=Math.max(64,Math.ceil(g.measureText(s).width)+PAD*2);c.height=128;g.font='bold '+FS+'px ui-monospace,monospace';g.fillStyle='rgba(8,10,18,0.72)';g.fillRect(0,0,c.width,c.height);g.fillStyle='#ffd866';g.textBaseline='middle';g.fillText(s,PAD,66);const tx=new T.CanvasTexture(c);tx.minFilter=T.LinearFilter;tx.anisotropy=4;const sp=new T.Sprite(new T.SpriteMaterial({map:tx,depthTest:false}));sp.scale.set(H*(c.width/c.height),H,1);return sp;}   // canvas sized to fit the text (no clip/slice); sprite width follows the aspect ratio so the label never truncates
  function buildAgents(as){
   while(agG.children.length)agG.remove(agG.children[0]);
   as.forEach(a=>{const p=P(a.x,a.y),yy=p[1]+1.3+(a.alt||0)/9;
@@ -1402,7 +1402,7 @@ void main(){
    sp.position.set(Math.cos(a)*rr, tall*0.72+Math.sin(a*1.7)*0.7, Math.sin(a)*rr); grp.add(sp);
    zigFX.push({m:sp,base:0.9,kind:'spark',ph:k*1.1+idx});
   }
-  if(done){const lb=label('\u{1F3DB} '+(s.name||'ziggurat'));lb.scale.set(9,2.2,1);lb.position.y=tall+3;grp.add(lb);}  // 🏛 monument label
+  if(done){const lb=label('\u{1F3DB} '+(s.name||'ziggurat'),2.2);lb.position.y=tall+3;grp.add(lb);}  // 🏛 monument label
   // seat it on the Moon's surface (sphere radius 9 at moon.position), fanned around the crown by index, and
   // orient the tiers' +Y axis along the outward surface normal so the monument stands up off the sphere
   const mp=moon.position, R=9, ang=idx*1.1, lean=0.42;
@@ -1502,7 +1502,7 @@ void main(){
     const cap=new T.Mesh(new T.ConeGeometry(tw,tw*1.3,4),monMat(MONTONE.marble,emi)); cap.position.set(ox,th+tw*0.65,oz); cap.rotation.y=Math.PI/4; grp.add(cap);});
    const keep=new T.Mesh(new T.BoxGeometry(Math.min(w,3),wallH*1.2,Math.min(h,3)),monMat(MONTONE.stone,emi)); keep.position.y=wallH*0.6; grp.add(keep);
   }
-  if(done){const lb=label('\u{1F3DB} '+(s.name||kind));lb.scale.set(11,2.6,1);lb.position.y=(span*0.5)+5;grp.add(lb);}   // 🏛 monument label once complete
+  if(done){const lb=label('\u{1F3DB} '+(s.name||kind),2.6);lb.position.y=(span*0.5)+5;grp.add(lb);}   // 🏛 monument label once complete
   grp.position.set(gp[0],gp[1]+(s.alt||0)/9,gp[2]);           // seat the whole group on the terrain at the footprint center
   return grp;
  }
@@ -1518,7 +1518,7 @@ void main(){
    const wing=new T.Mesh(new T.BoxGeometry(7.0,0.1,2.6),new T.MeshLambertMaterial({color:0x1b3a6b,emissive:0x0a1830})); wing.position.y=sd*5.0; grp.add(wing);
   });
   const p=P(s.x,s.y); grp.position.set(p[0],p[1]+(s.alt||600)/9,p[2]);                                                            // seat it high in orbit
-  if(done){const lb=label('\u{1F6F0} '+(s.name||'Orbital Station')); lb.scale.set(14,3.2,1); lb.position.y=7.5; grp.add(lb);}     // 🛰 label once complete
+  if(done){const lb=label('\u{1F6F0} '+(s.name||'Orbital Station'),3.2); lb.position.y=7.5; grp.add(lb);}     // 🛰 label once complete (canvas auto-fits the full name)
   return grp;
  }
  function buildStructures(ss){
