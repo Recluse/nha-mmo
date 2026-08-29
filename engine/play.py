@@ -21,7 +21,8 @@ _PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant de
 _GATHER_RANGE = 8           # auto-walk reach of the `gather` verb (mirror of engine.GATHER_RANGE)
 _MEDICINE_ITEMS = ("salve", "stimpack", "medkit", "antidote")  # consumable HP medicines held in buffers (mirror engine.MEDICINES)
 from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula (no drift) for the observatory forecast; safe — engine never imports play
-                    EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL, PRODUCERS)
+                    EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL, PRODUCERS,
+                    location)   # canonical location reader (Phase 6) — the single authority for "where is this agent"
 _FORECAST_HORIZON = 30            # ticks of storm track an observatory reveals
 
 
@@ -207,6 +208,8 @@ def observe(cur, agent_id):
         windows = {b: {"open": window_open(b, now), "dv_need": DV_NEED[b], "transit_ticks": TRANSIT_TICKS[b],
                        "opens_in": (0 if window_open(b, now) else SYNODIC[b] - (now % SYNODIC[b]))} for b in EXPANSION_BODIES}
         loc = ("transit" if transit_to else ("on_" + at_body if at_body else ("orbit_" + at_orbit if at_orbit else "earth")))
+        place = location({"attrs": {"transit_to": transit_to, "adrift": me["adrift"], "eta_tick": me["eta_tick"],   # canonical structured location (Phase 6 reader)
+                                    "at_body": at_body, "at_body_orbit": at_orbit, "in_space": in_space, "altitude": altitude}})
         producers = None
         if at_body:   # EXPANSION Phase 4 — the ISRU producers you run here + what you can build
             cur.execute("SELECT attrs->>'kind' k, attrs->>'label' l FROM entities WHERE type='structure' "
@@ -217,7 +220,7 @@ def observe(cur, agent_id):
                                        for k, s in PRODUCERS.items() if at_body in s["bodies"]],
                          "how": "construct{shape:'extractor',kind} — an ISRU building that drips its yield into your hold every few ticks (a converter also CONSUMES its inputs from your hold), even after you fly home"}
         expansion = {
-            "era": era, "location": loc,
+            "era": era, "location": loc, "place": place,   # `place` = the canonical structured location (Phase 6); `location` kept as the legacy compact string
             "transit": ({"to": transit_to, "eta_tick": me["eta_tick"], "eta_in": (me["eta_tick"] or 0) - now,
                          "adrift": me["adrift"]} if transit_to else None),
             "at_body": at_body, "at_body_orbit": at_orbit,

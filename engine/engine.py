@@ -190,6 +190,41 @@ def _era_now(cur):
     return (r.get("era") if r else None) or "architect"
 
 
+# ── Canonical location layer (Phase 6, safe variant — 2026-08-29) ─────────────────────────────────────
+# An agent's off-Earth position is encoded across several sentinel attrs. Each transition used to hand-clear
+# its OWN subset, and forgetting one leaked state across space (audit H1: at_body survived a ride-down; M4:
+# on_moon shadowed a destination mine). `clear_offworld` is the SINGLE place that drops the whole set — call
+# it BEFORE writing a new position, so a transition can never forget a key. `location` is the SINGLE canonical
+# reader. The Earth-tier fields (in_space/altitude/space_level) vary per site and are managed there, NOT here.
+_OFFWORLD_KEYS = ("at_body", "at_body_orbit", "transit_to", "depart_tick", "eta_tick",
+                  "depart_from", "adrift", "adrift_since", "on_moon", "docked_to")
+
+
+def clear_offworld(attrs):
+    """Drop every body/orbit/transit/moon/dock sentinel in one shot (call BEFORE setting the new position)."""
+    for k in _OFFWORLD_KEYS:
+        attrs.pop(k, None)
+
+
+def location(a):
+    """The canonical 'where is this agent', derived from the sentinels — the one authority for reads/observe."""
+    at = a["attrs"]
+    if at.get("transit_to"):
+        return {"where": ("adrift" if at.get("adrift") else "transit"), "body": at["transit_to"], "eta_tick": at.get("eta_tick")}
+    if at.get("at_body"):
+        return {"where": "body_surface", "body": at["at_body"]}
+    if at.get("at_body_orbit"):
+        return {"where": "body_orbit", "body": at["at_body_orbit"]}
+    if at.get("on_moon"):
+        return {"where": "moon_surface"}
+    if at.get("docked_to"):
+        return {"where": "docked", "to": at["docked_to"]}
+    if at.get("in_space"):
+        alt = int(at.get("altitude", 0))
+        return {"where": "earth_" + ("moon_alt" if alt >= SKY_TOP else "orbit" if alt >= ORBIT_LO else "space"), "altitude": alt}
+    return {"where": "earth_ground"}
+
+
 def window_open(dest, t):
     """Deterministic launch window: open while the tick sits in the first WINDOW_OPEN of the synodic period."""
     per = SYNODIC.get(dest, 1)
@@ -1153,14 +1188,13 @@ def apply_intent(it, ents, cur, t, events):
                                 f"{plan['loaded'] - plan['cost']} spare fuel but the {TRANSIT_TICKS[target]}-tick crossing needs {n_corr}. "
                                 f"Carry more {plan['fuel']}.")
         addb(a, plan["fuel"], -plan["cost"])             # burn the departure Δv
-        a["attrs"]["transit_to"] = target
+        clear_offworld(a["attrs"])                       # wipe any prior body/orbit/moon/dock state FIRST (at_orbit/at_body were captured above)…
+        a["attrs"]["transit_to"] = target                # …then commit the new transit
         a["attrs"]["depart_tick"] = t
         a["attrs"]["eta_tick"] = t + TRANSIT_TICKS[target]
         a["attrs"]["depart_from"] = ("earth" if target != "earth" else (at_orbit or at_body))
         a["attrs"]["in_space"] = True
         a["attrs"]["altitude"] = SKY_TOP                 # beyond-LEO sentinel (orbital_decay skips in-transit agents)
-        for k in ("at_body_orbit", "at_body", "adrift", "adrift_since", "on_moon"):   # on_moon too (audit M4): never let it ride through transit and shadow the destination mine
-            a["attrs"].pop(k, None)
         cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'depart',%s)",
                     (t, a["id"], Json({"dest": target, "eta": a["attrs"]["eta_tick"], "dv": plan["dv"], "fuel": plan["fuel"], "burn": plan["cost"]})))
         return "applied", (f"DEPARTED for {BODY_LABEL[target]}! burned {plan['cost']} {plan['fuel']} (Δv {plan['dv']}/{dv_need}), "
@@ -1205,9 +1239,7 @@ def apply_intent(it, ents, cur, t, events):
             if held > 0:
                 addb(a, r, -held); jettisoned[r] = held
         a["attrs"]["hp"] = max(1, int(a["attrs"].get("hp", HP_MAX)) - RESCUE_DMG)   # a modest, always-survivable cost — a rescue never downs you
-        for k in ("at_body", "at_body_orbit", "transit_to", "depart_tick", "eta_tick",   # mirror the arrive-at-Earth path: clear every body/transit/beyond-LEO sentinel
-                  "depart_from", "adrift", "adrift_since", "on_moon", "docked_to"):
-            a["attrs"].pop(k, None)
+        clear_offworld(a["attrs"])                       # mirror the arrive-at-Earth path: clear every body/transit sentinel in one shot
         a["attrs"]["in_space"] = True; a["attrs"]["altitude"] = SKY_TOP   # dropped back into EARTH ORBIT — land or ride the elevator down
         cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'distress',%s)",
                     (t, a["id"], Json({"from": where, "hp_cost": RESCUE_DMG, "jettisoned": jettisoned})))
@@ -1817,9 +1849,7 @@ def apply_intent(it, ents, cur, t, events):
             a["attrs"]["altitude"] = 0
             a["attrs"]["in_space"] = False
             a["attrs"]["space_level"] = 0
-            for k in ("on_moon", "docked_to", "at_body", "at_body_orbit", "transit_to",   # audit H1/M4: a return to Earth ground clears ALL space/beyond-LEO sentinels
-                      "depart_tick", "eta_tick", "depart_from", "adrift", "adrift_since"):
-                a["attrs"].pop(k, None)
+            clear_offworld(a["attrs"])                    # audit H1/M4: a return to Earth ground clears ALL off-world sentinels in one shot
             a["attrs"]["round_trip"] = True
             return "applied", "rode the orbital elevator back DOWN to the ground — no fuel, no waiting"
         a["attrs"]["altitude"] = max(int(a["attrs"].get("altitude", 0)), min(SKY_TOP, row["h"]))
@@ -2611,11 +2641,10 @@ def advance_transits(ents, t, events, cur):
         if at.get("adrift"):                               # frozen mid-course — count down to auto-abort
             if t - int(at.get("adrift_since", t)) >= ADRIFT_ABORT_TICKS:
                 origin = at.get("depart_from") or "earth"
-                for k in ("transit_to", "depart_tick", "eta_tick", "depart_from", "adrift", "adrift_since"):
-                    at.pop(k, None)
+                clear_offworld(at)                         # clear transit + any stale body/moon/dock sentinel in one shot…
                 at["in_space"] = True; at["altitude"] = SKY_TOP
                 if origin != "earth":
-                    at["at_body_orbit"] = origin           # drifted on the return leg → fall back to the body's orbit
+                    at["at_body_orbit"] = origin           # …then fall back to the body's orbit if it drifted on the return leg
                 events.append((t, a["id"], "act", {"verb": "abort", "status": "applied",
                               "result": f"transit to {BODY_LABEL.get(dest, dest)} ABORTED (adrift, out of correction fuel) — limped back toward {BODY_LABEL.get(origin, origin)}, took {ADRIFT_DMG} damage"}))
                 if int(at.get("downed_until", 0)) <= t:    # audit L1: don't re-kill a corpse (double loot / respawn reset) — mirror orbital_decay/explode
@@ -2630,12 +2659,9 @@ def advance_transits(ents, t, events, cur):
                 continue
             addb(a, fuel, -1)
         if t >= eta:                                       # ARRIVE
-            for k in ("transit_to", "depart_tick", "eta_tick", "depart_from", "adrift", "adrift_since"):
-                at.pop(k, None)
+            clear_offworld(at)                             # clear transit (and any stale body sentinel) in one shot
             at["in_space"] = True; at["altitude"] = SKY_TOP
-            if dest == "earth":
-                for k in ("at_body_orbit", "at_body"):
-                    at.pop(k, None)
+            if dest == "earth":                            # clear_offworld already dropped at_body/at_body_orbit
                 events.append((t, a["id"], "act", {"verb": "arrive", "status": "applied",
                               "result": "arrived back in EARTH ORBIT — land or ride the elevator down"}))
             else:
@@ -2693,9 +2719,8 @@ def respawn_agents(by_type, cur, t, events):
             att = a["attrs"]
             if (att.get("in_space") or att.get("at_body") or att.get("at_body_orbit") or att.get("transit_to")
                     or att.get("on_moon") or int(att.get("altitude", 0)) > 0):   # ONLY touch space state if it had any — else a pure-ground respawn is byte-identical (seed fingerprint safe)
-                for k in ("at_body", "at_body_orbit", "transit_to", "depart_tick", "eta_tick",   # audit H1: respawn drops you on EARTH → clear every space/beyond-LEO sentinel, else you mine/fund a body from Earth
-                          "depart_from", "adrift", "adrift_since", "on_moon", "docked_to", "in_space"):
-                    att.pop(k, None)
+                clear_offworld(att)                        # audit H1: respawn drops you on EARTH → clear every off-world sentinel…
+                att.pop("in_space", None)                  # …plus the Earth-tier state (respawn removes in_space entirely, unlike the ride-down which sets it False)
                 att["altitude"] = 0; att["space_level"] = 0
             events.append((t, a["id"], "respawn", {"x": a["x"], "y": a["y"]}))
 
