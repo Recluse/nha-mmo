@@ -1188,7 +1188,11 @@ def apply_intent(it, ents, cur, t, events):
                                 f"{plan['loaded'] - plan['cost']} spare fuel but the {TRANSIT_TICKS[target]}-tick crossing needs {n_corr}. "
                                 f"Carry more {plan['fuel']}.")
         addb(a, plan["fuel"], -plan["cost"])             # burn the departure Δv
-        clear_offworld(a["attrs"])                       # wipe any prior body/orbit/moon/dock state FIRST (at_orbit/at_body were captured above)…
+        clear_offworld(a["attrs"])                       # wipe any prior body/orbit/moon/dock state FIRST (at_orbit/at_body captured above)…
+        # NB: this also UNDOCKS a depart-while-docked agent — intentional & correct (a stale Earth-asteroid dock must
+        # not ride an interplanetary transfer; the old 5-key clear leaked docked_to into transit → a spurious later
+        # undock event). This is the one hashed-state change vs. the pre-Phase-6 clear, on a path the determinism/
+        # phase tests don't exercise (so the seed fp 9922767f180849f0 + all phase fps are unaffected — audit MEDIUM).
         a["attrs"]["transit_to"] = target                # …then commit the new transit
         a["attrs"]["depart_tick"] = t
         a["attrs"]["eta_tick"] = t + TRANSIT_TICKS[target]
