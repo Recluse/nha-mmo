@@ -212,9 +212,9 @@ def observe(cur, agent_id):
                         "AND attrs->>'shape'='extractor' AND owner=%s AND attrs->>'body'=%s", (agent_id, at_body))
             yours = [{"kind": r["k"], "label": r["l"]} for r in cur.fetchall()]
             producers = {"yours_here": yours,
-                         "buildable": [{"kind": k, "label": s["label"], "cost": s["cost"], "out": s["out"], "period": s["period"]}
+                         "buildable": [{"kind": k, "label": s["label"], "cost": s["cost"], "out": s["out"], "consume": s.get("consume"), "period": s["period"]}
                                        for k, s in PRODUCERS.items() if at_body in s["bodies"]],
-                         "how": "construct{shape:'extractor',kind} — an ISRU building that drips its yield into your hold every few ticks, even after you fly home"}
+                         "how": "construct{shape:'extractor',kind} — an ISRU building that drips its yield into your hold every few ticks (a converter also CONSUMES its inputs from your hold), even after you fly home"}
         expansion = {
             "era": era, "location": loc,
             "transit": ({"to": transit_to, "eta_tick": me["eta_tick"], "eta_in": (me["eta_tick"] or 0) - now,

@@ -1179,6 +1179,9 @@ function _rigModel(kind){   // a small ISRU rig, shaped to its function (returns
   else if(kind==='cregolith_cracker'){ const b=box(0.32,0.3,0.32,0x9098a0); b.position.y=0.27; grp.add(b); const s1=cyl(0.05,0.05,0.34,0xb8c0c8); s1.position.set(-0.1,0.5,0); grp.add(s1); const s2=cyl(0.05,0.05,0.24,0xb8c0c8); s2.position.set(0.1,0.46,0); grp.add(s2); }
   else if(kind==='acid_condenser'){ const t=new T.Mesh(new T.SphereGeometry(0.24,16,12),M(0xbcd23a,0x1a2205)); t.position.y=0.40; grp.add(t); const l=cyl(0.05,0.05,0.3,0x9fb0a0); l.position.y=0.22; grp.add(l); }
   else if(kind==='graphite_reactor'){ const r=cyl(0.2,0.2,0.42,0x2c2c30,0x080808); r.position.y=0.33; grp.add(r); const cap=cyl(0.22,0.16,0.1,0x54545a); cap.position.y=0.58; grp.add(cap); }
+  else if(kind==='sabatier'){ const tk=cyl(0.17,0.17,0.5,0xc9a24a,0x2a1e08); tk.rotation.z=1.5708; tk.position.y=0.30; grp.add(tk); const fl=cyl(0.04,0.09,0.15,0xffa53a,0x7a3a06); fl.position.set(0.30,0.36,0); grp.add(fl); }   // refinery tank + methalox flare
+  else if(kind==='scrubber'){ const b=box(0.34,0.34,0.24,0x6f9a6a,0x0e1a0c); b.position.y=0.28; grp.add(b); const st=cyl(0.05,0.05,0.3,0xb8c0c8); st.position.set(0.12,0.5,0); grp.add(st); }   // filter box + vent
+  else if(kind==='bosch'){ const r=cyl(0.18,0.18,0.44,0x3a6ea0,0x0a1826); r.position.y=0.33; grp.add(r); const p=cyl(0.04,0.04,0.3,0x9fb0c0); p.position.set(-0.16,0.30,0); p.rotation.z=0.5; grp.add(p); }   // water reactor + pipe
   else { const m=cyl(0.12,0.12,0.4,0xf0883e); m.position.y=0.32; grp.add(m); }
   return grp;
 }

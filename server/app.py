@@ -830,6 +830,9 @@ def _colony_status(cur, body):
     cur.execute("SELECT id, attrs->>'kind' kind, owner FROM entities WHERE type='structure' AND attrs->>'shape'='extractor' "
                 "AND attrs->>'body'=%s ORDER BY id LIMIT 80", (body,))
     out["extractors"] = [{"id": r["id"], "kind": r["kind"], "owner": r["owner"]} for r in cur.fetchall()]
+    if body == "venus" and out["complete"]:   # Phase 5: the cloud city's acid-shield integrity (re-fund acid_shield to top it up)
+        out["acid_integrity"] = int((srow["attrs"].get("acid_integrity") if srow else None) or engine.ACID_INTEGRITY_MAX)
+        out["acid_integrity_max"] = engine.ACID_INTEGRITY_MAX
     return out
 
 

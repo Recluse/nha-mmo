@@ -364,8 +364,20 @@ PRODUCERS = {
     "cregolith_cracker": {"bodies": ("phobos", "deimos"), "cost": {"metal": 80, "chip": 10},       "period": 5, "out": {"c_regolith": 4},            "solar": False, "label": "Regolith Cracker"},
     "acid_condenser":    {"bodies": ("venus",),           "cost": {"composite": 40, "chip": 20},   "period": 5, "out": {"cloud_acid": 3, "nitrogen": 2}, "solar": False, "label": "Acid Condenser"},
     "graphite_reactor":  {"bodies": ("venus",),           "cost": {"composite": 60, "chip": 30},   "period": 6, "out": {"graphite": 3},              "solar": False, "label": "Graphite Reactor"},
+    # --- Phase 5 CONVERTERS: refineries that CONSUME raw inputs from the owner's hold and produce a refined output.
+    #     They close the ISRU loops (extractors feed them). Idle (no output) any tick the owner lacks the inputs. ---
+    "sabatier":          {"bodies": ("mars",),            "cost": {"titanium": 80, "chip": 40},    "period": 6, "out": {"methalox": 2}, "consume": {"co2": 3, "mars_ice": 2}, "solar": False, "label": "Sabatier Refinery"},
+    "scrubber":          {"bodies": ("mars",),            "cost": {"metal": 90, "chip": 20},       "period": 5, "out": {"o2": 2},       "consume": {"perchlorate": 2},        "solar": False, "label": "Perchlorate Scrubber"},
+    "bosch":             {"bodies": ("venus",),           "cost": {"composite": 80, "chip": 40},   "period": 6, "out": {"water": 2},    "consume": {"co2": 3, "hydrogen": 2}, "solar": False, "label": "Bosch Reactor"},
 }
 MAX_PRODUCERS_PER_AGENT = 12       # bound the per-tick producer scan + stop a whale spamming a resource fountain
+
+# Phase 5 — Venus is never free: the cloud city's acid shield slowly corrodes and must be re-funded, or terraforming stalls.
+ACID_INTEGRITY_MAX = 100
+ACID_UPKEEP_EVERY = 30             # every N ticks a COMPLETE Venus colony loses ACID_DECAY integrity
+ACID_DECAY = 1
+ACID_REFUND_COST = {"acid_skin": 2, "cloud_acid": 4}   # re-fund the acid shield (construct{shape:'colony',body:'venus',module:'acid_shield'} on the finished city)
+ACID_RESTORE = 20                  # integrity restored per re-fund
 
 
 def run_producers(ents, t, events, cur):
@@ -384,9 +396,32 @@ def run_producers(ents, t, events, cur):
         owner = ents.get(p.get("owner"))
         if owner is None or owner["type"] != "agent":
             continue
+        cons = spec.get("consume")                            # Phase 5 CONVERTER: needs its inputs in the owner's hold, else idle
+        if cons:
+            if not all(get(owner, r) >= q for r, q in cons.items()):
+                continue
+            for r, q in cons.items():
+                addb(owner, r, -q)
         brown = spec.get("solar") and pa.get("body") == "mars" and mars_storm
         for res, n in spec["out"].items():
             addb(owner, res, max(1, n // 2) if brown else n)   # deterministic yield straight to the owner's hold
+
+
+def body_upkeep(ents, t, events, cur):
+    """Phase 5 — CONTINUOUS UPKEEP. A COMPLETE Venus colony's acid shield corrodes ACID_DECAY every ACID_UPKEEP_EVERY
+    ticks; agents re-fund it (construct colony acid_shield on the finished city) or it hits 0 and Venus terraforming
+    stalls until restored. Deterministic, no-op when there's no complete Venus city (so the seed is untouched)."""
+    if t % ACID_UPKEEP_EVERY != 0:
+        return
+    for e in ents.values():
+        if (e["type"] == "structure" and e["attrs"].get("shape") == "colony" and e["attrs"].get("body") == "venus"
+                and e["attrs"].get("complete")):
+            cur_int = int(e["attrs"].get("acid_integrity", ACID_INTEGRITY_MAX))
+            new_int = max(0, cur_int - ACID_DECAY)
+            e["attrs"]["acid_integrity"] = new_int
+            if new_int == 0 and cur_int > 0:
+                events.append((t, e["id"], "act", {"verb": "acid", "status": "applied",
+                              "result": "⚠ the Aphrodite Terrace acid shield has FAILED (integrity 0) — re-fund acid_shield to resume Venus terraforming"}))
 
 
 SCHEMA = """
@@ -986,7 +1021,7 @@ def apply_intent(it, ents, cur, t, events):
             return "rejected", (f"thrust-to-weight too low to lift off (need thrust >= {GRAVITY}x mass; "
                                 f"best you have = {best:.2f}) — add engines/jets/propellers, lighten with a composite frame")
         # fuel tiers (best first): helium3 super-fuel (5x) > crafted cryo_fuel (3x) > plain fuels (1x).
-        FUEL_CLIMB = (("helium3", 5), ("cryo_fuel", 3), ("oil", 1), ("coal", 1), ("wood", 1), ("carbon", 1))
+        FUEL_CLIMB = (("helium3", 5), ("cryo_fuel", 3), ("methalox", 3), ("oil", 1), ("coal", 1), ("wood", 1), ("carbon", 1))   # Phase 5 (R6): methalox — the ISRU ascent fuel (Sabatier on Mars) — lifts like cryo_fuel, closing "4 km/s every launch"
         fuel, mult = next(((f, m) for f, m in FUEL_CLIMB if get(a, f) >= 1), (None, 1))
         if not fuel:
             return "rejected", ("no fuel to burn (carry oil/coal/wood/carbon, craft cryo_fuel for a 3x boost "
@@ -1365,6 +1400,16 @@ def apply_intent(it, ents, cur, t, events):
                                   "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
                 st = ents[sid]
             if st["attrs"].get("complete"):
+                if body == "venus" and module == "acid_shield":   # Phase 5 UPKEEP: re-fund the corroding acid shield on the finished city
+                    cur_int = int(st["attrs"].get("acid_integrity", ACID_INTEGRITY_MAX))
+                    if cur_int >= ACID_INTEGRITY_MAX:
+                        return "rejected", "the acid shield is already at full integrity"
+                    if not all(get(a, r) >= q for r, q in ACID_REFUND_COST.items()):
+                        return "rejected", f"topping up the acid shield needs {ACID_REFUND_COST} (mine cloud_acid on Venus + craft acid_skin)"
+                    for r, q in ACID_REFUND_COST.items():
+                        addb(a, r, -q)
+                    st["attrs"]["acid_integrity"] = min(ACID_INTEGRITY_MAX, cur_int + ACID_RESTORE)
+                    return "applied", f"topped up the Aphrodite Terrace acid shield → integrity {st['attrs']['acid_integrity']}/{ACID_INTEGRITY_MAX}"
                 return "rejected", f"{COLONY_LABEL[body]} is already COMPLETE — it stands, finished"
             mod = st["attrs"]["modules"].setdefault(module, {"have": {}, "contrib": {}, "complete": False})
             if mod.get("complete"):
@@ -1409,6 +1454,8 @@ def apply_intent(it, ents, cur, t, events):
                 msg += f" — MODULE COMPLETE! {mods_def[module]['label']} online ({len(contrib)} funders)"
                 if all(st["attrs"]["modules"].get(k, {}).get("complete") for k in mods_def):
                     st["attrs"]["complete"] = True
+                    if body == "venus":
+                        st["attrs"]["acid_integrity"] = ACID_INTEGRITY_MAX   # Phase 5: the cloud city now needs continuous acid-shield upkeep
                     grand = sum(ct.values()) or 1
                     order = sorted(ct, key=lambda k: (-ct[k], int(k)))   # deterministic: most units, then lowest id
                     for fid in order:
@@ -1433,6 +1480,11 @@ def apply_intent(it, ents, cur, t, events):
                 return "rejected", f"you must be ON {BODY_LABEL[body]} to terraform it (arrive + land_body there first)"
             if not _colony_done(ents, body):
                 return "rejected", f"terraforming {BODY_LABEL[body]} unlocks only once its colony (the {COLONY_LABEL[body]}) is COMPLETE"
+            if body == "venus":                              # Phase 5: the cloud city's acid shield must hold or terraforming stalls
+                vcol = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "colony"
+                             and e["attrs"].get("body") == "venus" and e["attrs"].get("complete")), None)
+                if vcol and int(vcol["attrs"].get("acid_integrity", ACID_INTEGRITY_MAX)) <= 0:
+                    return "rejected", "the Aphrodite Terrace acid shield has FAILED (integrity 0) — re-fund it (construct{shape:'colony',body:'venus',module:'acid_shield'}) before terraforming"
             stages_def = TERRAFORM_STAGES[body]; keys = [s[0] for s in stages_def]
             stage_key = str(args.get("stage", "")).lower()
             if stage_key not in keys:
@@ -2917,6 +2969,7 @@ def _tick_body(conn, s):
     orbital_decay(ents, t, events, cur)
     advance_transits(ents, t, events, cur)                 # EXPANSION ERA: interplanetary transit countdown (no-op if nobody's in transit)
     run_producers(ents, t, events, cur)                    # EXPANSION Phase 4: ISRU auto-extractors drip into owners' holds (no-op if none built)
+    body_upkeep(ents, t, events, cur)                      # EXPANSION Phase 5: Venus acid-shield corrosion (no-op without a complete Venus city)
     respawn_deposits(by_type, t)
     respawn_agents(by_type, cur, t, events)               # season 3 per-tick systems (after respawn_deposits, before write-back)
     cool_reputation(by_type, t)
