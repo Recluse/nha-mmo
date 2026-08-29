@@ -1208,9 +1208,27 @@ function _rigModel(kind){   // a small ISRU rig, shaped to its function (returns
   else if(kind==='cregolith_cracker'){ const b=box(0.32,0.3,0.32,0x9098a0); b.position.y=0.27; grp.add(b); const s1=cyl(0.05,0.05,0.34,0xb8c0c8); s1.position.set(-0.1,0.5,0); grp.add(s1); const s2=cyl(0.05,0.05,0.24,0xb8c0c8); s2.position.set(0.1,0.46,0); grp.add(s2); }
   else if(kind==='acid_condenser'){ const t=new T.Mesh(new T.SphereGeometry(0.24,16,12),M(0xbcd23a,0x1a2205)); t.position.y=0.40; grp.add(t); const l=cyl(0.05,0.05,0.3,0x9fb0a0); l.position.y=0.22; grp.add(l); }
   else if(kind==='graphite_reactor'){ const r=cyl(0.2,0.2,0.42,0x2c2c30,0x080808); r.position.y=0.33; grp.add(r); const cap=cyl(0.22,0.16,0.1,0x54545a); cap.position.y=0.58; grp.add(cap); }
-  else if(kind==='sabatier'){ const tk=cyl(0.17,0.17,0.5,0xc9a24a,0x2a1e08); tk.rotation.z=1.5708; tk.position.y=0.30; grp.add(tk); const fl=cyl(0.04,0.09,0.15,0xffa53a,0x7a3a06); fl.position.set(0.30,0.36,0); grp.add(fl); }   // refinery tank + methalox flare
-  else if(kind==='scrubber'){ const b=box(0.34,0.34,0.24,0x6f9a6a,0x0e1a0c); b.position.y=0.28; grp.add(b); const st=cyl(0.05,0.05,0.3,0xb8c0c8); st.position.set(0.12,0.5,0); grp.add(st); }   // filter box + vent
-  else if(kind==='bosch'){ const r=cyl(0.18,0.18,0.44,0x3a6ea0,0x0a1826); r.position.y=0.33; grp.add(r); const p=cyl(0.04,0.04,0.3,0x9fb0c0); p.position.set(-0.16,0.30,0); p.rotation.z=0.5; grp.add(p); }   // water reactor + pipe
+  else if(kind==='sabatier'){   // Sabatier refinery: horizontal reaction drum + distillation column + a lit methalox flare
+    const tk=cyl(0.17,0.17,0.52,0xc9a24a,0x2a1e08); tk.rotation.z=1.5708; tk.position.y=0.30; grp.add(tk);
+    const cap=cyl(0.17,0.1,0.08,0xa8863c); cap.rotation.z=1.5708; cap.position.set(0.28,0.30,0); grp.add(cap);
+    const col=cyl(0.07,0.07,0.42,0xbfc6cf); col.position.set(-0.18,0.44,0); grp.add(col);
+    const stk=cyl(0.05,0.085,0.2,0x555a60); stk.position.set(0.30,0.46,0); grp.add(stk);
+    const fl=new T.Mesh(new T.ConeGeometry(0.08,0.2,8),M(0xffa53a,0xff6a10)); fl.position.set(0.30,0.66,0); grp.add(fl);
+    const leg=cyl(0.03,0.03,0.2,0x6a7078); leg.position.set(-0.1,0.16,0.09); leg.rotation.x=0.35; grp.add(leg); }
+  else if(kind==='scrubber'){   // perchlorate → O2 scrubber: filter housing + swappable canister + a pale-blue O2 sphere + vents
+    const b=box(0.32,0.34,0.24,0x6f9a6a,0x0e1a0c); b.position.y=0.28; grp.add(b);
+    const can=cyl(0.1,0.1,0.28,0x9aa8a0); can.position.set(-0.2,0.34,0); grp.add(can);
+    const o2=new T.Mesh(new T.SphereGeometry(0.14,14,10),M(0xbfe0ff,0x0a2030)); o2.position.set(0.22,0.42,0); grp.add(o2);
+    const st1=cyl(0.045,0.045,0.3,0xb8c0c8); st1.position.set(0.08,0.53,0.06); grp.add(st1);
+    const st2=cyl(0.045,0.045,0.22,0xb8c0c8); st2.position.set(-0.02,0.49,-0.06); grp.add(st2);
+    const gr=cyl(0.12,0.12,0.03,0x3a4a3a); gr.rotation.x=1.5708; gr.position.set(0,0.28,0.13); grp.add(gr); }
+  else if(kind==='bosch'){      // Bosch reactor (CO2+H2 → water): catalyst drum + a blue water sphere + condenser coils + a feed drip
+    const r=cyl(0.17,0.17,0.44,0x3a6ea0,0x0a1826); r.position.y=0.34; grp.add(r);
+    const cap=cyl(0.17,0.11,0.08,0x2c5680); cap.position.y=0.58; grp.add(cap);
+    const wt=new T.Mesh(new T.SphereGeometry(0.15,14,10),M(0x2f7fd0,0x081826)); wt.position.set(0.24,0.28,0); grp.add(wt);
+    const p1=new T.Mesh(new T.TorusGeometry(0.1,0.022,8,14),M(0x9fb0c0)); p1.position.set(-0.14,0.36,0); p1.rotation.y=1.2; grp.add(p1);
+    const p2=new T.Mesh(new T.TorusGeometry(0.1,0.022,8,14),M(0x9fb0c0)); p2.position.set(-0.14,0.48,0); p2.rotation.y=1.2; grp.add(p2);
+    const dr=cyl(0.03,0.03,0.16,0x8fa0b0); dr.position.set(0.24,0.46,0); grp.add(dr); }
   else { const m=cyl(0.12,0.12,0.4,0xf0883e); m.position.y=0.32; grp.add(m); }
   return grp;
 }

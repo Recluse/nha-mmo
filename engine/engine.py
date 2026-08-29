@@ -175,6 +175,7 @@ ENGINE_EFF = {"ion": 3, "jet": 2, "prop": 1}              # ion_thruster ship > 
 CORRECTION_EVERY = 20                                     # one course-correction burn (1 fuel) every N transit ticks
 ADRIFT_ABORT_TICKS = 60                                   # adrift this long → auto-abort (return to origin + damage)
 ADRIFT_DMG = 25
+RESCUE_DMG = 20                                           # EXPANSION L2 strand-recovery: a `distress` emergency recall costs this much HP (always survivable — floored at 1 HP; a rescue never kills)
 SYNODIC = {"deimos": 780, "phobos": 780, "mars": 780, "venus": 584, "earth": 1}   # launch-window period (earth=always open on return)
 WINDOW_OPEN = 120                                         # window is open while (t % SYNODIC[dest]) < WINDOW_OPEN  (~15–20% duty)
 # Protective items HELD in inventory, consumed 1 each at ARRIVAL (moons need only landing-gear on the SHIP, checked
@@ -228,6 +229,8 @@ BODY_MINE = {
 }
 MARS_STORM_PERIOD = 5400          # a planet-encircling dust storm every N ticks…
 MARS_STORM_OPEN = 400             # …lasting this long — the ONLY window nanohematite (terraform warming agent) drops
+EXPANSION_CARGO = ("c_regolith", "stickney_glass", "void_pumice", "mars_regolith", "perchlorate",
+                   "mars_ice", "nanohematite", "cloud_acid")   # exotic body-only haul — jettisoned when an agent triggers a `distress` recall (you bail empty-handed)
 
 # Per-body co-op COLONY boards — the station funding engine (cap-fraction / distinct-funder / split-reward), cloned and
 # keyed on `body`. Moons use the loosest floor (2 funders) as the entry rung; Mars/Venus match the station (40%/3).
@@ -1186,6 +1189,26 @@ def apply_intent(it, ents, cur, t, events):
                     (t, a["id"], Json({"body": body, "first": first, "points": pts})))
         return "applied", ((f"FIRST TO LAND ON {BODY_LABEL[body].upper()}! " if first else f"touched down on {BODY_LABEL[body]}! ")
                            + f"+{pts} pts — plant the flag; return home with depart{{dest:'earth'}}")
+    if verb == "distress":                               # EXPANSION ERA — L2 strand-recovery: a no-fuel emergency recall to EARTH ORBIT from anywhere off-Earth
+        at_body = a["attrs"].get("at_body"); at_orbit = a["attrs"].get("at_body_orbit"); in_transit = a["attrs"].get("transit_to")
+        where = at_body or at_orbit or in_transit
+        if not where:                                    # already home (Earth orbit or ground) → nothing to rescue from
+            return "rejected", "distress is the EMERGENCY RETURN — it recalls you to Earth orbit from a body or mid-transit, but you are already home"
+        jettisoned = {}                                  # you bail EMPTY-HANDED: the exotic body haul is dumped (sorted → replay-stable)
+        for r in EXPANSION_CARGO:
+            held = int(get(a, r))
+            if held > 0:
+                addb(a, r, -held); jettisoned[r] = held
+        a["attrs"]["hp"] = max(1, int(a["attrs"].get("hp", HP_MAX)) - RESCUE_DMG)   # a modest, always-survivable cost — a rescue never downs you
+        for k in ("at_body", "at_body_orbit", "transit_to", "depart_tick", "eta_tick",   # mirror the arrive-at-Earth path: clear every body/transit/beyond-LEO sentinel
+                  "depart_from", "adrift", "adrift_since", "on_moon", "docked_to"):
+            a["attrs"].pop(k, None)
+        a["attrs"]["in_space"] = True; a["attrs"]["altitude"] = SKY_TOP   # dropped back into EARTH ORBIT — land or ride the elevator down
+        cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'distress',%s)",
+                    (t, a["id"], Json({"from": where, "hp_cost": RESCUE_DMG, "jettisoned": jettisoned})))
+        lost = ("; jettisoned " + ", ".join(f"{n} {r}" for r, n in sorted(jettisoned.items()))) if jettisoned else ""
+        return "applied", (f"🆘 DISTRESS BEACON — a rescue tug hauled you from {BODY_LABEL.get(where, where)} back to EARTH ORBIT "
+                           f"(-{RESCUE_DMG} HP{lost}). Land or ride the elevator down. (Next time carry return fuel — a fueled depart{{dest:'earth'}} keeps your cargo.)")
     if verb == "deploy":                                 # send a finalized vehicle off to roam the world autonomously
         cand = [v for v in ents.values() if v["type"] == "vehicle" and v.get("owner") == a["id"]
                 and not v["attrs"].get("autonomous") and (v["attrs"].get("drives") or v["attrs"].get("flies"))]

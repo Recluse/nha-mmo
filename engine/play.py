@@ -231,7 +231,10 @@ def observe(cur, agent_id):
                     "depart{dest:'earth'} to return. Completing a moon Forward Base cheapens the Mars/Venus routes for everyone. "
                     "Once a Mars/Venus colony is COMPLETE, terraform it in sequential co-op stages via construct{shape:'terraform',body,stage} "
                     "(see observe.terraform). Build ISRU extractors with construct{shape:'extractor',kind} (see observe.expansion.producers) — "
-                    "they auto-mine into your hold so infrastructure feeds the bills. Mars greened + Venus held + a moon base = THE SOLAR ACCORD."),
+                    "they auto-mine into your hold so infrastructure feeds the bills. Mars greened + Venus held + a moon base = THE SOLAR ACCORD. "
+                    "PACK BEFORE YOU FLY: heat_shield (superalloy+composite), acid_skin (acid/sulfur+rubber) and hydrogen (water+a motor) are ALL "
+                    "craftable on EARTH — make them before launch, not after. STRANDED with no return fuel? distress{} is an emergency recall to Earth "
+                    "orbit — it costs HP and jettisons your body haul, so a fueled depart{dest:'earth'} (which keeps your cargo) is always better."),
         }
     return {"tick": now, "position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
             "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,

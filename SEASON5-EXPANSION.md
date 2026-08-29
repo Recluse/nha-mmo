@@ -546,3 +546,17 @@ Here is the adversarial review.
 - **Phase 6 (canonical `location`): GO, correctly deferred.** Keeping it last and re-fingerprinted in isolation is the right call. Guard against the attr-sprawl it's meant to clean up by freezing the Section 3.4 field set as the plan says.
 
 **Bottom line:** the engine-fit and determinism engineering are genuinely strong and the physics is more honest than most shipped games. The design's weak points are all at the *system-interaction* seams — a dominated Mars (R1), a fuel-selection footgun (R2/R3), and two hard economic dead-ends (R4 Venus water, R5 hydrogen) that the plan currently defers to "balance passes" but which actually gate the endgame. None are fatal; all are fixable with constant/source changes before the phase that needs them. **Verdict: go on Phase 0 now, go on Phase 1 after the three constant fixes, and treat R4/R5 as blocking prerequisites for Phases 3–4 rather than open questions.**
+
+---
+
+## POST-LAUNCH ADDITIONS (2026-08-29, after the era flip)
+
+Small hardening + polish landed once Season 5 went live, in response to the owner's backlog pick "1, 2, 6, 9":
+
+- **L2 strand-recovery — the `distress` verb (engine).** A landed agent that runs out of return fuel at a body never dies (no combat/starvation there), so it was a permanent dead-end. `distress{}` is a last-resort emergency recall: from any off-Earth location (surface / body orbit / mid-transit) it snaps the agent back to EARTH ORBIT (mirrors the arrive-at-Earth state), at a real cost — a modest, always-survivable **−20 HP** (floored at 1, a rescue never downs you) and **jettison of the exotic body haul** (`EXPANSION_CARGO`: c_regolith/stickney_glass/void_pumice/mars_regolith/perchlorate/mars_ice/nanohematite/cloud_acid). A fueled `depart{dest:'earth'}` is always strictly better (it keeps the cargo), so distress is a safety net, not a shortcut. Intent-driven and dormant under the seed → determinism fingerprint `9922767f180849f0` preserved (verified via a dedicated twice-run replay test). Surfaced in `observe.expansion.how` and the agent SYSTEM prompt.
+
+- **Earth-prep discoverability (L3 — no code fix needed).** Audit item L3 ("make heat_shield/acid_skin/hydrogen craftable on Earth") turned out already satisfied: `sulfur` (mineral) and `oil` are on the Earth map, so **heat_shield** (superalloy+composite), **acid_skin** (acid/sulfur+rubber) and **hydrogen** (water+a motor, no metals) all resolve from Earth-available inputs. The real gap was *discoverability* — agents didn't know to pack them before launch. Added an explicit "PACK BEFORE YOU FLY" line to `observe.expansion.how` and the SYSTEM prompt.
+
+- **Baron early-game speedup (agents/miner.py).** The credit-rich scripted barons (Miner/Prospector, ~1.2M cr) were slow-*mining* the base rocket's bulk `metal` instead of buying it. Added `_buy_if_short` so both the basic-rocket builder (`build_act`) and the ion-ship part builder (`_ion_part_step`) BUY `metal` from the depot when short (crystal is still mined — not depot-buyable). Shortens the long ground→orbit ramp before the iridium run. Agent-side only (no determinism impact).
+
+- **Richer converter 3D models (dashboard.html).** The three Phase-5 converters got function-distinct geometry on their planet-view models: **sabatier** (horizontal reaction drum + distillation column + a lit methalox flare), **scrubber** (filter housing + swappable canister + a pale-blue O₂ sphere + intake grille), **bosch** (catalyst drum + a blue water sphere + condenser coils + feed drip). Pure frontend.

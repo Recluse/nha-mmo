@@ -168,8 +168,12 @@ def build_act(obs):
         crystal_need = 1 if part in ("engine", "cockpit") else 0
         crystal_need += 2 if part == "jet" else 0
         # check we can afford base metal/crystal + one of each upgrade item
+        if int(inv.get("metal", 0)) < base_metal:
+            b = _buy_if_short(inv, "metal", base_metal)   # rich baron: buy the bulk metal instead of slow-mining it
+            if b:
+                return b
         if int(inv.get("metal", 0)) < base_metal or int(inv.get("crystal", 0)) < crystal_need:
-            return None    # can't afford this part right now → fall back to mining/selling to restock
+            return None    # still short (crystal isn't buyable → mine it) → fall back to mining/selling to restock
         if not all(int(inv.get(u, 0)) >= 1 for u in ups):
             return None    # upgrade item not ready (will be crafted on a later turn) → mine meanwhile
         args = {"part": part}
@@ -302,6 +306,14 @@ def _depot_has(item):
         return False
 
 
+def _buy_if_short(inv, item, need):
+    """The credit-rich baron BUYS a depot raw instead of slow-mining it (speeds the early rocket). None if not buyable/short."""
+    have = int(inv.get(item, 0))
+    if have >= need or item not in BUYABLE or not _depot_has(item):
+        return None
+    return "buy", {"resource": item, "n": max(1, min(need - have + 4, 50))}   # shortfall + a small buffer (varied n dodges the loop-guard)
+
+
 def _orbital_ship(obs):
     for v in obs.get("vehicles", []) or []:
         if v.get("orbital_engine"):
@@ -359,6 +371,10 @@ def _ion_part_step(obs):
             continue
         base_metal = {"cockpit": 4, "frame": 5, "jet": 10, "fuel_tank": 3, "wing": 4, "tail": 2, "landing_gear": 3}.get(part, 5)
         crystal = (1 if part == "cockpit" else 0) + (2 if part == "jet" else 0)
+        if int(inv.get("metal", 0)) < base_metal:
+            b = _buy_if_short(inv, "metal", base_metal)   # buy the ion-ship's bulk metal too (crystal still mined)
+            if b:
+                return b
         if int(inv.get("metal", 0)) < base_metal or int(inv.get("crystal", 0)) < crystal:
             return None
         if not all(int(inv.get(u, 0)) >= 1 for u in ups):
