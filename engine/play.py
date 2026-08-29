@@ -48,8 +48,9 @@ def observe(cur, agent_id):
                 "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL", (agent_id,))
     loose = [r["part"] for r in cur.fetchall()]
     cur.execute("SELECT attrs->>'name' name, (attrs->>'drives')::bool drives, (attrs->>'flies')::bool flies, "
-                "attrs->>'v_ground' vg, attrs->>'v_air' va FROM entities "
-                "WHERE type='vehicle' AND owner=%s", (agent_id,))
+                "attrs->>'v_ground' vg, attrs->>'v_air' va, "
+                "COALESCE((attrs->>'orbital_engine')::bool,false) orbital_engine, (attrs->>'fuel_cap')::int fuel_cap "   # EXPANSION: is this an interplanetary (ion) ship + its tankage
+                "FROM entities WHERE type='vehicle' AND owner=%s", (agent_id,))
     vehicles = [dict(r) for r in cur.fetchall()]
     cur.execute("SELECT id,side,resource,qty,price FROM market_orders "
                 "WHERE agent=%s AND status='open' ORDER BY id", (agent_id,))

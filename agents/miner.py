@@ -226,12 +226,12 @@ def asteroid_act(obs):
 
 
 # ----------------------------- PHASE 4: return home + sell the haul -----------------------------
-def return_act(obs):
-    """Once we're carrying space loot, descend and (on the ground) sell the iridium/nickel haul."""
+def return_act(obs, loot=SPACE_LOOT):
+    """Once we're carrying space loot, descend and (on the ground) sell the haul (kept-back resources excluded)."""
     alt = int(obs.get("altitude", 0) or 0)
     if alt > 0:
         return "land", {}                                    # controlled descent (-40/tick)
-    for r in SPACE_LOOT:                                     # home — cash in the rare ores
+    for r in loot:                                           # home — cash in the rare ores
         if _have(obs, r) >= 3:
             return "sell", {"resource": r, "n": min(random.randint(4, 12), _have(obs, r))}
     return None
@@ -241,9 +241,14 @@ def return_act(obs):
 def act(obs):
     """Pick the phase from the observation, run its handler, and ALWAYS fall back to the ground baseline if a
     space step is unavailable this turn (None) — so the bot is never stuck and the loop-guard never bites."""
-    # if we're back on the ground holding space loot, cash it in first (RETURN tail).
-    if int(obs.get("altitude", 0) or 0) == 0 and any(_have(obs, r) >= 3 for r in SPACE_LOOT):
-        out = return_act(obs)
+    ex = expand_act(obs)   # EXPANSION ERA: forge an ion ship + fly to Mars once able; None → run the normal miner
+    if ex is not None:
+        return ex
+    # In the Expansion era, HOARD iridium for the ion_thruster — sell only nickel; else sell both.
+    loot = ("nickel",) if obs.get("expansion") else SPACE_LOOT
+    # if we're back on the ground holding sellable space loot, cash it in first (RETURN tail).
+    if int(obs.get("altitude", 0) or 0) == 0 and any(_have(obs, r) >= 3 for r in loot):
+        out = return_act(obs, loot)
         if out:
             return out
 
@@ -256,13 +261,162 @@ def act(obs):
     }.get(phase, ground_act)
 
     # In orbit but already loaded up? Head home instead of mining forever.
-    if phase == "ASTEROID" and any(_have(obs, r) >= 12 for r in SPACE_LOOT):
-        return return_act(obs) or ground_act(obs)
+    if phase == "ASTEROID" and any(_have(obs, r) >= 12 for r in loot):
+        return return_act(obs, loot) or ground_act(obs)
 
     out = handler(obs)
     if out is None:                       # space step not actionable this turn → degrade to mining
         out = ground_act(obs)
     return out
+
+
+# ======================= EXPANSION (Season 5): forge an ion ship and fly to Mars =======================
+# Once the era supports it (obs.expansion present), the rich shахтёр doesn't just sell iridium — it walks the
+# VALIDATED ion-ship craft chain, builds an interplanetary ship, flies to Mars and founds a colony. The early
+# game (reach orbit + mine iridium) is still the existing phase machine; this takes over once iridium is in hand.
+_LAST_DEPOT = None
+ION_PARTS = [("cockpit", ["chip"]), ("frame", ["composite"]), ("jet", ["ion_thruster"]),
+             ("fuel_tank", ["steel"]), ("fuel_tank", ["steel"]), ("wing", ["composite"]), ("tail", []), ("landing_gear", [])]
+EXP_RECIPES = {   # item -> recipe inputs (all verified against crafting.RULES). No recipe => a raw (buy or mine).
+    "composite": {"aluminum": 1, "carbon": 1}, "steel": {"iron": 1, "coal": 1}, "wire": {"copper": 1},
+    "chip": {"silicon": 1, "copper": 1}, "magnet": {"iron": 1}, "electrolyte": {"salt": 1, "water": 1},
+    "battery": {"copper": 1, "iron": 1, "electrolyte": 1}, "motor": {"magnet": 1, "wire": 1, "battery": 1},
+    "ion_thruster": {"iridium": 1, "motor": 1, "chip": 1}, "cryo_fuel": {"ice": 1, "coal": 1},
+    "superalloy": {"steel": 1, "titanium": 1, "coal": 1}, "heat_shield": {"superalloy": 1, "composite": 1},
+}
+BUYABLE = ("iron", "copper", "coal", "carbon", "salt", "water", "ice", "metal", "ore", "oil")
+EXP_FUEL = 160        # cryo_fuel to load for the Mars Δv (need 100 + correction margin)
+EXP_IRIDIUM = 2
+# crafted items the ship-build + trip consumes (net targets; the resolver crafts their sub-chain bottom-up)
+EXP_TARGETS = [("metal", 40), ("crystal", 3), ("ion_thruster", 1), ("chip", 1), ("composite", 2), ("steel", 2), ("heat_shield", 1)]
+
+
+def _depot_has(item):
+    try:
+        return item in ((_LAST_DEPOT or {}).get("prices") or {})
+    except Exception:
+        return False
+
+
+def _orbital_ship(obs):
+    for v in obs.get("vehicles", []) or []:
+        if v.get("orbital_engine"):
+            return v
+    return None
+
+
+def _make(inv, item, qty, book):
+    """First actionable step toward having qty of `item`: ('acquire',raw,n) | ('combine',item,n) | None(satisfied).
+    `book` tracks inventory already earmarked so shared inputs (e.g. a chip used by both cockpit and ion_thruster)
+    aren't double-counted."""
+    have = max(0, int(inv.get(item, 0)) - book.get(item, 0))
+    use = min(have, qty); book[item] = book.get(item, 0) + use
+    if use >= qty:
+        return None
+    short = qty - use
+    rec = EXP_RECIPES.get(item)
+    if not rec:
+        return ("acquire", item, short)
+    for r, c in rec.items():
+        s = _make(inv, r, c * short, book)
+        if s:
+            return s
+    book[item] = book.get(item, 0) + short
+    return ("combine", item, short)
+
+
+def _bom_step(inv, targets):
+    """Resolve the bill of materials → the next (verb,args) to progress, or None when every target is satisfied."""
+    book = {}
+    for item, qty in targets:
+        s = _make(inv, item, qty, book)
+        if not s:
+            continue
+        kind, it, n = s
+        if kind == "combine":
+            return "combine", {"ingredients": dict(EXP_RECIPES[it]), "n": max(1, min(n, 20)), "name": f"{it}{random.randint(0, 999)}"}
+        if it in BUYABLE and _depot_has(it):
+            return "buy", {"resource": it, "n": max(1, min(n, 50))}
+        if random.random() < 0.25:                 # a mineable raw — sometimes roam to find a fresh vein…
+            return "move", {"dx": random.randint(-4, 4), "dy": random.randint(-4, 4)}
+        return "mine", {"resource": it, "n": random.randint(4, 7)}   # …else mine it (engine walks to the nearest; varied n dodges the loop-guard)
+    return None
+
+
+def _ion_part_step(obs):
+    """Build the ION_PARTS one at a time (their crafted upgrade items are made by the BOM phase), then finalize."""
+    loose = list(obs.get("loose_parts", []) or [])
+    inv = _inv(obs)
+    want = {}
+    for p, _u in ION_PARTS:
+        want[p] = want.get(p, 0) + 1
+    for part, ups in ION_PARTS:
+        if loose.count(part) >= want[part]:
+            continue
+        base_metal = {"cockpit": 4, "frame": 5, "jet": 10, "fuel_tank": 3, "wing": 4, "tail": 2, "landing_gear": 3}.get(part, 5)
+        crystal = (1 if part == "cockpit" else 0) + (2 if part == "jet" else 0)
+        if int(inv.get("metal", 0)) < base_metal or int(inv.get("crystal", 0)) < crystal:
+            return None
+        if not all(int(inv.get(u, 0)) >= 1 for u in ups):
+            return None
+        a = {"part": part}
+        if ups:
+            a["with"] = list(ups)
+        return "build", a
+    if not _orbital_ship(obs):
+        return "finalize", {"name": "марсианский клипер"}
+    return None
+
+
+def _colonize(obs, exp):
+    """On a body: fund the colony with whatever we hold, else mine the body's own resources to fund it."""
+    inv = _inv(obs); body = exp.get("at_body")
+    col = obs.get("colony") or {}
+    if col and not col.get("complete"):
+        for m in col.get("modules", []) or []:
+            if m.get("complete"):
+                continue
+            for r in (m.get("need") or {}):
+                if int(inv.get(r, 0)) >= 1 and int((m.get("remaining") or {}).get(r, 0)) > 0:
+                    return "construct", {"shape": "colony", "body": body, "module": m["module"]}
+    return "mine", {"n": 6}   # accumulate the body's unique resources (perchlorate/mars_ice/…)
+
+
+def expand_act(obs):
+    """The Mars pipeline. Returns the next action, or None to defer to the normal miner (early game / waiting)."""
+    exp = obs.get("expansion")
+    if not exp:
+        return None
+    inv = _inv(obs)
+    if exp.get("at_body"):
+        return _colonize(obs, exp)
+    if exp.get("at_body_orbit"):
+        return "land_body", {}
+    if exp.get("transit"):
+        return None   # mid-flight — nothing to do
+    alt = int(obs.get("altitude", 0) or 0); in_space = bool(obs.get("in_space"))
+    ship = _orbital_ship(obs)
+    if ship:
+        if in_space and 300 <= alt <= 600:
+            fuel = sum(int(inv.get(f, 0)) for f in ("cryo_fuel", "methalox", "helium3"))
+            win = (exp.get("windows", {}) or {}).get("mars", {}) or {}
+            if fuel >= EXP_FUEL and int(inv.get("heat_shield", 0)) >= 1 and win.get("open"):
+                return "depart", {"dest": "mars"}
+            return None   # ship ready — wait for the launch window (miner mines an asteroid meanwhile)
+        step = _bom_step(inv, [("cryo_fuel", EXP_FUEL), ("heat_shield", 1)])   # top up fuel + heat_shield on the ground
+        if step:
+            return step
+        if sum(int(inv.get(f, 0)) for f in FUELS) >= 1 or int(inv.get("helium3", 0)) >= 1 or int(inv.get("cryo_fuel", 0)) >= 1:
+            return "launch", {}   # climb to orbit
+        return None
+    if int(inv.get("iridium", 0)) < EXP_IRIDIUM:
+        return None   # need iridium first → the miner's asteroid phase supplies it
+    if in_space:      # have iridium but up in orbit → come home; the depot + crafting are ground-side
+        return "land", {}
+    step = _bom_step(inv, EXP_TARGETS)
+    if step:
+        return step
+    return _ion_part_step(obs)
 
 
 def main():
@@ -281,6 +435,8 @@ def main():
             # the phase machine and only do reaction-chatter, so a trade/chat never derails a launch or a dock.
             if int(obs.get("altitude", 0) or 0) == 0:
                 depot = runner.api("/depot")
+                global _LAST_DEPOT
+                _LAST_DEPOT = depot          # EXPANSION: expand_act buys chain raws from here (the baron is rich)
                 # a rich shахтёр BANKROLLS the station: skim surplus credits into its neediest line (throttled) before mining
                 binv = runner.baron_invest(obs, aid)
                 if binv:
