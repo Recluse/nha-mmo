@@ -90,6 +90,7 @@ def _run_once(n):
     return chain
 
 
+@pytest.mark.integration
 def test_tick_chain_is_deterministic_and_evolving():
     """Same seed → identical tick_hash chain (replay-safe), and the chain actually changes tick-to-tick
     (so the maintenance systems are genuinely exercised, not a static no-op world)."""

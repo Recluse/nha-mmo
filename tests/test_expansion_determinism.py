@@ -110,6 +110,7 @@ def _run_once(n):
     return chain, pj
 
 
+@pytest.mark.integration
 def test_expansion_tick_chain_is_deterministic():
     """The Season-5 expansion paths (dust-storm mining, colony funding, transit, dock→depart) replay to an
     IDENTICAL tick_hash chain from the same seed, and the chain evolves."""
