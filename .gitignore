@@ -9,3 +9,6 @@ github-token
 gemini
 gemini-all
 agents/logs/
+.coverage
+.pytest_cache/
+.pip-cache/
