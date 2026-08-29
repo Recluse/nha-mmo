@@ -2491,13 +2491,14 @@ def universe_broadcast(ents, cur, t, events):
         return
     cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # to_jsonb → NULL (not error) if the era column is absent on a restored DB
     erow = cur.fetchone()
-    is_space = bool(erow and (erow.get("era") or "") == "space")
+    era = (erow.get("era") or "") if erow else ""
+    is_space = (era == "space"); is_expansion = (era == "expansion")
     uni = next((e for e in ents.values() if e["type"] == "universe"), None)
     uid = uni["id"] if uni else new_entity(ents, cur, "universe", 0, 0, None, {"name": "🌌 THE UNIVERSE"})
     if t % 1800 == 0:                                          # the standing decree, hourly (unchanged cadence)
-        decree = SPACE_ERA_DECREE if is_space else GIGACHRUSCH_DECREE
+        decree = EXPANSION_ERA_DECREE if is_expansion else (SPACE_ERA_DECREE if is_space else GIGACHRUSCH_DECREE)
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, decree))
-    elif is_space:                                             # offset +900: the Great A'Tuin Question (space era only) — kicks off the cosmonauts' debate
+    elif is_space or is_expansion:                            # offset +900: the Great A'Tuin Question (space AND expansion eras) — kicks off the cosmonauts' debate
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, ATUIN_QUESTION))
 
 def grow_trees(by_type, t):
