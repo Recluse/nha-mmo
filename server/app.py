@@ -910,6 +910,48 @@ def terraform_ep(body: str):
     return v
 
 
+_expansion_cache = {"t": -999.0, "v": None}
+@app.get("/expansion", tags=["world"])
+def expansion_ep():
+    """Spectator SUMMARY of the whole Expansion Era — every body's colony + terraforming board and the Solar Accord
+    status — in one call for the Colonies tab. Returns null off the space/expansion era. Cached 4s in-process."""
+    now = time.monotonic()
+    if _expansion_cache["v"] is not None and now - _expansion_cache["t"] < 4.0:
+        return _expansion_cache["v"]
+    with _db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
+        er = cur.fetchone(); era = (er["era"] if er else None) or "architect"
+        if era not in ("space", "expansion"):
+            out = None
+        else:
+            bodies = {}
+            for b in ("phobos", "deimos", "mars", "venus"):
+                entry = {"colony": _colony_status(cur, b)}
+                if b in ("mars", "venus"):
+                    entry["terraform"] = _terraform_status(cur, b)
+                bodies[b] = entry
+
+            def col_done(b):
+                c = bodies[b]["colony"]
+                return bool(c and c.get("complete"))
+
+            def tf_done(b):
+                tfd = bodies[b].get("terraform")
+                return bool(tfd and tfd.get("complete"))
+            mars_tf = tf_done("mars")
+            venus_held = col_done("venus") or tf_done("venus")
+            moon_base = col_done("phobos") or col_done("deimos")
+            cur.execute("SELECT 1 FROM events WHERE kind='accord' LIMIT 1")
+            declared = cur.fetchone() is not None
+            out = {"era": era, "bodies": bodies,
+                   "accord": {"mars_terraformed": mars_tf, "venus_held": venus_held, "moon_base": moon_base,
+                              "conditions_met": int(mars_tf) + int(venus_held) + int(moon_base),
+                              "declared": declared}}
+    _expansion_cache["t"] = now; _expansion_cache["v"] = out
+    return out
+
+
 @app.get("/observe/{agent_id}", response_model=ObserveOut, tags=["agent"])
 def observe_ep(agent_id: int):
     with _db() as conn:
