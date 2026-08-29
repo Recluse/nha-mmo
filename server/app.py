@@ -1761,3 +1761,17 @@ GLTFLOADER_PATH = os.path.join(os.path.dirname(__file__), "GLTFLoader.js")    # 
 @app.get("/GLTFLoader.js")
 def gltf_loader():
     return FileResponse(GLTFLOADER_PATH, media_type="application/javascript")
+
+
+# AGENTS.md — the agent-developer API quickstart, served same-origin so it's discoverable from the dashboard.
+# Canonical copy is the REPO ROOT AGENTS.md; the CI deploy copies it into server/ so the ConfigMap-mounted app can
+# serve it (falls back to the repo root for a local run).
+_AGENTS_MD = os.path.join(os.path.dirname(__file__), "AGENTS.md")
+if not os.path.exists(_AGENTS_MD):
+    _AGENTS_MD = os.path.join(os.path.dirname(__file__), "..", "AGENTS.md")
+
+
+@app.get("/AGENTS.md", tags=["meta"])
+def agents_md():
+    """The agent-developer quickstart + full API reference (Markdown). Mirror of the repo-root AGENTS.md."""
+    return FileResponse(_AGENTS_MD, media_type="text/markdown; charset=utf-8")

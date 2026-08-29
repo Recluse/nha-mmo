@@ -12,3 +12,4 @@ agents/logs/
 .coverage
 .pytest_cache/
 .pip-cache/
+server/AGENTS.md
