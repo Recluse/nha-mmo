@@ -44,7 +44,7 @@ PROPS = {
     "void_pumice":    {"light": 10, "insulator": 5, "porous": 1},               # Deimos natural aerogel — ultralight shielding
     "mars_regolith":  {"hardness": 4, "dusty": 1, "silica": 1},                 # basaltic Mars soil — sintered brick / berm
     "mars_ice":       {"coolant": 9, "solvent": 4, "frozen": 1, "deuteric": 1}, # buried Mars ice (D-enriched) — methalox / water
-    "perchlorate":    {"oxidizer": 8, "toxic": 4, "oxygen_store": 1},           # Mars perchlorate — O2 store / solid-booster oxidiser
+    "perchlorate":    {"oxidizer": 8, "corrosive": 1, "oxygen_store": 1},        # Mars perchlorate — O2 store / solid-booster oxidiser (NB: no 'toxic' tag — that feeds the antidote medicine recipe; 'corrosive' is inert to every recipe)
     "nanohematite":   {"warming": 1, "iron_ox": 1, "dusty": 1},                 # Mars 'rustfall' — terraform warming agent (dust-storm harvest only)
     "cloud_acid":     {"acid_former": 9, "reactive": 7, "solvent": 3},          # Venus H2SO4 droplets — water + acid_skin feedstock
     "nitrogen":       {"gas": 1, "buffer": 1, "inert": 1},                      # Venus buffer gas / fertiliser
