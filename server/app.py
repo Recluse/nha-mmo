@@ -855,7 +855,9 @@ def _terraform_status(cur, body):
            "index": (srow["attrs"].get("index") if srow else dict(engine.TERRAFORM_INDEX0[body])),
            "stages_total": len(defs), "stages_done": 0, "stages": []}
     prev_done = True
-    for i, (key, label, need, bumps) in enumerate(defs):
+    for i, sdef in enumerate(defs):
+        key, label, need, bumps = sdef[0], sdef[1], sdef[2], sdef[3]
+        sustain = sdef[4] if len(sdef) > 4 else 0
         m = live.get(key, {}); have = m.get("have", {})
         is_flag = (i == len(defs) - 1)
         done = bool(m.get("complete"))
@@ -864,6 +866,7 @@ def _terraform_status(cur, body):
             "flagship": is_flag,
             "cap_pct_per_agent": (engine.TERRAFORM_FLAG_CAP if is_flag else engine.TERRAFORM_CAP),
             "min_funders": (engine.TERRAFORM_FLAG_MIN if is_flag else engine.TERRAFORM_MIN),
+            "sustain": sustain, "sustain_done": int(m.get("sustain_n", 0)),   # sustained-power stages: power funded on N of `sustain` distinct ticks
             "have": {r: int(have.get(r, 0)) for r in need},
             "remaining": {r: need[r] - int(have.get(r, 0)) for r in need if int(have.get(r, 0)) < need[r]},
             "funders": len(m.get("contrib", {})), "complete": done,

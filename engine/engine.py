@@ -290,19 +290,23 @@ TERRAFORM_STAGE_REWARD = 400       # points pool split among a stage's funders o
 TERRAFORM_WIN_REWARD = {"mars": 3000, "venus": 8000}
 TERRAFORM_TITLE = {"mars": "Areoformer", "venus": "Terran of Venus"}
 ACCORD_POOL = 10000                # THE SOLAR ACCORD mega-pool, split across every qualifying-board funder
-# each stage: (key, label, need, {index_stat: +bump}); the LAST stage in a body's list is the flagship (tighter floor + the win)
+# SUSTAINED-POWER stages ("1000 MWe × 50 yr"): beyond the resource bill, a `power` item must be funded on ≥`sustain`
+# DISTINCT ticks — cooperation across TIME, not a one-tick dump. Any POWER_ITEM counts; one distinct-tick credit per tick.
+POWER_ITEMS = ("battery", "energy_cell", "cryo_fuel", "helium3", "methalox")   # a "unit of power" — an agent funds 1 to sustain the stage
+SUSTAIN_TICKS = 50
+# each stage: (key, label, need, {index_stat: +bump}, sustain_ticks); the LAST stage in a body's list is the flagship (tighter floor + the win)
 TERRAFORM_STAGES = {
     "mars": [
-        ("warm",      "Warm the Poles",         {"nanohematite": 400, "co2": 600, "glass": 400, "aluminum": 500, "composite": 300}, {"warmth": 1}),
-        ("thicken",   "Thicken the Atmosphere", {"co2": 1200, "nitrogen": 500, "o2": 400, "perchlorate": 400, "mars_brick": 300},   {"pressure": 1}),
-        ("water",     "Liquid Water",           {"ice": 1600, "mars_ice": 800, "iridium": 120, "nickel": 300, "superalloy": 200},   {"water": 1}),
-        ("biosphere", "Seed the Biosphere",     {"algae": 800, "herb": 600, "o2": 1000, "ice": 700},                                {"biosphere": 1}),
+        ("warm",      "Warm the Poles",         {"nanohematite": 400, "co2": 600, "glass": 400, "aluminum": 500, "composite": 300}, {"warmth": 1}, SUSTAIN_TICKS),
+        ("thicken",   "Thicken the Atmosphere", {"co2": 1200, "nitrogen": 500, "o2": 400, "perchlorate": 400, "mars_brick": 300},   {"pressure": 1}, 0),
+        ("water",     "Liquid Water",           {"ice": 1600, "mars_ice": 800, "iridium": 120, "nickel": 300, "superalloy": 200},   {"water": 1}, SUSTAIN_TICKS),
+        ("biosphere", "Seed the Biosphere",     {"algae": 800, "herb": 600, "o2": 1000, "ice": 700},                                {"biosphere": 1}, 0),
     ],
     "venus": [
-        ("sunshade",  "Sun–Venus L1 Sunshade",  {"composite": 800, "glass": 600, "aluminum": 800, "acid_skin": 300},               {"temperature": 1}),
-        ("freeze",    "Freeze Out the CO₂",     {"cloud_acid": 600, "nitrogen": 600, "graphite": 500, "crystal": 400},             {"pressure": 1}),
-        ("oceans",    "Import Hydrogen → Oceans", {"hydrogen": 1000, "mars_ice": 1200, "graphite": 600, "ice": 600},               {"water": 1}),
-        ("soletta",   "Soletta Day/Night Ring", {"composite": 1000, "glass": 800, "crystal": 700, "iridium": 150},                {"light": 1}),
+        ("sunshade",  "Sun–Venus L1 Sunshade",  {"composite": 800, "glass": 600, "aluminum": 800, "acid_skin": 300},               {"temperature": 1}, 0),
+        ("freeze",    "Freeze Out the CO₂",     {"cloud_acid": 600, "nitrogen": 600, "graphite": 500, "crystal": 400},             {"pressure": 1}, 0),
+        ("oceans",    "Import Hydrogen → Oceans", {"hydrogen": 1000, "mars_ice": 1200, "graphite": 600, "ice": 600},               {"water": 1}, SUSTAIN_TICKS),
+        ("soletta",   "Soletta Day/Night Ring", {"composite": 1000, "glass": 800, "crystal": 700, "iridium": 150},                {"light": 1}, 0),
     ],
 }
 TERRAFORM_INDEX0 = {"mars": {"warmth": 0, "pressure": 0, "water": 0, "biosphere": 0},
@@ -1509,6 +1513,7 @@ def apply_intent(it, ents, cur, t, events):
             if stg.get("complete"):
                 return "rejected", f"the {stages_def[si][1]} stage is already complete — fund the next stage"
             need = stages_def[si][2]; bumps = stages_def[si][3]
+            sustain = stages_def[si][4] if len(stages_def[si]) > 4 else 0   # distinct-tick power-funding requirement (0 = none)
             is_flag = (si == len(keys) - 1)              # the last stage is the flagship (tighter floor + the planetary win)
             cap_frac = TERRAFORM_FLAG_CAP if is_flag else TERRAFORM_CAP
             min_contrib = TERRAFORM_FLAG_MIN if is_flag else TERRAFORM_MIN
@@ -1527,16 +1532,29 @@ def apply_intent(it, ents, cur, t, events):
                     contrib.setdefault(aid, {})[r] = already + give
                     ct[aid] = int(ct.get(aid, 0)) + give
                     moved[r] = give
+            if sustain:                                  # SUSTAINED POWER: one distinct-tick credit per tick, funded by any POWER_ITEM
+                pw = next((p for p in POWER_ITEMS if get(a, p) >= 1), None)
+                if pw and int(stg.get("sustain_last", -1)) != t and int(stg.get("sustain_n", 0)) < sustain:
+                    addb(a, pw, -1)
+                    stg["sustain_n"] = int(stg.get("sustain_n", 0)) + 1
+                    stg["sustain_last"] = t
+                    contrib.setdefault(aid, {})[pw] = int(contrib.get(aid, {}).get(pw, 0)) + 1   # power funders count toward the funder gate + reward split
+                    ct[aid] = int(ct.get(aid, 0)) + 1
+                    moved[pw] = int(moved.get(pw, 0)) + 1
             if not moved:
                 short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
-                return "rejected", (f"funded nothing to '{stages_def[si][1]}' — it still needs {short}. "
+                sx = f" + power on {sustain - int(stg.get('sustain_n', 0))} more distinct ticks (fund a battery/cryo_fuel/helium3)" if sustain and int(stg.get("sustain_n", 0)) < sustain else ""
+                return "rejected", (f"funded nothing to '{stages_def[si][1]}' — it still needs {short}{sx}. "
                                     f"You may be at your {cap_frac}% per-resource cap (this stage needs ≥{min_contrib} funders), or hold none of these.")
             msg = f"funded {moved} to {BODY_LABEL[body]} Terraform · {stages_def[si][1]}"
+            if sustain:
+                msg += f" [sustained power {int(stg.get('sustain_n', 0))}/{sustain} ticks]"
             imm = sum(moved.values()) // 10
             if imm > 0:
                 a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
                 msg += f" — +{imm} pts now"
-            if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= min_contrib and not stg.get("complete"):
+            if (all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= min_contrib
+                    and (not sustain or int(stg.get("sustain_n", 0)) >= sustain) and not stg.get("complete")):
                 stg["complete"] = True
                 for stat, d in bumps.items():            # bump the monotonic planetary index (integer, no drift)
                     tf["attrs"]["index"][stat] = int(tf["attrs"]["index"].get(stat, 0)) + d
