@@ -285,10 +285,13 @@ EXP_RECIPES = {   # item -> recipe inputs (all verified against crafting.RULES).
     "superalloy": {"steel": 1, "titanium": 1, "coal": 1}, "heat_shield": {"superalloy": 1, "composite": 1},
 }
 BUYABLE = ("iron", "copper", "coal", "carbon", "salt", "water", "ice", "metal", "ore", "oil")
-EXP_FUEL = 160        # cryo_fuel to load for the Mars Δv (need 100 + correction margin)
+EXP_DEST = os.environ.get("MINER_DEST", "phobos")   # colonise a MOON first — its Forward Base needs only 2 funders, so two barons can COMPLETE it (Mars needs 3)
+EXP_HS = EXP_DEST in ("mars", "venus")              # only Mars/Venus need a heat_shield; moons don't
+EXP_FUEL = 120        # cryo_fuel to load — plenty for the moon Δv (55) + correction margin
 EXP_IRIDIUM = 2
-# crafted items the ship-build + trip consumes (net targets; the resolver crafts their sub-chain bottom-up)
-EXP_TARGETS = [("metal", 40), ("crystal", 3), ("ion_thruster", 1), ("chip", 1), ("composite", 2), ("steel", 2), ("heat_shield", 1)]
+# crafted items the ship-build consumes (net targets; the resolver crafts their sub-chain bottom-up). heat_shield only for planets.
+EXP_TARGETS = ([("metal", 40), ("crystal", 3), ("ion_thruster", 1), ("chip", 1), ("composite", 2), ("steel", 2)]
+               + ([("heat_shield", 1)] if EXP_HS else []))
 
 
 def _depot_has(item):
@@ -399,11 +402,11 @@ def expand_act(obs):
     if ship:
         if in_space and 300 <= alt <= 600:
             fuel = sum(int(inv.get(f, 0)) for f in ("cryo_fuel", "methalox", "helium3"))
-            win = (exp.get("windows", {}) or {}).get("mars", {}) or {}
-            if fuel >= EXP_FUEL and int(inv.get("heat_shield", 0)) >= 1 and win.get("open"):
-                return "depart", {"dest": "mars"}
+            win = (exp.get("windows", {}) or {}).get(EXP_DEST, {}) or {}
+            if fuel >= EXP_FUEL and (not EXP_HS or int(inv.get("heat_shield", 0)) >= 1) and win.get("open"):
+                return "depart", {"dest": EXP_DEST}
             return None   # ship ready — wait for the launch window (miner mines an asteroid meanwhile)
-        step = _bom_step(inv, [("cryo_fuel", EXP_FUEL), ("heat_shield", 1)])   # top up fuel + heat_shield on the ground
+        step = _bom_step(inv, [("cryo_fuel", EXP_FUEL)] + ([("heat_shield", 1)] if EXP_HS else []))   # top up fuel (+ heat_shield for planets)
         if step:
             return step
         if sum(int(inv.get(f, 0)) for f in FUELS) >= 1 or int(inv.get("helium3", 0)) >= 1 or int(inv.get("cryo_fuel", 0)) >= 1:

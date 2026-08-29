@@ -32,7 +32,9 @@ spec:
         command: ["sh", "-c"]
         args:
         # absolute paths so every backgrounded bot finds its file regardless of cwd (each bot adds /app to sys.path itself)
-        - "python /app/dumb.py & python /app/baryga.py & python /app/woodcutter.py & python /app/miner.py & python /app/varvar_groq.py & wait"
+        # A SECOND miner (Prospector) runs the same proven Expansion pipeline → two barons co-fund the Phobos Forward
+        # Base (a colony needs >=2 distinct funders to complete). Distinct MINER_NAME → its own agent + token.
+        - "python /app/dumb.py & python /app/baryga.py & python /app/woodcutter.py & python /app/miner.py & MINER_NAME=Prospector MINER_DEST=phobos python /app/miner.py & python /app/varvar_groq.py & wait"
         volumeMounts:
         - name: code
           mountPath: /app
