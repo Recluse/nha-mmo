@@ -1696,7 +1696,13 @@ def dashboard():
     return DASHBOARD
 
 
-LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo.png")
+# Binary assets (textures, 3D models, logo) live in the SEPARATE nha-server-static ConfigMap so the code
+# ConfigMap stays small — each ConfigMap has its own hard 1 MiB k8s object cap. In the repo they sit in
+# server/static/; in-cluster a PROJECTED volume flat-merges nha-server-code + nha-server-static into
+# /app/server, so STATIC_DIR resolves correctly either way (no `static` subdir exists in the merged mount).
+_HERE = os.path.dirname(__file__)
+STATIC_DIR = os.path.join(_HERE, "static") if os.path.isdir(os.path.join(_HERE, "static")) else _HERE
+LOGO_PATH = os.path.join(STATIC_DIR, "logo.png")
 
 
 @app.get("/logo.png")
@@ -1704,8 +1710,8 @@ def logo():
     return FileResponse(LOGO_PATH, media_type="image/png")
 
 
-MOON_PATH = os.path.join(os.path.dirname(__file__), "moon.jpg")
-GROUND_PATH = os.path.join(os.path.dirname(__file__), "ground.jpg")
+MOON_PATH = os.path.join(STATIC_DIR, "moon.jpg")
+GROUND_PATH = os.path.join(STATIC_DIR, "ground.jpg")
 
 
 @app.get("/moon.jpg")
@@ -1722,7 +1728,7 @@ def body_texture(body: str):
     404 until a given map is installed beside moon.jpg, so the World tab's tinted-sphere fallback stands in meanwhile."""
     if body not in _TEX_BODIES:
         raise HTTPException(404, "no such texture")
-    p = os.path.join(os.path.dirname(__file__), f"{body}.jpg")
+    p = os.path.join(STATIC_DIR, f"{body}.jpg")
     if not os.path.exists(p):
         raise HTTPException(404, "texture not yet installed")
     return FileResponse(p, media_type="image/jpeg")
@@ -1733,8 +1739,8 @@ def ground_texture():
     return FileResponse(GROUND_PATH, media_type="image/jpeg")
 
 
-TURTLE_PATH = os.path.join(os.path.dirname(__file__), "turtle.glb")       # Great A'Tuin — "Poly by Google", CC-BY 3.0 (via poly.pizza)
-ELEPHANT_PATH = os.path.join(os.path.dirname(__file__), "elephant.glb")   # world-elephant — "Poly by Google", CC-BY 3.0 (via poly.pizza)
+TURTLE_PATH = os.path.join(STATIC_DIR, "turtle.glb")       # Great A'Tuin — "Poly by Google", CC-BY 3.0 (via poly.pizza)
+ELEPHANT_PATH = os.path.join(STATIC_DIR, "elephant.glb")   # world-elephant — "Poly by Google", CC-BY 3.0 (via poly.pizza)
 
 
 @app.get("/turtle.glb")

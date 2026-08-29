@@ -45,4 +45,10 @@ spec:
             limits: {memory: 768Mi}
       volumes:
         - {name: engine, configMap: {name: nha-engine-code}}
-        - {name: server, configMap: {name: nha-server-code}}
+        # server code (text) + static assets (binary) as two ConfigMaps, projected-merged into /app/server
+        # (each under its own 1 MiB cap). Keep in sync with deploy/server.yaml.
+        - name: server
+          projected:
+            sources:
+              - configMap: {name: nha-server-code}
+              - configMap: {name: nha-server-static}

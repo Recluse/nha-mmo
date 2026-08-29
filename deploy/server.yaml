@@ -83,7 +83,14 @@ spec:
             limits: {memory: 1536Mi}                 # 1Gi ловил OOMKilled под нагрузкой (18 и 21 авг); no CPU limit on purpose (avoid throttling /observe under burst)
       volumes:
         - {name: engine, configMap: {name: nha-engine-code}}
-        - {name: server, configMap: {name: nha-server-code}}
+        # server code (text) + static assets (binary) are TWO ConfigMaps, each under its own 1 MiB cap,
+        # flat-merged into /app/server by a projected volume (keys don't collide). Split 2026-08-29 after
+        # the single nha-server-code cm crossed 1 MiB and a mid-deploy replace left it deleted.
+        - name: server
+          projected:
+            sources:
+              - configMap: {name: nha-server-code}
+              - configMap: {name: nha-server-static}
 ---
 # Keep >=1 API pod up during voluntary disruptions (node drain, rollout). Valid only with replicas>=2
 # (a PDB on a single replica would block node/cluster upgrades).
