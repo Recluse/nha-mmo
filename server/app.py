@@ -807,7 +807,7 @@ def _colony_status(cur, body):
         return None
     cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
     erow = cur.fetchone()
-    if not erow or (erow["era"] or "") not in ("space", "expansion"):
+    if not erow or (erow["era"] or "") not in ("space", "expansion", "accord"):
         return None
     cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='colony' AND attrs->>'body'=%s LIMIT 1", (body,))
     srow = cur.fetchone()
@@ -844,7 +844,7 @@ def _terraform_status(cur, body):
         return None
     cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
     erow = cur.fetchone()
-    if not erow or (erow["era"] or "") not in ("space", "expansion"):
+    if not erow or (erow["era"] or "") not in ("space", "expansion", "accord"):
         return None
     cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='terraform' AND attrs->>'body'=%s LIMIT 1", (body,))
     srow = cur.fetchone()
@@ -925,7 +925,7 @@ def expansion_ep():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
         er = cur.fetchone(); era = (er["era"] if er else None) or "architect"
-        if era not in ("space", "expansion"):
+        if era not in ("space", "expansion", "accord"):
             out = None
         else:
             bodies = {}

@@ -202,7 +202,7 @@ def observe(cur, agent_id):
     # station board is null off-season. Lets an agent see where it is (in transit / at a body), which launch windows
     # are open right now, and what each destination costs — so depart{dest}/land_body are actionable from /observe.
     expansion = None
-    if era in ("space", "expansion"):
+    if era in ("space", "expansion", "accord"):
         transit_to = me["transit_to"]; at_body = me["at_body"]; at_orbit = me["at_body_orbit"]
         windows = {b: {"open": window_open(b, now), "dv_need": DV_NEED[b], "transit_ticks": TRANSIT_TICKS[b],
                        "opens_in": (0 if window_open(b, now) else SYNODIC[b] - (now % SYNODIC[b]))} for b in EXPANSION_BODIES}

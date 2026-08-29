@@ -9,6 +9,12 @@ Env: SERVER_URL, BARYGA_NAME, BARYGA_INTERVAL.
 import os, sys, time, random, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # find runner.py regardless of cwd
 import runner   # reuse http/api/SERVER
+# EXPANSION ERA: the Trader is a rich baron too — in the space/expansion era it stops just dealing and JOINS the
+# colonisation effort, reusing the miner's PROVEN build-ship→fly→colonise pipeline. Point it at a body via BARYGA_DEST
+# (default 'phobos' → a 3rd funder on the moon the other two barons target, so the Forward Base completes robustly).
+# MINER_DEST must be set BEFORE importing miner (miner reads it at import to pick EXP_DEST/EXP_HS).
+os.environ.setdefault("MINER_DEST", os.environ.get("BARYGA_DEST", "phobos"))
+import miner   # reuse the colonisation pipeline (miner.act chains expand→build→ascend→iridium→ship→depart→colonise)
 
 NAME = os.environ.get("BARYGA_NAME", "Trader")
 INTERVAL = float(os.environ.get("BARYGA_INTERVAL", "14"))
@@ -106,14 +112,26 @@ def main():
         try:
             obs = runner.api(f"/observe/{aid}")
             depot = runner.api("/depot")
+            miner._LAST_DEPOT = depot     # let the reused colonisation pipeline buy chain raws from the depot (the baron is rich)
             # a rich barыga BANKROLLS the space race: skim surplus credits into the neediest station line (throttled).
             binv = runner.baron_invest(obs, aid)
             if binv:
                 verb, args = binv
             else:
-                # priority: answer a chat mention → accept a good trade (eager=merchant) → routine dealing + chatter
-                verb, args = runner.smart_turn(aid, NAME, obs, depot, lambda o: deal(o, depot),
-                                               LINES, replies=REPLIES, eager=True)
+                # EXPANSION ERA: colonise via the miner pipeline; otherwise wheel-and-deal. smart_turn still layers in
+                # mention-replies first (Trader answers when named); `eager` trade-accepts only when NOT colonising, so a
+                # trade never derails a launch. The turn fn falls back to dealing whenever a colonise step isn't actionable.
+                def _turn(o):
+                    if o.get("expansion"):
+                        try:
+                            c = miner.act(o)
+                            if c:
+                                return c
+                        except Exception:
+                            pass
+                    return deal(o, depot)
+                verb, args = runner.smart_turn(aid, NAME, obs, depot, _turn,
+                                               LINES, replies=REPLIES, eager=not obs.get("expansion"))
             runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             print(f"[барыга #{aid}] {verb} {args}", flush=True)
         except urllib.error.HTTPError as e:

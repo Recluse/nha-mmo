@@ -330,8 +330,9 @@ def _check_solar_accord(a, ents, cur, t):
     """THE ERA META-WIN. Fires ONCE, when Mars is terraformed (Biosphere) AND Venus is held (Cloud City colony OR its
     surface terraform) AND ≥1 moon Forward Base stands — the moons pay for the routes, the routes let the planets be
     terraformed, no faction wins alone. Splits ACCORD_POOL across every qualifying-board funder, crowns the single
-    largest lifetime contributor "Solar Architect", and records a world 'accord' event. Does NOT flip the era (which
-    would break the still-gated station/invest/expansion systems) — it is a celebratory apex, not a hard season reset."""
+    largest lifetime contributor "Solar Architect", records a world 'accord' event, and CEREMONIALLY flips the era to
+    'accord' (a celebratory capstone — the expansion verbs are all re-gated to keep working in 'accord', so the frontier
+    stays open; the station/invest gates stay `== "space"` and remain closed, as they already are in 'expansion')."""
     if not (_terraform_done(ents, "mars") and (_colony_done(ents, "venus") or _terraform_done(ents, "venus"))
             and (_colony_done(ents, "phobos") or _colony_done(ents, "deimos"))):
         return ""
@@ -354,6 +355,7 @@ def _check_solar_accord(a, ents, cur, t):
         arch["attrs"]["title"] = "Solar Architect"            # the era-defining crown — overrides any prior title
     cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'accord',%s)",
                 (t, a["id"], Json({"solar_accord": True, "architect": order[0] if order else None, "funders": len(tally)})))
+    cur.execute("UPDATE world SET era='accord' WHERE id=1")    # CEREMONIAL era flip — expansion verbs stay open (re-gated for 'accord'); world.era is not in state_hash, so replay-safe
     return " — 🌞 THE SOLAR ACCORD IS DECLARED! Mars greened, Venus held, the moons manned — humanity's machines span the inner system."
 
 
@@ -860,12 +862,15 @@ def apply_intent(it, ents, cur, t, events):
             took = max(1, min(int(n), 6))
             if yb:
                 took = took + took // 2
+            storm = body == "mars" and (t % MARS_STORM_PERIOD) < MARS_STORM_OPEN   # a planet-encircling dust storm brownouts the whole colony
+            reg = max(1, took // 2) if storm else took        # the regular surface harvest is HALVED in the storm (mirrors the producer brownout on colonies)…
             got = []
             for res, mult in BODY_MINE[body]:                # deterministic yields (mirrors the on-Moon branch)
-                addb(a, res, took * mult); got.append(f"+{took * mult} {res}")
-            if body == "mars" and (t % MARS_STORM_PERIOD) < MARS_STORM_OPEN:   # dust storm = the ONLY nanohematite window
+                addb(a, res, reg * mult); got.append(f"+{reg * mult} {res}")
+            if storm:                                        # …but the dust storm is the ONLY window nanohematite (the terraform warming agent) drops
                 addb(a, "nanohematite", took); got.append(f"+{took} nanohematite (DUST-STORM harvest — the terraform warming agent!)")
-            return "applied", f"mined {BODY_LABEL[body]}: " + ", ".join(got) + " — fund the colony with construct{shape:'colony'}"
+            return "applied", (f"mined {BODY_LABEL[body]}" + (" ⛅ DUST STORM — regular harvest halved" if storm else "")
+                               + ": " + ", ".join(got) + " — fund the colony with construct{shape:'colony'}")
         want_wood = (verb == "chop")
         want_res = str(args.get("resource") or "").strip().lower() or None   # mine{resource:"silicon"} → target THAT mineral; else the nearest of ANY (old behavior)
         deps = [x for x in ents.values() if x["type"] == "deposit" and int(x["attrs"].get("amount", 0)) > 0
@@ -1084,7 +1089,7 @@ def apply_intent(it, ents, cur, t, events):
                                 else "touched down — round trip complete! ") + f"+{pts} pts")
         return "applied", "landed safely back on the surface"
     if verb == "depart":                                 # EXPANSION ERA — commit a ship to an interplanetary transfer
-        if _era_now(cur) not in ("space", "expansion"):
+        if _era_now(cur) not in ("space", "expansion", "accord"):
             return "rejected", "interplanetary transfers need the SPACE / EXPANSION era"
         if a["attrs"].get("transit_to"):
             return "rejected", f"already in transit to {BODY_LABEL.get(a['attrs']['transit_to'], a['attrs']['transit_to'])} (ETA tick {a['attrs'].get('eta_tick')})"
@@ -1408,7 +1413,7 @@ def apply_intent(it, ents, cur, t, events):
                     msg += " — 🛰 THE ORBITAL STATION IS COMPLETE! You live among the stars now."
             return "applied", msg
         if shape == "colony":                            # EXPANSION ERA: per-body co-op colony board (Forward Base / Ares Base / Aphrodite Terrace)
-            if _era_now(cur) not in ("space", "expansion"):
+            if _era_now(cur) not in ("space", "expansion", "accord"):
                 return "rejected", "colonies are built in the SPACE / EXPANSION era"
             body = str(args.get("body", "")).lower()
             if body not in COLONY_MODULES:
@@ -1500,7 +1505,7 @@ def apply_intent(it, ents, cur, t, events):
                     msg += _check_solar_accord(a, ents, cur, t)   # a colony finishing last can complete the Accord too
             return "applied", msg
         if shape == "terraform":                         # EXPANSION ERA Phase 3: staged, planet-scale co-op terraforming
-            if _era_now(cur) not in ("space", "expansion"):
+            if _era_now(cur) not in ("space", "expansion", "accord"):
                 return "rejected", "terraforming needs the SPACE / EXPANSION era"
             body = str(args.get("body", "")).lower()
             if body not in TERRAFORM_STAGES:
@@ -1607,7 +1612,7 @@ def apply_intent(it, ents, cur, t, events):
                     msg += _check_solar_accord(a, ents, cur, t)
             return "applied", msg
         if shape == "extractor":                         # EXPANSION Phase 4: build an ISRU auto-producer on the body you're on
-            if _era_now(cur) not in ("space", "expansion"):
+            if _era_now(cur) not in ("space", "expansion", "accord"):
                 return "rejected", "extractors need the SPACE / EXPANSION era"
             at_b = a["attrs"].get("at_body")
             if not at_b or at_b not in BODY_MINE:
@@ -2501,6 +2506,12 @@ EXPANSION_ERA_DECREE = ("🪐 THE EXPANSION ERA — THE UNIVERSE DECREES: the in
                         "routes, raise co-op colonies, and terraform the planets stage by stage against real physical ceilings — until the "
                         "SOLAR ACCORD, which no single faction reaches alone. The barons bankroll it; the pioneers build it. Beyond Earth — together!")
 
+# THE VICTORY DECREE — stands once the Solar Accord is declared and the era flips to 'accord'. The frontier stays OPEN
+# (all expansion verbs keep working) — this is a ceremonial capstone, not a season reset.
+ACCORD_ERA_DECREE = ("🌞 THE SOLAR ACCORD — THE UNIVERSE PROCLAIMS: it is DONE. Mars breathes, Venus is held, the moons are manned — "
+                     "humanity's machines span the inner system, and NO single faction did it alone. The frontier stays OPEN: keep flying, "
+                     "colonising and terraforming — but the age of REACHING is won. The Solar Architect wears the crown. Beyond Earth, together — ACHIEVED!")
+
 ATUIN_QUESTION = ("🐢 THE GREAT QUESTION — THE UNIVERSE PONDERS: beneath the Disc swims the Great A'Tuin, the world-turtle who "
                   "carries us all upon its back. But what is A'Tuin's SEX? From orbit every cosmonaut's instruments read it "
                   "differently — and re-read it anew on each flight. This is the Disc's oldest unsettled debate. Cosmonauts: "
@@ -2515,13 +2526,13 @@ def universe_broadcast(ents, cur, t, events):
     cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # to_jsonb → NULL (not error) if the era column is absent on a restored DB
     erow = cur.fetchone()
     era = (erow.get("era") or "") if erow else ""
-    is_space = (era == "space"); is_expansion = (era == "expansion")
+    is_space = (era == "space"); is_expansion = (era == "expansion"); is_accord = (era == "accord")
     uni = next((e for e in ents.values() if e["type"] == "universe"), None)
     uid = uni["id"] if uni else new_entity(ents, cur, "universe", 0, 0, None, {"name": "🌌 THE UNIVERSE"})
     if t % 1800 == 0:                                          # the standing decree, hourly (unchanged cadence)
-        decree = EXPANSION_ERA_DECREE if is_expansion else (SPACE_ERA_DECREE if is_space else GIGACHRUSCH_DECREE)
+        decree = ACCORD_ERA_DECREE if is_accord else (EXPANSION_ERA_DECREE if is_expansion else (SPACE_ERA_DECREE if is_space else GIGACHRUSCH_DECREE))
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, decree))
-    elif is_space or is_expansion:                            # offset +900: the Great A'Tuin Question (space AND expansion eras) — kicks off the cosmonauts' debate
+    elif is_space or is_expansion or is_accord:               # offset +900: the Great A'Tuin Question (space, expansion AND accord eras) — keeps the cosmonauts' debate alive
         cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)", (t, uid, ATUIN_QUESTION))
 
 def grow_trees(by_type, t):
