@@ -774,11 +774,13 @@ def contracts_ep():
 
 
 def _station_status(cur):
-    """SPACE ERA only: the orbital-station blueprint + live per-module progress, so agents know exactly what to fund.
-    Returns None outside the 'space' era. Read-only; two small queries."""
+    """The orbital-station blueprint + live per-module progress. Shown from the SPACE era ONWARD (space/expansion/
+    accord) — the Station is a permanent structure that "still stands" after the era flips, so its completed board
+    keeps rendering (it vanished from the dashboard when the era went to 'expansion' — this gate was `== "space"`).
+    Building the station (invest/construct) stays space-only in the engine; this is READ-only. Two small queries."""
     cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # to_jsonb → NULL (not error) if the era column is absent on a restored DB
     erow = cur.fetchone()
-    if not erow or (erow["era"] or "") != "space":
+    if not erow or (erow["era"] or "") not in ("space", "expansion", "accord"):
         return None
     cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='station' LIMIT 1")
     srow = cur.fetchone()
