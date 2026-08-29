@@ -77,4 +77,5 @@ def finalize_stats(stats_list):
     return dict(mass=mass, drag=drag, power=power, drive_force=drive, thrust=thrust,
                 wing_area=wing_area, lift_coef=lift_coef, controllable=bool(control),
                 fuel_cap=s("fuel_cap"),                     # total tankage (Expansion Era: caps interplanetary Δv)
+                gear=s("gear"),                             # landing-gear count (Expansion Era: required to set down on a moon/Mars)
                 v_ground=v_ground, v_air=v_air, drives=drives, flies=flies)

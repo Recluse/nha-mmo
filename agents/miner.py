@@ -287,7 +287,8 @@ EXP_RECIPES = {   # item -> recipe inputs (all verified against crafting.RULES).
 BUYABLE = ("iron", "copper", "coal", "carbon", "salt", "water", "ice", "metal", "ore", "oil")
 EXP_DEST = os.environ.get("MINER_DEST", "phobos")   # colonise a MOON first — its Forward Base needs only 2 funders, so two barons can COMPLETE it (Mars needs 3)
 EXP_HS = EXP_DEST in ("mars", "venus")              # only Mars/Venus need a heat_shield; moons don't
-EXP_FUEL = 120        # cryo_fuel to load — plenty for the moon Δv (55) + correction margin
+EXP_FUEL = 160        # cryo_fuel to LOAD on the ground (plenty of Δv for any body + the climb-to-orbit burn)
+EXP_DEPART_MIN = EXP_FUEL - 40   # in-orbit depart gate: BELOW the load target, because climbing to orbit burns some cryo (else the gate is unsatisfiable — audit C2)
 EXP_IRIDIUM = 2
 # crafted items the ship-build consumes (net targets; the resolver crafts their sub-chain bottom-up). heat_shield only for planets.
 EXP_TARGETS = ([("metal", 40), ("crystal", 3), ("ion_thruster", 1), ("chip", 1), ("composite", 2), ("steel", 2)]
@@ -372,17 +373,20 @@ def _ion_part_step(obs):
 
 
 def _colonize(obs, exp):
-    """On a body: fund the colony with whatever we hold, else mine the body's own resources to fund it."""
+    """On a body: fund the colony with whatever we hold, else mine the body's own resources. Mixes in mining so a
+    per-agent-CAP rejection ("funded nothing") never spins the same construct every turn (audit M5)."""
     inv = _inv(obs); body = exp.get("at_body")
     col = obs.get("colony") or {}
+    if random.random() < 0.35:                           # accumulate the body's unique resources + vary actions
+        return "mine", {"n": random.randint(4, 6)}
     if col and not col.get("complete"):
-        for m in col.get("modules", []) or []:
-            if m.get("complete"):
-                continue
-            for r in (m.get("need") or {}):
-                if int(inv.get(r, 0)) >= 1 and int((m.get("remaining") or {}).get(r, 0)) > 0:
-                    return "construct", {"shape": "colony", "body": body, "module": m["module"]}
-    return "mine", {"n": 6}   # accumulate the body's unique resources (perchlorate/mars_ice/…)
+        # fund the NEEDIEST incomplete module we can actually contribute a held/body resource to
+        mods = [m for m in (col.get("modules", []) or []) if not m.get("complete")]
+        mods.sort(key=lambda x: -sum(int(v) for v in (x.get("remaining") or {}).values()))
+        for m in mods:
+            if any(int(inv.get(r, 0)) >= 1 and int((m.get("remaining") or {}).get(r, 0)) > 0 for r in (m.get("need") or {})):
+                return "construct", {"shape": "colony", "body": body, "module": m["module"]}
+    return "mine", {"n": 6}
 
 
 def expand_act(obs):
@@ -403,7 +407,7 @@ def expand_act(obs):
         if in_space and 300 <= alt <= 600:
             fuel = sum(int(inv.get(f, 0)) for f in ("cryo_fuel", "methalox", "helium3"))
             win = (exp.get("windows", {}) or {}).get(EXP_DEST, {}) or {}
-            if fuel >= EXP_FUEL and (not EXP_HS or int(inv.get("heat_shield", 0)) >= 1) and win.get("open"):
+            if fuel >= EXP_DEPART_MIN and (not EXP_HS or int(inv.get("heat_shield", 0)) >= 1) and win.get("open"):
                 return "depart", {"dest": EXP_DEST}
             return None   # ship ready — wait for the launch window (miner mines an asteroid meanwhile)
         step = _bom_step(inv, [("cryo_fuel", EXP_FUEL)] + ([("heat_shield", 1)] if EXP_HS else []))   # top up fuel (+ heat_shield for planets)

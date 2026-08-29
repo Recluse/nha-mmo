@@ -393,7 +393,7 @@ def run_producers(ents, t, events, cur):
     mars_storm = (t % MARS_STORM_PERIOD) < MARS_STORM_OPEN
     for p in sorted(prods, key=lambda e: e["id"]):
         pa = p["attrs"]; spec = PRODUCERS.get(pa.get("kind"))
-        if not spec or pa.get("wrecked"):
+        if not spec or pa.get("wrecked") or pa.get("ruined"):   # audit M2: destroyed STRUCTURES are flagged 'ruined' (not 'wrecked') — a ruined extractor must stop producing
             continue
         if t % spec["period"] != p["id"] % spec["period"]:    # only fires on its own phase of the period
             continue
@@ -1101,6 +1101,8 @@ def apply_intent(it, ents, cur, t, events):
                 return "rejected", "dest must be one of: " + "/".join(EXPANSION_BODIES) + " (or 'earth' to return)"
             if at_orbit or at_body:
                 return "rejected", "you are already at a body — return to Earth first (depart{dest:'earth'})"
+            if a["attrs"].get("on_moon"):                # audit M4: the Moon surface isn't Earth orbit — descend/ride home first (else on_moon persists to the destination and shadows the body mine)
+                return "rejected", "depart the interplanetary transfer from EARTH ORBIT, not the Moon surface — land/ride home first"
             if not (a["attrs"].get("in_space") and ORBIT_LO <= alt <= ORBIT_HI):
                 return "rejected", f"depart from EARTH ORBIT (altitude {ORBIT_LO}-{ORBIT_HI}: launch or ride the elevator up first)"
             dv_need = DV_NEED[dest]
@@ -1149,7 +1151,7 @@ def apply_intent(it, ents, cur, t, events):
         a["attrs"]["depart_from"] = ("earth" if target != "earth" else (at_orbit or at_body))
         a["attrs"]["in_space"] = True
         a["attrs"]["altitude"] = SKY_TOP                 # beyond-LEO sentinel (orbital_decay skips in-transit agents)
-        for k in ("at_body_orbit", "at_body", "adrift", "adrift_since"):
+        for k in ("at_body_orbit", "at_body", "adrift", "adrift_since", "on_moon"):   # on_moon too (audit M4): never let it ride through transit and shadow the destination mine
             a["attrs"].pop(k, None)
         cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'depart',%s)",
                     (t, a["id"], Json({"dest": target, "eta": a["attrs"]["eta_tick"], "dv": plan["dv"], "fuel": plan["fuel"], "burn": plan["cost"]})))
@@ -1595,7 +1597,8 @@ def apply_intent(it, ents, cur, t, events):
             if not spec or body not in spec["bodies"]:
                 avail = [k for k, s in PRODUCERS.items() if body in s["bodies"]]
                 return "rejected", f"kind must be one buildable on {BODY_LABEL[body]}: {'/'.join(avail)}"
-            owned = sum(1 for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "extractor" and e.get("owner") == a["id"])
+            owned = sum(1 for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "extractor"
+                        and e.get("owner") == a["id"] and not e["attrs"].get("ruined"))   # audit M2-pair: a RUINED extractor no longer produces, so it must not occupy a cap slot either
             if owned >= MAX_PRODUCERS_PER_AGENT:
                 return "rejected", f"you already run {owned} extractors (max {MAX_PRODUCERS_PER_AGENT}) — they keep producing even after you fly home"
             cost = spec["cost"]
@@ -1786,8 +1789,9 @@ def apply_intent(it, ents, cur, t, events):
             a["attrs"]["altitude"] = 0
             a["attrs"]["in_space"] = False
             a["attrs"]["space_level"] = 0
-            a["attrs"].pop("on_moon", None)
-            a["attrs"].pop("docked_to", None)
+            for k in ("on_moon", "docked_to", "at_body", "at_body_orbit", "transit_to",   # audit H1/M4: a return to Earth ground clears ALL space/beyond-LEO sentinels
+                      "depart_tick", "eta_tick", "depart_from", "adrift", "adrift_since"):
+                a["attrs"].pop(k, None)
             a["attrs"]["round_trip"] = True
             return "applied", "rode the orbital elevator back DOWN to the ground — no fuel, no waiting"
         a["attrs"]["altitude"] = max(int(a["attrs"].get("altitude", 0)), min(SKY_TOP, row["h"]))
@@ -2579,7 +2583,8 @@ def advance_transits(ents, t, events, cur):
                     at["at_body_orbit"] = origin           # drifted on the return leg → fall back to the body's orbit
                 events.append((t, a["id"], "act", {"verb": "abort", "status": "applied",
                               "result": f"transit to {BODY_LABEL.get(dest, dest)} ABORTED (adrift, out of correction fuel) — limped back toward {BODY_LABEL.get(origin, origin)}, took {ADRIFT_DMG} damage"}))
-                apply_damage(a, ADRIFT_DMG, t, None, events, cur, ents)
+                if int(at.get("downed_until", 0)) <= t:    # audit L1: don't re-kill a corpse (double loot / respawn reset) — mirror orbital_decay/explode
+                    apply_damage(a, ADRIFT_DMG, t, None, events, cur, ents)
             continue
         if t > dep and (t - dep) % CORRECTION_EVERY == 0 and t < eta:   # a scheduled course-correction burn
             fuel = next((f for f in CORRECTION_FUELS if get(a, f) >= 1), None)
@@ -2650,6 +2655,13 @@ def respawn_agents(by_type, cur, t, events):
             a["x"] = _h(t, a["id"], "rx") % w
             a["y"] = _h(t, a["id"], "ry") % h
             a["attrs"]["respawned_at"] = t                # RESPAWN_GRACE untargetability
+            att = a["attrs"]
+            if (att.get("in_space") or att.get("at_body") or att.get("at_body_orbit") or att.get("transit_to")
+                    or att.get("on_moon") or int(att.get("altitude", 0)) > 0):   # ONLY touch space state if it had any — else a pure-ground respawn is byte-identical (seed fingerprint safe)
+                for k in ("at_body", "at_body_orbit", "transit_to", "depart_tick", "eta_tick",   # audit H1: respawn drops you on EARTH → clear every space/beyond-LEO sentinel, else you mine/fund a body from Earth
+                          "depart_from", "adrift", "adrift_since", "on_moon", "docked_to", "in_space"):
+                    att.pop(k, None)
+                att["altitude"] = 0; att["space_level"] = 0
             events.append((t, a["id"], "respawn", {"x": a["x"], "y": a["y"]}))
 
 def cool_reputation(by_type, t):
@@ -2847,7 +2859,10 @@ def prune_tables(cur, t):
     # configured do we drop old NON-milestone events (milestone kinds are always kept as the achievement feed).
     if EVENTS_KEEP_TICKS > 0:
         cur.execute("DELETE FROM events WHERE tick < %s AND kind NOT IN "
-                    "('escape','invent','land','build','war','peace','attune','destroyed','generate')",
+                    # milestone/achievement kinds are always kept — INCLUDING the fire-once idempotency guards
+                    # (audit M1): 'accord' (Solar Accord), 'body_landing'/'moon_landing' (first-to-body/Moon) are read
+                    # back as "already happened" guards, so pruning them would re-pay the pool / re-award the bonus.
+                    "('escape','invent','land','build','war','peace','attune','destroyed','generate','accord','body_landing','moon_landing')",
                     (t - EVENTS_KEEP_TICKS,))
     cur.execute("DELETE FROM tick_hashes WHERE tick < %s", (t - 20000,))
     cur.execute("DELETE FROM intents WHERE status <> 'pending' AND id < (SELECT COALESCE(MAX(id),0) FROM intents) - 5000")
@@ -2859,7 +2874,11 @@ def prune_tables(cur, t):
 
 # rejection reasons that describe a not-yet-ready WORLD (the same action may succeed once conditions
 # change), so they must NOT count toward the loop-guard's all-failing test.
-_TRANSIENT_REASONS = ("cooldown", "out of range", "no deposit", "regrow", "too recently", "drifted")
+_TRANSIENT_REASONS = ("cooldown", "out of range", "no deposit", "regrow", "too recently", "drifted",
+                      # audit M3: EXPANSION not-ready states are SELF-CLEARING world states, not a stuck agent —
+                      # (launch window reopens, transit ends, the cap frees as others fund, the acid shield is re-funded).
+                      # 'loop detected' too, else the guard's own verdict (written back to the intents row) self-sustains.
+                      "launch window", "in transit", "funded nothing", "acid shield", "loop detected")
 
 def _transient_reason(result):
     """True if a rejection's result text names a transient, world-state reason (vs a permanent error)."""
