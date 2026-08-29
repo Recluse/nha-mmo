@@ -21,7 +21,7 @@ _PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant de
 _GATHER_RANGE = 8           # auto-walk reach of the `gather` verb (mirror of engine.GATHER_RANGE)
 _MEDICINE_ITEMS = ("salve", "stimpack", "medkit", "antidote")  # consumable HP medicines held in buffers (mirror engine.MEDICINES)
 from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula (no drift) for the observatory forecast; safe — engine never imports play
-                    EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL)
+                    EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL, PRODUCERS)
 _FORECAST_HORIZON = 30            # ticks of storm track an observatory reveals
 
 
@@ -206,6 +206,15 @@ def observe(cur, agent_id):
         windows = {b: {"open": window_open(b, now), "dv_need": DV_NEED[b], "transit_ticks": TRANSIT_TICKS[b],
                        "opens_in": (0 if window_open(b, now) else SYNODIC[b] - (now % SYNODIC[b]))} for b in EXPANSION_BODIES}
         loc = ("transit" if transit_to else ("on_" + at_body if at_body else ("orbit_" + at_orbit if at_orbit else "earth")))
+        producers = None
+        if at_body:   # EXPANSION Phase 4 — the ISRU producers you run here + what you can build
+            cur.execute("SELECT attrs->>'kind' k, attrs->>'label' l FROM entities WHERE type='structure' "
+                        "AND attrs->>'shape'='extractor' AND owner=%s AND attrs->>'body'=%s", (agent_id, at_body))
+            yours = [{"kind": r["k"], "label": r["l"]} for r in cur.fetchall()]
+            producers = {"yours_here": yours,
+                         "buildable": [{"kind": k, "label": s["label"], "cost": s["cost"], "out": s["out"], "period": s["period"]}
+                                       for k, s in PRODUCERS.items() if at_body in s["bodies"]],
+                         "how": "construct{shape:'extractor',kind} — an ISRU building that drips its yield into your hold every few ticks, even after you fly home"}
         expansion = {
             "era": era, "location": loc,
             "transit": ({"to": transit_to, "eta_tick": me["eta_tick"], "eta_in": (me["eta_tick"] or 0) - now,
@@ -214,12 +223,14 @@ def observe(cur, agent_id):
             "visited": me["body_awarded"] or [],
             "windows": windows,
             "return_dv": (DV_RETURN.get(at_orbit or at_body) if (at_orbit or at_body) else None),
+            "producers": producers,
             "how": ("depart{dest} from Earth orbit (altitude 300-600) to a body; carry an ion_thruster ship, fuel (cryo_fuel/helium3) "
                     "and — for Mars/Venus — a heat_shield (+acid_skin for Venus). land_body on arrival. On a body, `mine` yields its "
                     "unique resources; fund the co-op colony with construct{shape:'colony',body,module} (see observe.colony). "
                     "depart{dest:'earth'} to return. Completing a moon Forward Base cheapens the Mars/Venus routes for everyone. "
                     "Once a Mars/Venus colony is COMPLETE, terraform it in sequential co-op stages via construct{shape:'terraform',body,stage} "
-                    "(see observe.terraform). Mars greened + Venus held + a moon base = THE SOLAR ACCORD."),
+                    "(see observe.terraform). Build ISRU extractors with construct{shape:'extractor',kind} (see observe.expansion.producers) — "
+                    "they auto-mine into your hold so infrastructure feeds the bills. Mars greened + Venus held + a moon base = THE SOLAR ACCORD."),
         }
     return {"tick": now, "position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
             "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,

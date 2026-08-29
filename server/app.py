@@ -690,7 +690,8 @@ def _scene(static=True):
                     "attrs->>'color' color, (attrs->>'complete')::boolean complete, (attrs->>'alt')::int alt, "
                     "(attrs->>'hp')::int hp, (attrs->>'hp_max')::int hp_max, (attrs->>'ruined')::boolean ruined, "
                     "attrs->>'kind' kind, (attrs->>'w')::int mw, (attrs->>'h')::int mh, attrs->>'name' name "   # monument footprint + kind (NULL for ordinary structures)
-                    "FROM entities WHERE type='structure'")
+                    "FROM entities WHERE type='structure' "
+                    "AND COALESCE(attrs->>'shape','') NOT IN ('colony','terraform','extractor')")   # abstract EXPANSION boards/producers aren't physical 3D builds — surfaced via /colony,/terraform,observe (and extractors can number in the hundreds → keep them out of the scene payload)
         structures = [{"id": r["id"], "shape": r["shape"], "x": r["x"], "y": r["y"], "size": r["size"] or 2,
                        "height": r["height"] or 2, "floors": r["floors"] or 0, "color": r["color"] or "", "complete": bool(r["complete"]),
                        "alt": r["alt"] or 0, "hp": r["hp"], "hp_max": r["hp_max"], "ruined": bool(r["ruined"]),

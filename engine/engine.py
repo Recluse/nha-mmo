@@ -350,6 +350,45 @@ def _check_solar_accord(a, ents, cur, t):
     return " — 🌞 THE SOLAR ACCORD IS DECLARED! Mars greened, Venus held, the moons manned — humanity's machines span the inner system."
 
 
+# ===================== EXPANSION ERA — Phase 4: auto-extractor PRODUCERS (ISRU infrastructure) =====================
+# A producer is a finalized STRUCTURE at a body that drips its yield into its OWNER's inventory every `period` ticks
+# (on its own id-phase → the fires spread out, no thundering herd), exactly like the AUTO_MINE deployed-rig precedent
+# but stationary and body-bound. It keeps producing after the owner flies home — infrastructure feeds the big colony/
+# terraform bills instead of hand-mining. Solar-fed Mars producers are HALVED during the dust storm (the brownout).
+# All DORMANT under the seed (no producer is ever built there). Owner inventory writes are id-sorted → replay-stable.
+PRODUCERS = {
+    "co2_collector":     {"bodies": ("mars", "venus"),    "cost": {"metal": 80, "chip": 10},      "period": 4, "out": {"co2": 4},                   "solar": True,  "label": "CO₂ Collector"},
+    "ice_well":          {"bodies": ("mars",),            "cost": {"metal": 100, "composite": 20}, "period": 5, "out": {"mars_ice": 3},              "solar": False, "label": "Water-Ice Well"},
+    "regolith_rig":      {"bodies": ("mars",),            "cost": {"metal": 70, "chip": 10},       "period": 5, "out": {"mars_regolith": 4, "perchlorate": 1}, "solar": False, "label": "Regolith Rig"},
+    "moxie":             {"bodies": ("mars",),            "cost": {"titanium": 60, "chip": 30},    "period": 5, "out": {"o2": 3},                    "solar": True,  "label": "MOXIE O₂ Generator"},
+    "cregolith_cracker": {"bodies": ("phobos", "deimos"), "cost": {"metal": 80, "chip": 10},       "period": 5, "out": {"c_regolith": 4},            "solar": False, "label": "Regolith Cracker"},
+    "acid_condenser":    {"bodies": ("venus",),           "cost": {"composite": 40, "chip": 20},   "period": 5, "out": {"cloud_acid": 3, "nitrogen": 2}, "solar": False, "label": "Acid Condenser"},
+    "graphite_reactor":  {"bodies": ("venus",),           "cost": {"composite": 60, "chip": 30},   "period": 6, "out": {"graphite": 3},              "solar": False, "label": "Graphite Reactor"},
+}
+MAX_PRODUCERS_PER_AGENT = 12       # bound the per-tick producer scan + stop a whale spamming a resource fountain
+
+
+def run_producers(ents, t, events, cur):
+    """EXPANSION Phase 4 — per-tick ISRU. Each extractor structure yields into its owner's inventory on its id-phase of
+    its period. Strict NO-OP when none exist (dormant under the seed). Mars solar producers are halved in the dust storm."""
+    prods = [e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "extractor"]
+    if not prods:
+        return
+    mars_storm = (t % MARS_STORM_PERIOD) < MARS_STORM_OPEN
+    for p in sorted(prods, key=lambda e: e["id"]):
+        pa = p["attrs"]; spec = PRODUCERS.get(pa.get("kind"))
+        if not spec or pa.get("wrecked"):
+            continue
+        if t % spec["period"] != p["id"] % spec["period"]:    # only fires on its own phase of the period
+            continue
+        owner = ents.get(p.get("owner"))
+        if owner is None or owner["type"] != "agent":
+            continue
+        brown = spec.get("solar") and pa.get("body") == "mars" and mars_storm
+        for res, n in spec["out"].items():
+            addb(owner, res, max(1, n // 2) if brown else n)   # deterministic yield straight to the owner's hold
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world (id int PRIMARY KEY DEFAULT 1, tick int NOT NULL DEFAULT 0);
 ALTER TABLE world ADD COLUMN IF NOT EXISTS notices jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -1202,8 +1241,8 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", msg
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
-        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city", "colony", "terraform"):
-            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city/colony/terraform"
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city", "colony", "terraform", "extractor"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city/colony/terraform/extractor"
         if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
             cost = {"metal": 15, "composite": 8}; seg = 20
             if any(get(a, r) < q for r, q in cost.items()):
@@ -1472,6 +1511,36 @@ def apply_intent(it, ents, cur, t, events):
                     msg += f" — 🌍 {BODY_LABEL[body].upper()} IS TERRAFORMED! ({TERRAFORM_TITLE[body]})"
                     msg += _check_solar_accord(a, ents, cur, t)
             return "applied", msg
+        if shape == "extractor":                         # EXPANSION Phase 4: build an ISRU auto-producer on the body you're on
+            if _era_now(cur) not in ("space", "expansion"):
+                return "rejected", "extractors need the SPACE / EXPANSION era"
+            at_b = a["attrs"].get("at_body")
+            if not at_b or at_b not in BODY_MINE:
+                return "rejected", "you must be ON a body (arrive + land_body) to build an extractor"
+            body = str(args.get("body", "")).lower() or at_b
+            if body != at_b:
+                return "rejected", f"you are on {BODY_LABEL.get(at_b, at_b)}, not {BODY_LABEL.get(body, body)} — build where you stand"
+            kind = str(args.get("kind", "")).lower()
+            spec = PRODUCERS.get(kind)
+            if not spec or body not in spec["bodies"]:
+                avail = [k for k, s in PRODUCERS.items() if body in s["bodies"]]
+                return "rejected", f"kind must be one buildable on {BODY_LABEL[body]}: {'/'.join(avail)}"
+            owned = sum(1 for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "extractor" and e.get("owner") == a["id"])
+            if owned >= MAX_PRODUCERS_PER_AGENT:
+                return "rejected", f"you already run {owned} extractors (max {MAX_PRODUCERS_PER_AGENT}) — they keep producing even after you fly home"
+            cost = spec["cost"]
+            if not all(get(a, r) >= q for r, q in cost.items()):
+                return "rejected", f"insufficient for a {spec['label']} (need {cost}) — bring metal/chip/composite/titanium from Earth"
+            for r, q in cost.items():
+                addb(a, r, -q)
+            sid = new_entity(ents, cur, "structure", a["x"], a["y"], a["id"],
+                             {"shape": "extractor", "kind": kind, "body": body, "label": spec["label"], "alt": SKY_TOP,
+                              "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
+            cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                        (t, a["id"], Json({"extractor": kind, "body": body})))
+            out = ", ".join(f"+{n} {r}" for r, n in spec["out"].items())
+            return "applied", (f"built a {spec['label']} on {BODY_LABEL[body]} (#{sid}) — it drips {out} into your hold every "
+                               f"{spec['period']} ticks, even after you leave" + (" (solar → halved in a dust storm)" if spec.get("solar") and body == "mars" else ""))
         if shape == "ziggurat":                          # Moon-only collaborative monument: stack regolith tiers on one cell
             if not a["attrs"].get("on_moon"):
                 return "rejected", "a ziggurat can only be raised on the Moon — land there first"
@@ -2847,6 +2916,7 @@ def _tick_body(conn, s):
     grow_plants(by_type, t)                                # renewable plant deposits (medicine branch)
     orbital_decay(ents, t, events, cur)
     advance_transits(ents, t, events, cur)                 # EXPANSION ERA: interplanetary transit countdown (no-op if nobody's in transit)
+    run_producers(ents, t, events, cur)                    # EXPANSION Phase 4: ISRU auto-extractors drip into owners' holds (no-op if none built)
     respawn_deposits(by_type, t)
     respawn_agents(by_type, cur, t, events)               # season 3 per-tick systems (after respawn_deposits, before write-back)
     cool_reputation(by_type, t)
