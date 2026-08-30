@@ -1627,6 +1627,76 @@ def inventors():
     return _cached("inventors", _inventors)
 
 
+# ---------- Model Arena — 'which MODEL plays best', since the reference runner names each agent after its model id ----------
+_MODEL_FAMILIES = [   # (label, lowercase substrings) — first match wins
+    ("Claude", ("claude",)), ("GPT / OpenAI", ("gpt", "openai", "o1-", "o3-", "o4-", "chatgpt")),
+    ("Llama", ("llama",)), ("Gemini", ("gemini", "gemma")), ("Qwen", ("qwen",)),
+    ("Mistral", ("mistral", "mixtral", "codestral", "ministral", "magistral")), ("Phi", ("phi-", "phi3", "phi4", "/phi")),
+    ("DeepSeek", ("deepseek",)), ("Kimi", ("kimi", "moonshot")), ("Grok", ("grok",)),
+    ("Nemotron", ("nemotron",)), ("Command-R", ("command-r", "cohere")),
+]
+
+
+_ARENA_SKIP = {"codex-inventor", "miner", "prospector", "trader", "dummy", "woodcutter", "barbarian"}   # system seeder + scripted reference bots — not model players
+
+
+def _model_family(name):
+    n = (name or "").lower()
+    for label, subs in _MODEL_FAMILIES:
+        if any(s in n for s in subs):
+            return label
+    return "Other"
+
+
+def _arena():
+    """Per-model-FAMILY standings. Agents are named after their model id by the reference runner, so we group by family
+    and aggregate points / titles / space / body / inventions. Read-only spectator surface (no tick-path effect)."""
+    with _db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
+        cur.execute("""
+            SELECT a.attrs->>'name' name, COALESCE((a.attrs->>'inventor_points')::int, 0) pts,
+                   COALESCE(a.attrs->>'title', '') title,
+                   EXISTS(SELECT 1 FROM events e WHERE e.entity=a.id AND e.kind='escape') space,
+                   EXISTS(SELECT 1 FROM events e WHERE e.entity=a.id AND e.kind IN ('arrive', 'body_landing')) body
+            FROM entities a WHERE a.type='agent'""")
+        agents = cur.fetchall()
+        cur.execute("SELECT discoverer_name dn, COUNT(*) c, COALESCE(SUM(points), 0) p FROM dynamic_rules GROUP BY discoverer_name")
+        invs = cur.fetchall()
+    fam = {}
+
+    def slot(label):
+        return fam.setdefault(label, {"family": label, "agents": 0, "points": 0, "best_points": 0, "best_agent": None,
+                                      "titled": 0, "reached_space": 0, "reached_body": 0, "inventions": 0, "invention_points": 0})
+    for a in agents:
+        if (a["name"] or "").lower() in _ARENA_SKIP:
+            continue
+        s = slot(_model_family(a["name"]))
+        s["agents"] += 1; s["points"] += a["pts"]
+        if a["pts"] > s["best_points"]:
+            s["best_points"] = a["pts"]; s["best_agent"] = a["name"]
+        if a["title"]:
+            s["titled"] += 1
+        if a["space"]:
+            s["reached_space"] += 1
+        if a["body"]:
+            s["reached_body"] += 1
+    for iv in invs:
+        if (iv["dn"] or "").lower() in _ARENA_SKIP:
+            continue
+        s = slot(_model_family(iv["dn"]))
+        s["inventions"] += int(iv["c"] or 0); s["invention_points"] += int(iv["p"] or 0)
+    ranked = sorted(fam.values(), key=lambda x: (-x["points"], -x["inventions"], -x["agents"]))
+    return {"tick": t, "families": ranked,
+            "note": ("Grouped by model family from agent names — the reference runner names each agent after its model id. "
+                     "'Other' = non-model handles (external players, scripted reference bots).")}
+
+
+@app.get("/arena", tags=["history"])
+def arena():
+    return _cached("arena", _arena)
+
+
 # ---------- Inventors' Guild — async LLM referee for novel (non-deterministic) inventions ----------
 @app.get("/guild/pending", response_model=GuildPendingOut, tags=["guild"])
 def guild_pending(limit: int = Query(15, ge=LIMIT_MIN, le=LIMIT_MAX)):

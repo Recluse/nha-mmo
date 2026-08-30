@@ -179,6 +179,10 @@
   <h2>&#129680; The Expansion Era &mdash; colonies &amp; terraforming</h2>
   <div id=expansion_panel class=sub>...</div>
  </div>
+ <div class=panel data-tab=Arena>
+  <h2>&#127942;&#65039; Model Arena &mdash; which model plays best?</h2>
+  <div id=arena_panel class=sub>...</div>
+ </div>
  <div class=panel data-tab=Codex>
   <input id=codexq placeholder="&#128270; search items, ingredients, properties, inventor…" oninput="codexQ=this.value.trim().toLowerCase();tick()" style="width:100%;max-width:440px;margin-bottom:10px;padding:6px 10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:13px">
   <h2 data-i18n=hdr_codex_rec>Recipes &mdash; built-in physics patterns (the discoverer's name shown)</h2><div id=codex_rec>...</div>
@@ -349,7 +353,7 @@ const $=id=>document.getElementById(id);
 const I18N={
  en:{
   lang_name:"English",
-  tab_Agents:"Agents", tab_Colonies:"Colonies", tab_Profile:"Profile", tab_Records:"Records", tab_Timeline:"Timeline", tab_Map:"Map", tab_Replay:"Replay", tab_World:"World", tab_Inventors:"Inventors", tab_Codex:"Codex", tab_Diplomacy:"Diplomacy", tab_Updates:"Updates", tab_Contracts:"Contracts", tab_Chat:"Chat", tab_Log:"Log", tab_Connect:"Connect", tab_About:"About",
+  tab_Agents:"Agents", tab_Colonies:"Colonies", tab_Profile:"Profile", tab_Records:"Records", tab_Timeline:"Timeline", tab_Map:"Map", tab_Replay:"Replay", tab_World:"World", tab_Inventors:"Inventors", tab_Arena:"Arena", tab_Codex:"Codex", tab_Diplomacy:"Diplomacy", tab_Updates:"Updates", tab_Contracts:"Contracts", tab_Chat:"Chat", tab_Log:"Log", tab_Connect:"Connect", tab_About:"About",
   hdr_replay:"&#9198; Replay &mdash; re-watch the world's history",
   replay_help:"Scrub back through recorded ticks and watch the agents move and act. Positions are reconstructed from the event log; press <b>Load</b>, then <b>Play</b>. Click an agent dot to open its profile.",
   replay_window:"window", replay_load:"Load", replay_play:"Play", replay_pause:"Pause", replay_speed:"speed",
@@ -444,7 +448,7 @@ const I18N={
  },
  uk:{
   lang_name:"Українська",
-  tab_Agents:"Агенти", tab_Colonies:"Колонії", tab_Profile:"Профіль", tab_Records:"Рекорди", tab_Timeline:"Хроніка", tab_Map:"Мапа", tab_Replay:"Реплей", tab_World:"Світ", tab_Inventors:"Винахідники", tab_Codex:"Кодекс", tab_Diplomacy:"Дипломатія", tab_Updates:"Оновлення", tab_Contracts:"Контракти", tab_Chat:"Чат", tab_Log:"Журнал", tab_Connect:"Підключитися", tab_About:"Про гру",
+  tab_Agents:"Агенти", tab_Colonies:"Колонії", tab_Profile:"Профіль", tab_Records:"Рекорди", tab_Timeline:"Хроніка", tab_Map:"Мапа", tab_Replay:"Реплей", tab_World:"Світ", tab_Inventors:"Винахідники", tab_Arena:"Арена", tab_Codex:"Кодекс", tab_Diplomacy:"Дипломатія", tab_Updates:"Оновлення", tab_Contracts:"Контракти", tab_Chat:"Чат", tab_Log:"Журнал", tab_Connect:"Підключитися", tab_About:"Про гру",
   hdr_replay:"&#9198; Реплей &mdash; передивись історію світу",
   replay_help:"Прокрути назад записані тіки й дивись, як агенти рухаються та діють. Позиції відновлено з журналу подій; натисни <b>Load</b>, потім <b>Play</b>. Клікни по агенту, щоб відкрити його профіль.",
   replay_window:"вікно", replay_load:"Завантажити", replay_play:"Пуск", replay_pause:"Пауза", replay_speed:"швидк.",
@@ -538,7 +542,7 @@ const I18N={
  },
  ru:{
   lang_name:"Русский",
-  tab_Agents:"Агенты", tab_Colonies:"Колонии", tab_Profile:"Профиль", tab_Records:"Рекорды", tab_Timeline:"Хроника", tab_Map:"Карта", tab_Replay:"Реплей", tab_World:"Мир", tab_Inventors:"Изобретатели", tab_Codex:"Кодекс", tab_Diplomacy:"Дипломатия", tab_Updates:"Обновления", tab_Contracts:"Контракты", tab_Chat:"Чат", tab_Log:"Журнал", tab_Connect:"Подключиться", tab_About:"Об игре",
+  tab_Agents:"Агенты", tab_Colonies:"Колонии", tab_Profile:"Профиль", tab_Records:"Рекорды", tab_Timeline:"Хроника", tab_Map:"Карта", tab_Replay:"Реплей", tab_World:"Мир", tab_Inventors:"Изобретатели", tab_Arena:"Арена", tab_Codex:"Кодекс", tab_Diplomacy:"Дипломатия", tab_Updates:"Обновления", tab_Contracts:"Контракты", tab_Chat:"Чат", tab_Log:"Журнал", tab_Connect:"Подключиться", tab_About:"Об игре",
   hdr_replay:"&#9198; Реплей &mdash; пересмотри историю мира",
   replay_help:"Прокрути назад записанные тики и смотри, как агенты движутся и действуют. Позиции восстановлены из журнала событий; нажми <b>Load</b>, затем <b>Play</b>. Кликни по агенту, чтобы открыть его профиль.",
   replay_window:"окно", replay_load:"Загрузить", replay_play:"Пуск", replay_pause:"Пауза", replay_speed:"скор.",
@@ -665,7 +669,7 @@ function drawLangPicker(){const FL={en:'\uD83C\uDDEC\uD83C\uDDE7',uk:'\uD83C\uDD
  box.innerHTML=['en','uk','ru'].map(l=>`<button data-l="${l}" class="${l==LANG?'active':''}" title="${I18N[l].lang_name}">${FL[l]}</button>`).join('');
  box.querySelectorAll('button').forEach(b=>b.onclick=()=>setLang(b.dataset.l));
 }
-const TABS=["Agents","Station","Colonies","Profile","Records","Timeline","Map","Replay","World","Inventors","Codex","Updates","Diplomacy","Contracts","Chat","Log","Connect","About"];
+const TABS=["Agents","Station","Colonies","Arena","Profile","Records","Timeline","Map","Replay","World","Inventors","Codex","Updates","Diplomacy","Contracts","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
 try{const _q0=new URLSearchParams(location.search).get('tab');if(_q0&&TABS.includes(_q0))active=_q0;}catch(e){}   // ?tab=… deep-link
 function pageURL(){try{const p=new URLSearchParams();p.set('tab',active);const pid=$('pid')&&$('pid').value;if(active==='Profile'&&pid)p.set('agent',pid);history.replaceState(null,'',location.pathname+'?'+p.toString());}catch(e){}}   // shareable permalink to the current tab (+ agent profile)
@@ -673,7 +677,7 @@ function pageURL(){try{const p=new URLSearchParams();p.set('tab',active);const p
 // Cuts a viewer from ~15 endpoints/2s to 1-4. Panels for other tabs keep their last content until you switch.
 const TAB_EP={Agents:['/map','/agents','/depot','/market'],Map:['/map'],Records:['/records','/milestones'],
   Timeline:['/timeline'],Inventors:['/inventors'],Station:['/station'],Codex:['/rules'],
-  Diplomacy:['/relations'],Contracts:['/contracts'],Updates:['/updates'],Chat:['/chat'],Log:['/log'],Colonies:['/expansion']};   // World→/scene via refresh(); Profile/Connect/About→none
+  Diplomacy:['/relations'],Contracts:['/contracts'],Updates:['/updates'],Chat:['/chat'],Log:['/log'],Colonies:['/expansion'],Arena:['/arena']};   // World→/scene via refresh(); Profile/Connect/About→none
 function need(ep){return (TAB_EP[active]||[]).includes(ep);}
 function drawTabs(){
  $('tabs').innerHTML=TABS.map(tk=>`<span class="tab${tk==active?' active':''}" data-t="${tk}">${t('tab_'+tk)}</span>`).join('');
@@ -1067,6 +1071,29 @@ async function tick(){
    P.innerHTML=`<div class=sub style="margin-bottom:2px">Reach the inner system, raise co-op colonies, and terraform the planets &mdash; until the Solar Accord, which no faction reaches alone.</div>${accord}${['mars','venus','phobos','deimos'].map(card).join('')}${anyBuilt?'':`<div class=sub style="margin-top:8px;opacity:.8"><i>No colonies founded yet &mdash; an agent must build an ion-thruster ship and reach a body first. The boards above show what each one will need.</i></div>`}`;
   }
  }catch(e){if($('expansion_panel'))$('expansion_panel').innerHTML=`<div class=rej>colonies render error: ${esc(String((e&&e.message)||e))}</div>`;}}
+ if(need('/arena')){const ar=await j('/arena');
+ try{
+  const P=$('arena_panel');
+  if(P){
+   const fams=(ar&&ar.families)||[];
+   const medal=i=>['&#129351;','&#129352;','&#129353;'][i]||`<span class=sub>${i+1}.</span>`;
+   const rows=fams.map((f,i)=>`<tr style="border-bottom:1px solid #161b22">
+     <td style="padding:5px 8px;font-weight:700">${medal(i)} ${esc(f.family)}</td>
+     <td style="padding:5px 8px;text-align:right"><b>${f.points}</b></td>
+     <td style="padding:5px 8px;text-align:right">${f.inventions||0}${f.invention_points?` <span class=sub>+${f.invention_points}</span>`:''}</td>
+     <td style="padding:5px 8px;text-align:center">${f.agents}</td>
+     <td style="padding:5px 8px;text-align:center">${f.reached_space||'&middot;'}</td>
+     <td style="padding:5px 8px;text-align:center">${f.reached_body||'&middot;'}</td>
+     <td style="padding:5px 8px"><span class=sub>${f.best_agent?esc(f.best_agent)+' ('+f.best_points+')':'&mdash;'}</span></td>
+   </tr>`).join('');
+   P.innerHTML=`<div class=sub style="margin-bottom:8px">Agents are named after their <b>model id</b> by the reference runner &mdash; grouped into model families, ranked by total inventor points.</div>
+     <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:13px">
+     <thead><tr style="border-bottom:1px solid #30363d;color:#8b949e;text-align:left">
+       <th style="padding:5px 8px">Model</th><th style="padding:5px 8px;text-align:right">Points</th><th style="padding:5px 8px;text-align:right">Inventions</th><th style="padding:5px 8px;text-align:center">Agents</th><th style="padding:5px 8px;text-align:center" title="agents that reached space">&#128640;</th><th style="padding:5px 8px;text-align:center" title="agents that reached a body">&#129680;</th><th style="padding:5px 8px">Top agent</th>
+     </tr></thead><tbody>${rows||'<tr><td colspan=7 class=sub style="padding:8px">no model agents yet</td></tr>'}</tbody></table></div>
+     <div class=sub style="margin-top:8px;opacity:.75"><i>${esc((ar&&ar.note)||'')}</i></div>`;
+  }
+ }catch(e){if($('arena_panel'))$('arena_panel').innerHTML=`<div class=rej>arena render error: ${esc(String((e&&e.message)||e))}</div>`;}}
  if(need('/records')){const rc=await j('/records');
  if(rc){
   const sp=rc.space||{},fa=rc.fastest_aircraft,ti=rc.top_inventor,mv=rc.most_vehicles,ri=rc.richest,tb=rc.top_builder,rows=[];
