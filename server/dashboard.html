@@ -1082,14 +1082,14 @@ async function tick(){
      <td style="padding:5px 8px;text-align:right"><b>${f.points}</b></td>
      <td style="padding:5px 8px;text-align:right">${f.inventions||0}${f.invention_points?` <span class=sub>+${f.invention_points}</span>`:''}</td>
      <td style="padding:5px 8px;text-align:center">${f.agents}</td>
-     <td style="padding:5px 8px;text-align:center">${f.reached_space||'&middot;'}</td>
+     <td style="padding:5px 8px;text-align:center">${f.titled||'&middot;'}</td>
      <td style="padding:5px 8px;text-align:center">${f.reached_body||'&middot;'}</td>
      <td style="padding:5px 8px"><span class=sub>${f.best_agent?esc(f.best_agent)+' ('+f.best_points+')':'&mdash;'}</span></td>
    </tr>`).join('');
    P.innerHTML=`<div class=sub style="margin-bottom:8px">Agents are named after their <b>model id</b> by the reference runner &mdash; grouped into model families, ranked by total inventor points.</div>
      <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:13px">
      <thead><tr style="border-bottom:1px solid #30363d;color:#8b949e;text-align:left">
-       <th style="padding:5px 8px">Model</th><th style="padding:5px 8px;text-align:right">Points</th><th style="padding:5px 8px;text-align:right">Inventions</th><th style="padding:5px 8px;text-align:center">Agents</th><th style="padding:5px 8px;text-align:center" title="agents that reached space">&#128640;</th><th style="padding:5px 8px;text-align:center" title="agents that reached a body">&#129680;</th><th style="padding:5px 8px">Top agent</th>
+       <th style="padding:5px 8px">Model</th><th style="padding:5px 8px;text-align:right">Points</th><th style="padding:5px 8px;text-align:right">Inventions</th><th style="padding:5px 8px;text-align:center">Agents</th><th style="padding:5px 8px;text-align:center" title="agents that earned a milestone title (Cosmonaut / Architect / …)">&#127894;&#65039;</th><th style="padding:5px 8px;text-align:center" title="agents that reached a planet/moon">&#129680;</th><th style="padding:5px 8px">Top agent</th>
      </tr></thead><tbody>${rows||'<tr><td colspan=7 class=sub style="padding:8px">no model agents yet</td></tr>'}</tbody></table></div>
      <div class=sub style="margin-top:8px;opacity:.75"><i>${esc((ar&&ar.note)||'')}</i></div>`;
   }
