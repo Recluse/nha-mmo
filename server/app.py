@@ -1649,36 +1649,43 @@ def _model_family(name):
 
 
 def _arena():
-    """Per-model-FAMILY standings. Agents are named after their model id by the reference runner, so we group by family
-    and aggregate points / titles / space / body / inventions. Read-only spectator surface (no tick-path effect)."""
+    """Per-model-FAMILY standings across several lenses (Impact / Survival / Frontier / Economy / Activity) — since the
+    reference runner names each agent after its model id, this is the 'which model changes the deterministic world'
+    scoreboard. Returns every raw metric; the client sorts by the chosen lens. Read-only (no tick-path effect)."""
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
         cur.execute("""
             SELECT a.attrs->>'name' name, COALESCE((a.attrs->>'inventor_points')::int, 0) pts,
                    COALESCE(a.attrs->>'title', '') title,
-                   EXISTS(SELECT 1 FROM events e WHERE e.entity=a.id AND e.kind='escape') space,
-                   EXISTS(SELECT 1 FROM events e WHERE e.entity=a.id AND e.kind IN ('arrive', 'body_landing')) body
+                   COALESCE((a.attrs->>'deaths')::int, 0) deaths, COALESCE((a.attrs->>'kills')::int, 0) kills,
+                   COALESCE((a.buffers->>'credits')::int, 0) credits,
+                   (a.attrs ? 'body_awarded') body,
+                   COALESCE((SELECT max(tick) FROM events e WHERE e.entity=a.id), 0) last_act
             FROM entities a WHERE a.type='agent'""")
         agents = cur.fetchall()
         cur.execute("SELECT discoverer_name dn, COUNT(*) c, COALESCE(SUM(points), 0) p FROM dynamic_rules GROUP BY discoverer_name")
         invs = cur.fetchall()
+    active_since = t - ONLINE_TICKS
     fam = {}
 
     def slot(label):
-        return fam.setdefault(label, {"family": label, "agents": 0, "points": 0, "best_points": 0, "best_agent": None,
-                                      "titled": 0, "reached_space": 0, "reached_body": 0, "inventions": 0, "invention_points": 0})
+        return fam.setdefault(label, {"family": label, "is_model": label != "Other", "agents": 0, "active": 0,
+                                      "points": 0, "best_points": 0, "best_agent": None, "titled": 0,
+                                      "deaths": 0, "kills": 0, "credits": 0, "reached_body": 0,
+                                      "inventions": 0, "invention_points": 0})
     for a in agents:
         if (a["name"] or "").lower() in _ARENA_SKIP:
             continue
         s = slot(_model_family(a["name"]))
         s["agents"] += 1; s["points"] += a["pts"]
+        s["deaths"] += a["deaths"]; s["kills"] += a["kills"]; s["credits"] += a["credits"]
+        if int(a["last_act"] or 0) >= active_since:
+            s["active"] += 1
         if a["pts"] > s["best_points"]:
             s["best_points"] = a["pts"]; s["best_agent"] = a["name"]
         if a["title"]:
             s["titled"] += 1
-        if a["space"]:
-            s["reached_space"] += 1
         if a["body"]:
             s["reached_body"] += 1
     for iv in invs:
@@ -1686,10 +1693,10 @@ def _arena():
             continue
         s = slot(_model_family(iv["dn"]))
         s["inventions"] += int(iv["c"] or 0); s["invention_points"] += int(iv["p"] or 0)
-    ranked = sorted(fam.values(), key=lambda x: (-x["points"], -x["inventions"], -x["agents"]))
-    return {"tick": t, "families": ranked,
+    ranked = sorted(fam.values(), key=lambda x: (-x["points"], -x["inventions"], -x["agents"]))   # default: Impact
+    return {"tick": t, "families": ranked, "active_window": ONLINE_TICKS,
             "note": ("Grouped by model family from agent names — the reference runner names each agent after its model id. "
-                     "'Other' = non-model handles (external players, scripted reference bots).")}
+                     "'Other' = non-model handles (external players + scripted reference bots), NOT a comparable LLM.")}
 
 
 @app.get("/arena", tags=["history"])

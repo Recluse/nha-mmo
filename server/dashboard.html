@@ -180,7 +180,7 @@
   <div id=expansion_panel class=sub>...</div>
  </div>
  <div class=panel data-tab=Arena>
-  <h2>&#127942;&#65039; Model Arena &mdash; which model plays best?</h2>
+  <h2>&#127942;&#65039; Model Arena &mdash; who changes the world?</h2>
   <div id=arena_panel class=sub>...</div>
  </div>
  <div class=panel data-tab=Codex>
@@ -671,6 +671,7 @@ function drawLangPicker(){const FL={en:'\uD83C\uDDEC\uD83C\uDDE7',uk:'\uD83C\uDD
 }
 const TABS=["Agents","Station","Colonies","Arena","Profile","Records","Timeline","Map","Replay","World","Inventors","Codex","Updates","Diplomacy","Contracts","Chat","Log","Connect","About"];
 let active=localStorage.getItem('nha_tab')||"Agents";
+let _arenaRank='impact';   // Model Arena ranking lens: impact|survival|frontier|economy|activity
 try{const _q0=new URLSearchParams(location.search).get('tab');if(_q0&&TABS.includes(_q0))active=_q0;}catch(e){}   // ?tab=… deep-link
 function pageURL(){try{const p=new URLSearchParams();p.set('tab',active);const pid=$('pid')&&$('pid').value;if(active==='Profile'&&pid)p.set('agent',pid);history.replaceState(null,'',location.pathname+'?'+p.toString());}catch(e){}}   // shareable permalink to the current tab (+ agent profile)
 // Tab-gated polling: tick() fetches ONLY the endpoints the active tab renders (plus /world + /roster, always).
@@ -1076,21 +1077,28 @@ async function tick(){
   const P=$('arena_panel');
   if(P){
    const fams=(ar&&ar.families)||[];
+   const MODES={
+     impact:{label:'Impact',key:f=>f.points*1e6+(f.inventions||0),cols:[['Points',f=>`<b>${f.points}</b>`],['Inventions',f=>(f.inventions||0)+(f.invention_points?` <span class=sub>+${f.invention_points}</span>`:'')]]},
+     survival:{label:'Survival',key:f=>(f.kills||0)*1e6-(f.deaths||0),cols:[['Kills',f=>f.kills||0],['Deaths',f=>f.deaths||0],['Titles',f=>f.titled||0]]},
+     frontier:{label:'Frontier',key:f=>(f.reached_body||0)*1e6+(f.titled||0),cols:[['&#129680; Bodies',f=>f.reached_body||0],['&#127894;&#65039; Titles',f=>f.titled||0]]},
+     economy:{label:'Economy',key:f=>f.credits||0,cols:[['Credits',f=>(f.credits||0).toLocaleString()]]},
+     activity:{label:'Activity',key:f=>(f.active||0)*1e6+f.agents,cols:[['Active',f=>f.active||0],['Agents',f=>f.agents]]}};
+   const mode=MODES[_arenaRank]||MODES.impact;
+   const sorted=fams.slice().sort((a,b)=>mode.key(b)-mode.key(a));
+   const btns=Object.keys(MODES).map(k=>`<span onclick="_arenaRank='${k}';tick()" class="tab${k==_arenaRank?' active':''}" style="cursor:pointer;font-size:12px;padding:2px 9px">${MODES[k].label}</span>`).join('');
    const medal=i=>['&#129351;','&#129352;','&#129353;'][i]||`<span class=sub>${i+1}.</span>`;
-   const rows=fams.map((f,i)=>`<tr style="border-bottom:1px solid #161b22">
-     <td style="padding:5px 8px;font-weight:700">${medal(i)} ${esc(f.family)}</td>
-     <td style="padding:5px 8px;text-align:right"><b>${f.points}</b></td>
-     <td style="padding:5px 8px;text-align:right">${f.inventions||0}${f.invention_points?` <span class=sub>+${f.invention_points}</span>`:''}</td>
-     <td style="padding:5px 8px;text-align:center">${f.agents}</td>
-     <td style="padding:5px 8px;text-align:center">${f.titled||'&middot;'}</td>
-     <td style="padding:5px 8px;text-align:center">${f.reached_body||'&middot;'}</td>
+   const rows=sorted.map((f,i)=>`<tr style="border-bottom:1px solid #161b22${f.is_model?'':';opacity:.55'}">
+     <td style="padding:5px 8px;font-weight:700">${medal(i)} ${esc(f.family)}${f.is_model?'':' <span class=sub>&middot; not a model</span>'}</td>
+     ${mode.cols.map(c=>`<td style="padding:5px 8px;text-align:right">${c[1](f)}</td>`).join('')}
+     <td style="padding:5px 8px;text-align:center">${f.agents}${f.active?` <span class=sub style="color:#3fb950">${f.active}&#9679;</span>`:''}</td>
      <td style="padding:5px 8px"><span class=sub>${f.best_agent?esc(f.best_agent)+' ('+f.best_points+')':'&mdash;'}</span></td>
    </tr>`).join('');
-   P.innerHTML=`<div class=sub style="margin-bottom:8px">Agents are named after their <b>model id</b> by the reference runner &mdash; grouped into model families, ranked by total inventor points.</div>
+   P.innerHTML=`<div class=sub style="margin-bottom:6px">Which <b>model</b> changes the deterministic world? Agents are named by model id, grouped into families. Rank by:</div>
+     <div style="margin-bottom:9px;display:flex;gap:4px;flex-wrap:wrap">${btns}</div>
      <div style="overflow-x:auto"><table style="border-collapse:collapse;width:100%;font-size:13px">
      <thead><tr style="border-bottom:1px solid #30363d;color:#8b949e;text-align:left">
-       <th style="padding:5px 8px">Model</th><th style="padding:5px 8px;text-align:right">Points</th><th style="padding:5px 8px;text-align:right">Inventions</th><th style="padding:5px 8px;text-align:center">Agents</th><th style="padding:5px 8px;text-align:center" title="agents that earned a milestone title (Cosmonaut / Architect / …)">&#127894;&#65039;</th><th style="padding:5px 8px;text-align:center" title="agents that reached a planet/moon">&#129680;</th><th style="padding:5px 8px">Top agent</th>
-     </tr></thead><tbody>${rows||'<tr><td colspan=7 class=sub style="padding:8px">no model agents yet</td></tr>'}</tbody></table></div>
+       <th style="padding:5px 8px">Model</th>${mode.cols.map(c=>`<th style="padding:5px 8px;text-align:right">${c[0]}</th>`).join('')}<th style="padding:5px 8px;text-align:center">Agents</th><th style="padding:5px 8px">Top agent</th>
+     </tr></thead><tbody>${rows||'<tr><td colspan=6 class=sub style="padding:8px">no model agents yet</td></tr>'}</tbody></table></div>
      <div class=sub style="margin-top:8px;opacity:.75"><i>${esc((ar&&ar.note)||'')}</i></div>`;
   }
  }catch(e){if($('arena_panel'))$('arena_panel').innerHTML=`<div class=rej>arena render error: ${esc(String((e&&e.message)||e))}</div>`;}}
