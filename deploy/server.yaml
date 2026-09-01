@@ -21,7 +21,7 @@ metadata:
   name: nha-mmo-server
   namespace: nha-mmo
 spec:
-  replicas: 6                                # was 2 -> headroom for spectator spikes (53k-sub feature post 01.09); scale back to 2 when quiet
+  replicas: 2                                # baked image + nginx edge-cache mean origin load is ~flat vs spectators; 2 is plenty (was briefly 6 during the 01.09 spike)
   strategy:
     type: RollingUpdate
     rollingUpdate: {maxUnavailable: 1, maxSurge: 0}   # terminate-then-create: frees a node so the replacement spreads (hard topology). Site still served by the other replica.
@@ -37,17 +37,20 @@ spec:
           labelSelector: {matchLabels: {app: nha-mmo-server}}
       dnsConfig: {options: [{name: ndots, value: "1"}]}   # resolve pypi.org/external names directly
       terminationGracePeriodSeconds: 30
+      imagePullSecrets:
+        - {name: nha-gitlab-registry}      # read_registry deploy token → pull the deps image from registry.gitlab.com
       containers:
         - name: server
-          # Code mounted from the nha-engine-code / nha-server-code ConfigMaps (generated from the repo at
-          # deploy time) — no registry/pull-secret on this private homelab cluster.
-          image: python:3.12-slim
+          # App CODE is still mounted from the nha-engine-code / nha-server-code ConfigMaps (regenerated from the
+          # repo at deploy time). The DEPS are now baked into this image (Dockerfile → GitLab registry) so pods start
+          # INSTANTLY — no more pip-on-boot (which made rollouts ~90s/pod and dropped capacity mid-deploy, the pain
+          # point of the 01.09 spectator-spike incident). Rebuild the image only when deps change (CI build-image job).
+          image: registry.gitlab.com/recluse-internal/no-human-allowed-mmo/server:deps1
+          imagePullPolicy: IfNotPresent
           workingDir: /app
           command: ["sh", "-c"]
           args:
-            # audit: deps pinned == so identical SHAs run identical deps + a restart survives a PyPI breaking release
-            - pip install --no-cache-dir -q fastapi==0.141.1 "uvicorn[standard]==0.52.4" psycopg2-binary==2.9.12 pydantic==2.13.4 markdown==3.10.2
-              && exec uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 2
+            - exec uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 2
           env:
             - {name: PG_DSN, value: "host=postgres.nha-mmo.svc.cluster.local dbname=nhamoo user=nhamoo"}  # DIRECT (pgbouncer parked)
             - {name: TICK_SECONDS, value: "2"}

@@ -18,17 +18,20 @@ spec:
     spec:
       nodeSelector: {ci-build: "true"}
       dnsConfig: {options: [{name: ndots, value: "1"}]}
+      imagePullSecrets:
+        - {name: nha-gitlab-registry}      # same read_registry deploy token as the API pods
       containers:
         - name: tick
-          image: python:3.12-slim
+          # Deps baked into the image (same as server.yaml) so the single ticker restarts in ~10s, not ~90s of pip —
+          # the Recreate rollout pauses the world only briefly. App code still from the engine/server ConfigMaps.
+          image: registry.gitlab.com/recluse-internal/no-human-allowed-mmo/server:deps1
+          imagePullPolicy: IfNotPresent
           workingDir: /app
           command: ["sh", "-c"]
           args:
             # dedicated tick process — NOT uvicorn. Skips _grid (the /map biome pre-warm the ticker never needs,
             # which stalled startup under load) and serves no HTTP. Just ensure-world then the engine tick loop.
-            # audit: deps pinned == (esp. for the single nha-tick writer — a restart must not pull a broken upstream)
-            - pip install --no-cache-dir -q fastapi==0.141.1 "uvicorn[standard]==0.52.4" psycopg2-binary==2.9.12 pydantic==2.13.4
-              && exec python -c "from server import app; app._ensure_world(); app._tick_loop()"
+            - exec python -c "from server import app; app._ensure_world(); app._tick_loop()"
           env:
             - {name: PG_DSN, value: "host=postgres.nha-mmo.svc.cluster.local dbname=nhamoo user=nhamoo"}  # DIRECT
             - {name: TICK_SECONDS, value: "2"}
