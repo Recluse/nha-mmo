@@ -46,7 +46,7 @@ spec:
           command: ["sh", "-c"]
           args:
             # audit: deps pinned == so identical SHAs run identical deps + a restart survives a PyPI breaking release
-            - pip install --no-cache-dir -q fastapi==0.141.1 "uvicorn[standard]==0.52.4" psycopg2-binary==2.9.12 pydantic==2.13.4
+            - pip install --no-cache-dir -q fastapi==0.141.1 "uvicorn[standard]==0.52.4" psycopg2-binary==2.9.12 pydantic==2.13.4 markdown==3.10.2
               && exec uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 2
           env:
             - {name: PG_DSN, value: "host=postgres.nha-mmo.svc.cluster.local dbname=nhamoo user=nhamoo"}  # DIRECT (pgbouncer parked)

@@ -2,3 +2,4 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.4
 psycopg2-binary==2.9.12
 pydantic==2.13.4
+markdown==3.10.2

@@ -1848,7 +1848,46 @@ if not os.path.exists(_AGENTS_MD):
     _AGENTS_MD = os.path.join(os.path.dirname(__file__), "..", "AGENTS.md")
 
 
+def _build_agents_html():
+    """Render AGENTS.md → a dark-themed HTML page with heading-slug anchors (#section) + clickable permalinks, so client
+    devs can deep-link to a section/schema from inline code comments. Built ONCE at import; None if `markdown` is
+    unavailable → /AGENTS.md then serves raw markdown as before (graceful, no hard dep on the render path)."""
+    try:
+        import markdown as _md
+        body = _md.markdown(open(_AGENTS_MD, encoding="utf-8").read(),
+                            extensions=["toc", "tables", "fenced_code", "sane_lists"],
+                            extension_configs={"toc": {"permalink": "#", "permalink_title": "Link to this section"}})
+    except Exception:
+        return None
+    return ("<!doctype html><html lang=en><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>NHA — AGENTS.md</title><style>"
+            "body{max-width:880px;margin:0 auto;padding:28px 20px 80px;background:#0d1117;color:#e6edf3;"
+            "font:15px/1.65 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}"
+            "a{color:#58a6ff;text-decoration:none}a:hover{text-decoration:underline}"
+            "h1,h2,h3,h4{line-height:1.25;margin:1.4em 0 .5em;scroll-margin-top:14px}"
+            "h1{font-size:1.9em}h2{font-size:1.45em;border-bottom:1px solid #21262d;padding-bottom:.3em}h3{font-size:1.2em}"
+            ".headerlink{visibility:hidden;font-size:.8em;margin-left:.4em;color:#8b949e}"
+            "h1:hover .headerlink,h2:hover .headerlink,h3:hover .headerlink,h4:hover .headerlink{visibility:visible}"
+            "code{background:#161b22;padding:.15em .4em;border-radius:5px;font-size:.9em}"
+            "pre{background:#161b22;padding:12px 14px;border-radius:8px;overflow-x:auto}pre code{background:none;padding:0}"
+            "table{border-collapse:collapse;margin:1em 0;display:block;overflow-x:auto}"
+            "th,td{border:1px solid #21262d;padding:5px 9px;text-align:left}th{background:#161b22}"
+            "blockquote{border-left:3px solid #30363d;margin:1em 0;padding:.2em 14px;color:#9aa4af}"
+            "hr{border:none;border-top:1px solid #21262d;margin:2em 0}img{max-width:100%}"
+            "</style></head><body>" + body +
+            "<hr><p style='color:#8b949e;font-size:13px'>Raw Markdown: <code>curl -H 'Accept: text/markdown' "
+            "https://nha.recluse.lol/AGENTS.md</code> · live API schema: "
+            "<a href='/openapi.json'>/openapi.json</a> · Swagger: <a href='/docs'>/docs</a></p></body></html>")
+
+
+_AGENTS_HTML = _build_agents_html()
+
+
 @app.get("/AGENTS.md", tags=["meta"])
-def agents_md():
-    """The agent-developer quickstart + full API reference (Markdown). Mirror of the repo-root AGENTS.md."""
+def agents_md(request: Request):
+    """The agent-developer quickstart + full API reference. A browser gets a rendered HTML page with deep-linkable
+    #section anchors; tools/agents (Accept: text/markdown, or */*) get the raw Markdown — mirror of the repo-root file."""
+    if _AGENTS_HTML and "text/html" in (request.headers.get("accept") or ""):
+        return HTMLResponse(_AGENTS_HTML)
     return FileResponse(_AGENTS_MD, media_type="text/markdown; charset=utf-8")
