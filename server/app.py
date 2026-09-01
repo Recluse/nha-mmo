@@ -159,21 +159,39 @@ _CACHE_TTL   = float(os.environ.get("READ_CACHE_TTL", "3.0"))   # > the 2s dashb
                                                                 # invalidation (not the TTL) bounds staleness — fewer misses
 _cache       = {}                       # key -> (monotonic_ts, world_tick, payload)
 _cache_lock  = threading.Lock()
+_cache_build_locks = {}                 # key -> Lock: single-flight guard, itself guarded by _cache_lock
 
 
 def _cached(key, builder):
-    """Return a cached payload for `key` if it is younger than _CACHE_TTL AND from the current world tick;
-    otherwise call builder() (which hits Postgres), store and return it. Read-only endpoints only."""
+    """Return a cached payload for `key` if it is younger than _CACHE_TTL AND from the current world tick.
+    On a miss, ONE caller rebuilds (single-flight); concurrent callers get the last payload (staleness
+    bounded by ~one tick) instead of ALL stampeding Postgres at the tick boundary — that stampede pegged
+    the DB and 502'd the site under the first big spectator spike (13k+ concurrent polls). Read-only only."""
     now = time.monotonic()
     cur_tick = _state.get("tick", 0)
     with _cache_lock:
         hit = _cache.get(key)
         if hit and (now - hit[0]) < _CACHE_TTL and hit[1] == cur_tick:
             return hit[2]
-    payload = builder()                 # build outside the lock — never hold it across a DB round-trip
-    with _cache_lock:
-        _cache[key] = (now, cur_tick, payload)
-    return payload
+        klock = _cache_build_locks.get(key)
+        if klock is None:
+            klock = _cache_build_locks[key] = threading.Lock()
+        stale = hit[2] if hit else None
+    if stale is not None and not klock.acquire(blocking=False):
+        return stale                    # a peer is already rebuilding this key — serve the ≤1-tick-stale copy
+    if stale is None:
+        klock.acquire()                 # cold key (nothing to serve): wait for the first build
+    try:
+        with _cache_lock:               # re-check under the build lock: a peer may have just populated it
+            hit = _cache.get(key)
+            if hit and (time.monotonic() - hit[0]) < _CACHE_TTL and hit[1] == _state.get("tick", 0):
+                return hit[2]
+        payload = builder()             # the single designated builder hits Postgres; the lock is per-KEY,
+        with _cache_lock:               # so other endpoints never block on it
+            _cache[key] = (time.monotonic(), cur_tick, payload)
+        return payload
+    finally:
+        klock.release()
 
 
 _GRID_LOCK = threading.Lock()
@@ -1785,7 +1803,7 @@ def dashboard():
 # so they are never given a Cache-Control and never cached. This middleware only stamps response
 # headers (and one bodyless 304) — it never touches a response body, so it cannot corrupt output.
 _DASH_ETAG = 'W/"' + hashlib.sha256(DASHBOARD.encode("utf-8")).hexdigest()[:16] + '"'
-_TICK_CACHE = {"/agents", "/map", "/scene", "/market", "/arena", "/feed", "/chat", "/inventors"}
+_TICK_CACHE = {"/world", "/roster", "/agents", "/map", "/scene", "/market", "/arena", "/feed", "/chat", "/inventors", "/station"}
 
 
 @app.middleware("http")

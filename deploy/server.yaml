@@ -21,7 +21,7 @@ metadata:
   name: nha-mmo-server
   namespace: nha-mmo
 spec:
-  replicas: 2                                # was 1 -> redundancy: one pod stalling no longer drops the whole API
+  replicas: 6                                # was 2 -> headroom for spectator spikes (53k-sub feature post 01.09); scale back to 2 when quiet
   strategy:
     type: RollingUpdate
     rollingUpdate: {maxUnavailable: 1, maxSurge: 0}   # terminate-then-create: frees a node so the replacement spreads (hard topology). Site still served by the other replica.
