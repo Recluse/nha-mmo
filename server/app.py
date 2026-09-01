@@ -1775,6 +1775,34 @@ def dashboard():
     return DASHBOARD
 
 
+# ── Edge/browser caching for the spectator read-path (pre-spike hardening) ───────────────────
+# The dashboard SHELL (/) is static between deploys, so cache it hard + carry a weak ETag: a
+# returning viewer revalidates for free (304, no 79 KB re-send) once the 5-min window lapses.
+# Hot JSON polls get max-age = one tick (2 s) — on a 2 s world that staleness is invisible, but
+# it lets browsers/CDNs COALESCE identical polls instead of every spectator hammering origin.
+# Query-parameterised reads (e.g. /deposits?x=..) stay correct: HTTP caches key on the full URL.
+# Per-agent/private (/observe/{id}) and mutating paths are simply ABSENT from the allowlist below,
+# so they are never given a Cache-Control and never cached. This middleware only stamps response
+# headers (and one bodyless 304) — it never touches a response body, so it cannot corrupt output.
+_DASH_ETAG = 'W/"' + hashlib.sha256(DASHBOARD.encode("utf-8")).hexdigest()[:16] + '"'
+_TICK_CACHE = {"/agents", "/map", "/scene", "/market", "/arena", "/feed", "/chat", "/inventors"}
+
+
+@app.middleware("http")
+async def _cache_headers(request, call_next):
+    path = request.url.path
+    if request.method == "GET" and path == "/" and request.headers.get("if-none-match") == _DASH_ETAG:
+        return Response(status_code=304, headers={"ETag": _DASH_ETAG, "Cache-Control": "public, max-age=300"})
+    resp = await call_next(request)
+    if request.method == "GET" and resp.status_code == 200:
+        if path == "/":
+            resp.headers["Cache-Control"] = "public, max-age=300"
+            resp.headers["ETag"] = _DASH_ETAG
+        elif path in _TICK_CACHE:
+            resp.headers["Cache-Control"] = "public, max-age=2"
+    return resp
+
+
 # Binary assets (textures, 3D models, logo) live in the SEPARATE nha-server-static ConfigMap so the code
 # ConfigMap stays small — each ConfigMap has its own hard 1 MiB k8s object cap. In the repo they sit in
 # server/static/; in-cluster a PROJECTED volume flat-merges nha-server-code + nha-server-static into
