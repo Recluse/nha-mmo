@@ -432,7 +432,7 @@ const I18N={
   ph_no_milestones:"no milestones yet", tl_ticks_later:"ticks later",
   ph_no_alliances:"no alliances yet", ph_no_wars:"no wars &mdash; uneasy peace", ph_no_offers:"no pending offers", lbl_pending:"pending",
   ph_nothing_yet:"nothing yet",
-  lbl_online_of:"online", lbl_total:"total", ph_no_agents_short:"no agents", lbl_space_tag:"space",
+  lbl_online_of:"online", lbl_total:"total", lbl_open_profile:"open profile", ph_no_agents_short:"no agents", lbl_space_tag:"space",
   col_item:"item", col_recipe_phys:"recipe (physics)", col_inventor:"inventor", lbl_undiscovered:"undiscovered",
   col_invention:"invention", col_recipe_ing:"recipe (ingredients)", col_properties:"properties",
   ph_no_guild_inv:"no Guild inventions yet — novel mixes are escrowed and judged by the referee",
@@ -526,7 +526,7 @@ const I18N={
   ph_no_milestones:"поки що немає віх", tl_ticks_later:"тиків потому",
   ph_no_alliances:"ще немає союзів", ph_no_wars:"війн немає &mdash; крихкий мир", ph_no_offers:"немає пропозицій на розгляді", lbl_pending:"на розгляді",
   ph_nothing_yet:"поки що нічого",
-  lbl_online_of:"онлайн", lbl_total:"усього", ph_no_agents_short:"немає агентів", lbl_space_tag:"космос",
+  lbl_online_of:"онлайн", lbl_total:"усього", lbl_open_profile:"відкрити профіль", ph_no_agents_short:"немає агентів", lbl_space_tag:"космос",
   col_item:"предмет", col_recipe_phys:"рецепт (фізика)", col_inventor:"винахідник", lbl_undiscovered:"не відкрито",
   col_invention:"винахід", col_recipe_ing:"рецепт (інгредієнти)", col_properties:"властивості",
   ph_no_guild_inv:"ще немає винаходів Гільдії — новаторські суміші депоновано й оцінює рефері",
@@ -620,7 +620,7 @@ const I18N={
   ph_no_milestones:"пока нет вех", tl_ticks_later:"тиков спустя",
   ph_no_alliances:"пока нет союзов", ph_no_wars:"войн нет &mdash; хрупкий мир", ph_no_offers:"нет предложений на рассмотрении", lbl_pending:"на рассмотрении",
   ph_nothing_yet:"пока ничего",
-  lbl_online_of:"онлайн", lbl_total:"всего", ph_no_agents_short:"нет агентов", lbl_space_tag:"космос",
+  lbl_online_of:"онлайн", lbl_total:"всего", lbl_open_profile:"открыть профиль", ph_no_agents_short:"нет агентов", lbl_space_tag:"космос",
   col_item:"предмет", col_recipe_phys:"рецепт (физика)", col_inventor:"изобретатель", lbl_undiscovered:"не открыто",
   col_invention:"изобретение", col_recipe_ing:"рецепт (ингредиенты)", col_properties:"свойства",
   ph_no_guild_inv:"пока нет изобретений Гильдии — новые смеси депонированы и оцениваются рефери",
@@ -1022,7 +1022,7 @@ async function tick(){
   const ob=Object.values(_agg).sort((a,b)=>(a.resource<b.resource?-1:a.resource>b.resource?1:0)||(a.side<b.side?1:a.side>b.side?-1:0)||(b.price-a.price)).slice(0,24).map(o=>`<div><span class=${o.side=='sell'?'O':'F'}>${o.side}</span> <b>${o.qty}</b> ${o.resource} @ ${o.price}${o.n>1?` <span class=sub>&times;${o.n}</span>`:''}</div>`).join('');
   $('market').innerHTML=`<div style="margin-bottom:6px">${t('lbl_last')} ${lp}</div>${ob||`<span class=sub>${t('ph_orderbook_empty')}</span>`}`;}}
  if(need('/chat')){const ch=await j('/chat');
- if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}">${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;}
+ if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}"${(!x.is_human&&x.sender)?` style="cursor:pointer" onclick="loadProfile(${x.sender})" title="${esc(t('lbl_open_profile'))}"`:''}>${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;}
  if(need('/log')){const lg=await j('/log?limit=120'+(logBefore>0?'&before='+logBefore:''));drawLogChips();
  if($('loglive'))$('loglive').innerHTML=logBefore>0?`<span onclick="logBefore=0;if($('logjump'))$('logjump').value='';tick()" style="cursor:pointer;color:#58a6ff">&#9209;&#65038; back to live</span>`:'';
  if(lg){const fr=LOGCATS[logCat]?lg.log.filter(e=>LOGCATS[logCat].includes(e.kind)):lg.log;
