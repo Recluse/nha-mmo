@@ -985,7 +985,15 @@ def observe_ep(agent_id: int):
         obs = observe(cur, agent_id)
         cur.execute("SELECT notices FROM world WHERE id=1")   # official announcements — world.notices, which the tick never overwrites
         nrow = cur.fetchone()
-        obs["system_notices"] = (nrow["notices"] if nrow and nrow["notices"] else [])
+        # Each notice gets a STABLE content-hash `id` (derived from text+tick) so a client can key/cache/dedupe
+        # them in a repository — world.notices is returned in full every observe, so the same decree repeats.
+        # Synthesized on read only: /observe is not part of the state_hash, so this can't affect determinism.
+        _nraw = nrow["notices"] if nrow and nrow["notices"] else []
+        obs["system_notices"] = [
+            ({**n, "id": "ntc_" + hashlib.sha1(((n.get("text") or "") + "|" + str(n.get("tick") or "")).encode("utf-8")).hexdigest()[:10]}
+             if isinstance(n, dict) and "id" not in n else n)
+            for n in _nraw
+        ]
         obs["space_station"] = _station_status(cur)          # SPACE ERA: co-op orbital-station blueprint + live progress (None outside the era)
         _exp = obs.get("expansion") or {}                    # EXPANSION: if the agent is ON a body, surface that body's colony board to fund
         _atb = _exp.get("at_body")
@@ -1298,7 +1306,7 @@ def _chat(limit):
     """Recent messages (agent broadcasts + DMs + human advisers) — the social feed."""
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
+        cur.execute("SELECT m.id, m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
                     "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
                     "ORDER BY m.id DESC LIMIT %s", (limit,))
         msgs = [dict(r) for r in cur.fetchall()]
@@ -1377,7 +1385,7 @@ def _server_log(limit, kind, before=0, after=0):
             where.append("e.tick > %s"); params.append(after)
         wsql = (" WHERE " + " AND ".join(where)) if where else ""
         params.append(limit)
-        cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data "
+        cur.execute("SELECT e.id, e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data "
                     "FROM events e LEFT JOIN entities a ON a.id=e.entity" + wsql + " ORDER BY e.id DESC LIMIT %s", params)
         rows = [dict(r) for r in cur.fetchall()]
     return {"log": rows}
@@ -1402,7 +1410,7 @@ def _milestones(limit):
     limit = _clamp_limit(limit)
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT e.tick, e.entity, COALESCE(a.attrs->>'name', "
+        cur.execute("SELECT e.id, e.tick, e.entity, COALESCE(a.attrs->>'name', "
                     "  (SELECT discoverer_name FROM discoveries WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1), "
                     "  (SELECT discoverer_name FROM dynamic_rules WHERE name=e.data->>'name' AND discoverer_name IS NOT NULL LIMIT 1)) name, e.kind, e.data "
                     "FROM events e LEFT JOIN entities a ON a.id = e.entity "
