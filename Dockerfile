@@ -8,6 +8,10 @@
 #
 # All five deps ship manylinux wheels (incl. pydantic-core and psycopg2-binary), so no
 # compiler/build stage is needed on slim.
+#
+# The published tag is CONTENT-ADDRESSED off this file (deps-<sha256(Dockerfile)[:12]>, see .gitlab-ci.yml), so a
+# tag always means one exact dependency set and rollback-by-tag works. Editing this file changes the tag — CI then
+# refuses to deploy until deploy/server.yaml and deploy/server-tick.yaml reference the new one.
 FROM python:3.12-slim
 
 # Keep in lockstep with requirements.txt and the (now-removed) inline pip line in

@@ -24,7 +24,7 @@ spec:
         - name: tick
           # Deps baked into the image (same as server.yaml) so the single ticker restarts in ~10s, not ~90s of pip —
           # the Recreate rollout pauses the world only briefly. App code still from the engine/server ConfigMaps.
-          image: registry.gitlab.com/recluse-internal/no-human-allowed-mmo/server:deps1
+          image: registry.gitlab.com/recluse-internal/no-human-allowed-mmo/server:deps-fec3d138f968
           imagePullPolicy: IfNotPresent
           workingDir: /app
           command: ["sh", "-c"]

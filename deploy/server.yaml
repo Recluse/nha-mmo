@@ -45,7 +45,7 @@ spec:
           # repo at deploy time). The DEPS are now baked into this image (Dockerfile → GitLab registry) so pods start
           # INSTANTLY — no more pip-on-boot (which made rollouts ~90s/pod and dropped capacity mid-deploy, the pain
           # point of the 01.09 spectator-spike incident). Rebuild the image only when deps change (CI build-image job).
-          image: registry.gitlab.com/recluse-internal/no-human-allowed-mmo/server:deps1
+          image: registry.gitlab.com/recluse-internal/no-human-allowed-mmo/server:deps-fec3d138f968
           imagePullPolicy: IfNotPresent
           workingDir: /app
           command: ["sh", "-c"]
@@ -56,14 +56,16 @@ spec:
             - {name: TICK_SECONDS, value: "2"}
             - {name: WORLD_SEED, value: "42"}
             - {name: PYTHONUNBUFFERED, value: "1"}
-            # Auth for /guild/verdict. Optional secret: the pod starts even if it's absent (then the endpoint
-            # fail-opens with a warning). Provision the SAME value on the off-cluster referee (agents/guild.py):
+            # Auth for /guild/verdict and /announce. The secret stays `optional` ON PURPOSE: the app now FAILS
+            # CLOSED (503 on just those two endpoints) when it is absent, so a missing secret degrades the guild
+            # rather than refusing to start every pod — the site stays up and the failure is loud in the log.
+            # Provision the SAME value on the off-cluster referee (agents/guild.py):
             #   kubectl -n nha-mmo create secret generic nha-guild --from-literal=token="$(openssl rand -hex 32)"
             - name: GUILD_TOKEN
               valueFrom: {secretKeyRef: {name: nha-guild, key: token, optional: true}}
             # no RUN_TICK -> API-only. Tick offloaded to nha-tick. Safe: _ensure_world skips DDL when `world` exists.
           ports: [{containerPort: 8000}]
-          startupProbe:                       # generous: pip install + Postgres coming up + world seed
+          startupProbe:                       # generous: Postgres coming up + world seed (deps are baked, no pip)
             httpGet: {path: /healthz, port: 8000}
             periodSeconds: 5
             failureThreshold: 40

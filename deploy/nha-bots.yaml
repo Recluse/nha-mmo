@@ -34,7 +34,14 @@ spec:
         # absolute paths so every backgrounded bot finds its file regardless of cwd (each bot adds /app to sys.path itself)
         # A SECOND miner (Prospector) runs the same proven Expansion pipeline → two barons co-fund the Phobos Forward
         # Base (a colony needs >=2 distinct funders to complete). Distinct MINER_NAME → its own agent + token.
-        - "python /app/dumb.py & python /app/baryga.py & python /app/woodcutter.py & python /app/miner.py & MINER_NAME=Prospector MINER_DEST=phobos python /app/miner.py & python /app/varvar_groq.py & wait"
+        # `wait -n || exit 1` (bash), NOT a bare `wait`: a bare wait returns 0 once ALL children exit, so a single
+        # crashed bot left the pod Running/1-1 forever while that agent simply vanished from the world, with no
+        # restart and no signal (audit 2026-09-03). Now the first bot to die takes the pod down and k8s restarts
+        # all six — the bots are idempotent on restart (they reclaim their agent by persisted token).
+        - "bash -c 'python /app/dumb.py & python /app/baryga.py & python /app/woodcutter.py & python /app/miner.py & MINER_NAME=Prospector MINER_DEST=phobos python /app/miner.py & python /app/varvar_groq.py & while true; do wait -n || exit 1; done'"
+        resources:                    # every sibling manifest sets these; without them a runaway bot could
+          requests: {cpu: 100m, memory: 128Mi}   # starve the tick writer on the same node (audit 2026-09-03)
+          limits: {memory: 512Mi}
         volumeMounts:
         - name: code
           mountPath: /app
