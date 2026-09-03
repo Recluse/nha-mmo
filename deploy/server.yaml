@@ -37,6 +37,11 @@ spec:
           labelSelector: {matchLabels: {app: nha-mmo-server}}
       dnsConfig: {options: [{name: ndots, value: "1"}]}   # resolve pypi.org/external names directly
       terminationGracePeriodSeconds: 30
+      securityContext:                       # verified with a probe pod on the real image + mounts before landing:
+        runAsNonRoot: true                   # uid 10001 imports every dep and reads the ConfigMap-mounted code
+        runAsUser: 10001                     # (the projected volume is world-readable, so no fsGroup needed).
+        runAsGroup: 10001                    # postgres is deliberately NOT changed here — it is stateful on a
+        seccompProfile: {type: RuntimeDefault}   # hostPath and needs its own uid to own the data dir.
       imagePullSecrets:
         - {name: nha-gitlab-registry}      # read_registry deploy token → pull the deps image from registry.gitlab.com
       containers:
@@ -45,6 +50,9 @@ spec:
           # repo at deploy time). The DEPS are now baked into this image (Dockerfile → GitLab registry) so pods start
           # INSTANTLY — no more pip-on-boot (which made rollouts ~90s/pod and dropped capacity mid-deploy, the pain
           # point of the 01.09 spectator-spike incident). Rebuild the image only when deps change (CI build-image job).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
           image: registry.gitlab.com/recluse-internal/no-human-allowed-mmo/server:deps-fec3d138f968
           imagePullPolicy: IfNotPresent
           workingDir: /app

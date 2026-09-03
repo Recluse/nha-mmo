@@ -18,6 +18,11 @@ spec:
         options:
         - name: ndots
           value: "1"
+      securityContext:                       # verified with a probe pod on the real image + mounts before landing:
+        runAsNonRoot: true                   # uid 10001 imports every dep and reads the ConfigMap-mounted code
+        runAsUser: 10001                     # (the projected volume is world-readable, so no fsGroup needed).
+        runAsGroup: 10001                    # postgres is deliberately NOT changed here — it is stateful on a
+        seccompProfile: {type: RuntimeDefault}   # hostPath and needs its own uid to own the data dir.
       containers:
       - name: bots
         image: python:3.12-slim
@@ -29,6 +34,9 @@ spec:
         envFrom:
         - secretRef:
             name: nha-groq        # GROQ_API_KEY + GROQ_URL for varvar_groq (the scripted bots ignore them)
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
         command: ["sh", "-c"]
         args:
         # absolute paths so every backgrounded bot finds its file regardless of cwd (each bot adds /app to sys.path itself)
