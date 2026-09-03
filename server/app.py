@@ -99,11 +99,16 @@ class SceneOut(ApiModel):
 class RelationsOut(ApiModel):
     relations: List[Any] = []
 class MarketOut(ApiModel):
-    orders: List[Any] = []; last_prices: Dict[str, Any] = {}
+    """`orders` is capped; `total` is how many open orders match and `truncated` says whether you got them all —
+    truncation is ALPHABETICAL by resource, so a truncated book can contain only the first resource. Use
+    ?resource=<name> to get one resource's complete book."""
+    orders: List[Any] = []; last_prices: Dict[str, Any] = {}; total: int = 0; truncated: bool = False
 class ChatOut(ApiModel):
     messages: List[Any] = []
 class LogOut(ApiModel):
-    log: List[Any] = []
+    """`has_more` + `next_before_id` are the cursor: pass next_before_id back as ?before_id= for the next older
+    page. Paging with ?before=<tick> alone cannot terminate (a tick can hold more events than `limit`)."""
+    log: List[Any] = []; has_more: bool = False; next_before_id: int = 0
 class MilestonesOut(ApiModel):
     milestones: List[Any] = []
 class TimelineOut(ApiModel):
@@ -1366,17 +1371,28 @@ def feed(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
     return {"actions": rows}
 
 
-def _market(limit=0):
-    """Open order book + last clearing price per resource. `limit`>0 caps the order list (the dashboard only
-    renders ~16; an unbounded book was ~260KB at 3.4k open orders). limit=0 returns the full book (agents/runner.py)."""
+_MARKET_HARD_CAP = 2000            # ceiling even for limit=0 — see below
+
+
+def _market(limit=0, resource=""):
+    """Open order book + last clearing price per resource. `limit`>0 caps the order list; limit=0 means "as much
+    as we'll ever send" — which is now the HARD CAP, not the whole book: bare GET /market returned all 29,554 open
+    orders (~2.2MB, ~9s) because one agent held 29,544 of them (audit 2026-09-03, F18).
+    Truncation is alphabetical (ORDER BY resource, ...), so a capped response could silently contain only the
+    first resource — hence `total`/`truncated` in the payload, and a `resource` filter so a client can pull ONE
+    resource's complete book instead of guessing. Bots reading orders[:8] are unaffected: the ordering is
+    unchanged, so the first N rows are identical."""
+    n = min(limit or _MARKET_HARD_CAP, _MARKET_HARD_CAP)
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        q = ("SELECT id,agent,side,resource,qty,price FROM market_orders "
-             "WHERE status='open' ORDER BY resource, side, price DESC, id")
-        if limit:
-            cur.execute(q + " LIMIT %s", (limit,))
-        else:
-            cur.execute(q)
+        where, params = "status='open'", []
+        if resource:
+            where += " AND resource=%s"; params.append(resource)
+        cur.execute(f"SELECT count(*) c FROM market_orders WHERE {where}", params)
+        total = (cur.fetchone() or {}).get("c", 0)
+        q = (f"SELECT id,agent,side,resource,qty,price FROM market_orders "
+             f"WHERE {where} ORDER BY resource, side, price DESC, id")
+        cur.execute(q + " LIMIT %s", params + [n])
         orders = [dict(r) for r in cur.fetchall()]
         for o in orders:                                  # defence in depth: `resource` is agent-supplied and the
             # `order` verb applies no allowlist, so a crafted value reached the dashboard's innerHTML (audit
@@ -1385,12 +1401,15 @@ def _market(limit=0):
             o["resource"] = re.sub(r"[^a-z0-9_]", "", str(o.get("resource") or "").lower())[:24]
         cur.execute("SELECT attrs->'last' last FROM entities WHERE type='market' LIMIT 1")
         row = cur.fetchone()
-    return {"orders": orders, "last_prices": (row["last"] if row and row["last"] else {})}
+    return {"orders": orders, "last_prices": (row["last"] if row and row["last"] else {}),
+            "total": total, "truncated": total > len(orders)}
 
 
 @app.get("/market", response_model=MarketOut, tags=["economy"])
-def market(limit: int = Query(0, ge=0, le=2000)):
-    return _cached(("market", limit), lambda: _market(limit))
+def market(limit: int = Query(0, ge=0, le=2000),
+           resource: str = Query("", description="filter to one resource — the only way to get ONE resource's COMPLETE book, since a capped response is truncated alphabetically")):
+    resource = re.sub(r"[^a-z0-9_]", "", (resource or "").lower())[:24]   # finite key domain + injection-proof
+    return _cached(("market", limit, resource), lambda: _market(limit, resource))
 
 
 def _chat(limit):
@@ -1470,7 +1489,7 @@ def human_say(s: HumanSay, request: Request):
     return {"ok": True}
 
 
-def _server_log(limit, kind, before=0, after=0):
+def _server_log(limit, kind, before=0, after=0, before_id=0):
     """Full server log — every world event + agent action, newest first. Optional ?kind=escape,invent
     (comma-separated) to filter kinds; ?before=<tick> scrubs back through history; ?after=<tick> returns only
     what happened since a tick (the 'since your last visit' digest). before/after work now that events are kept."""
@@ -1483,17 +1502,27 @@ def _server_log(limit, kind, before=0, after=0):
             where.append("e.tick <= %s"); params.append(before)
         if after > 0:
             where.append("e.tick > %s"); params.append(after)
+        # TRUE cursor paging on the monotonic PK. Paging by `before`=<tick> alone cannot terminate: `tick` is
+        # inclusive and one tick can hold more events than `limit`, so a client with limit<=52 got a page entirely
+        # inside one tick and re-requested the identical page forever, with duplicate rows at every boundary
+        # (audit 2026-09-03, F19). `before_id` is exclusive and strictly decreasing, so paging always advances.
+        if before_id > 0:
+            where.append("e.id < %s"); params.append(before_id)
         wsql = (" WHERE " + " AND ".join(where)) if where else ""
-        params.append(limit)
+        params.append(limit + 1)                          # fetch one extra to detect "there is more" exactly
         cur.execute("SELECT e.id, e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data "
                     "FROM events e LEFT JOIN entities a ON a.id=e.entity" + wsql + " ORDER BY e.id DESC LIMIT %s", params)
         rows = [dict(r) for r in cur.fetchall()]
-    return {"log": rows}
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    return {"log": rows, "has_more": has_more,
+            "next_before_id": (rows[-1]["id"] if rows and has_more else 0)}   # feed straight back as ?before_id=
 
 
 @app.get("/log", response_model=LogOut, tags=["history"])
 def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "",
-               before: int = Query(0, ge=0), after: int = Query(0, ge=0)):
+               before: int = Query(0, ge=0), after: int = Query(0, ge=0),
+               before_id: int = Query(0, ge=0, description="cursor: pass the previous response's next_before_id to get the NEXT older page (paging by `before` alone cannot terminate)")):
     limit = _clamp_limit(limit)
     kind = re.sub(r"[^a-z_,]", "", (kind or "").lower())[:64]   # free-form `kind` was an unbounded cache-key domain
     # `before`/`after` are tick numbers: clamp to the live tick so a huge value can't request a scan of the whole
@@ -1503,9 +1532,9 @@ def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "
     after = min(after, t_now)
     # before/after are visitor-unique history queries (each returning visitor mints a distinct 'after=<their last-seen tick>').
     # Routing those through the tick-keyed _cache would leak an entry per distinct tick that can never serve again. Skip the cache.
-    if before or after:
-        return _server_log(limit, kind, before, after)
-    return _cached(("log", limit, kind, before, after), lambda: _server_log(limit, kind, before, after))
+    if before or after or before_id:
+        return _server_log(limit, kind, before, after, before_id)
+    return _cached(("log", limit, kind), lambda: _server_log(limit, kind))
 
 
 def _milestones(limit):

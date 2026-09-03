@@ -23,7 +23,10 @@ CREATE INDEX IF NOT EXISTS events_kind_tick_idx ON events(kind, tick);
 CREATE INDEX IF NOT EXISTS events_entity_kind_tick_idx ON events(entity, kind, tick);   -- per-agent EXISTS/max(tick) subqueries in /agents,/scene,/roster (filter by entity+kind, order by tick)
 CREATE INDEX IF NOT EXISTS events_entity_id_idx ON events(entity, id);   -- /agent/{id} recent[] feed + the last_act lookup
 CREATE INDEX IF NOT EXISTS events_tick_idx ON events(tick);
-CREATE INDEX IF NOT EXISTS events_kind_id_idx ON events(kind, id);       -- /timeline + /milestones
+CREATE INDEX IF NOT EXISTS events_kind_id_idx ON events(kind, id);       -- single-kind history filters (/log?kind=)
+-- MUST stay a superset of the kind sets in _milestones/_timeline (server/app.py) — see engine.py SCHEMA.
+CREATE INDEX IF NOT EXISTS events_milestone_id_idx ON events(id DESC)
+  WHERE kind IN ('escape','invent','reject','generate','war','peace','attune','destroyed','land','build','ally');
 CREATE INDEX IF NOT EXISTS events_tick_id_idx ON events(tick, id);       -- /log?before=/after=
 CREATE TABLE IF NOT EXISTS tick_hashes (tick int PRIMARY KEY, hash text NOT NULL);
 CREATE TABLE IF NOT EXISTS market_orders (id bigserial PRIMARY KEY, agent bigint NOT NULL,

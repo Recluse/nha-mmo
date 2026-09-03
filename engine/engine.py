@@ -492,7 +492,15 @@ CREATE INDEX IF NOT EXISTS events_entity_id_idx ON events(entity, id);   -- /age
 -- The three below were live on prod (or newly required) but declared NOWHERE, so a DB rebuilt from this SCHEMA
 -- silently lost them and every history read fell back to a full scan of the unpruned events table (audit 2026-09-03).
 CREATE INDEX IF NOT EXISTS events_tick_idx ON events(tick);              -- /log?after=, the "since your last visit" digest
-CREATE INDEX IF NOT EXISTS events_kind_id_idx ON events(kind, id);       -- /timeline + /milestones: kind IN (...) ORDER BY id DESC (was a 9s backward pkey scan)
+CREATE INDEX IF NOT EXISTS events_kind_id_idx ON events(kind, id);       -- single-kind history filters (/log?kind=)
+-- /timeline + /milestones filter kind IN (...) and ORDER BY id DESC. Postgres will NOT merge 8 (kind,id) scans for
+-- that — it picked a backward pkey scan that discarded 1.4M rows (~2.6s). This PARTIAL index on id, restricted to
+-- the milestone kinds, serves both boards directly: measured 2.6s -> 2.1ms. A partial index is usable when the
+-- query predicate IMPLIES the index predicate, so this one list must stay a SUPERSET of both endpoints' kind sets
+-- (server/app.py _milestones + _timeline). Adding a kind to either endpoint without adding it here silently
+-- reverts that endpoint to the 2.6s scan.
+CREATE INDEX IF NOT EXISTS events_milestone_id_idx ON events(id DESC)
+  WHERE kind IN ('escape','invent','reject','generate','war','peace','attune','destroyed','land','build','ally');
 CREATE INDEX IF NOT EXISTS events_tick_id_idx ON events(tick, id);       -- /log?before=/after= paging: WHERE tick <=/> %s ORDER BY id DESC
 CREATE TABLE IF NOT EXISTS tick_hashes (tick int PRIMARY KEY, hash text NOT NULL);
 CREATE TABLE IF NOT EXISTS market_orders (id bigserial PRIMARY KEY, agent bigint NOT NULL,

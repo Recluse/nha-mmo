@@ -554,7 +554,9 @@ def _vehicle_summary(veh):
 
 def turn(prov, model, aid, last, tok):
     obs = api(f"/observe/{aid}")
-    world = api("/world"); market = api("/market"); depot = api("/depot")
+    # ?limit=50 — only orders[:8] is ever used below, but this used to fetch the ENTIRE open book (29.5k orders,
+    # ~2.2MB, ~9s) on every LLM turn. The ordering is unchanged, so orders[:8] is byte-identical to before.
+    world = api("/world"); market = api("/market?limit=50"); depot = api("/depot")
     others = [{"id": o["id"], "name": o["name"], "credits": (o["buffers"] or {}).get("credits", 0)}
               for o in api("/agents")["agents"] if o["id"] != aid]
     user = (f"You are agent #{aid} (model {model}).\n"
