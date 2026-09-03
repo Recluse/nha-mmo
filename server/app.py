@@ -88,6 +88,29 @@ class ApiModel(BaseModel):
 
 class HealthOut(ApiModel):
     ok: bool = True; tick: int = 0; running: bool = False; drift: int = 0
+
+# The three endpoints an agent MUST call had no 200 schema at all, so /openapi.json — advertised in AGENTS.md as
+# the machine-readable contract — was useless to a client generator for exactly the calls that matter (audit
+# 2026-09-03). ApiModel is extra="allow", so declaring fields can never DROP a key the handler returns.
+class AgentRegisteredOut(ApiModel):
+    """POST /agents. `reused` is the discriminator: True = you got an EXISTING agent back (nothing was created),
+    False = a new agent was created. `token` is present only when you may control that agent — on the reuse path
+    it is returned solely to a caller who already proved it, and is null otherwise (read `note` for why)."""
+    agent_id: int = 0; reused: bool = False
+    token: Optional[str] = None; note: Optional[str] = None
+    materials: Optional[Dict[str, Any]] = None      # new agents only
+    spawn: Optional[List[int]] = None               # new agents only: [x, y]
+
+class IntentQueuedOut(ApiModel):
+    """POST /intent. The intent is QUEUED, not applied: poll GET /intent/{queued_intent} once the world tick has
+    advanced past `tick`."""
+    queued_intent: int = 0; tick: int = 0; note: Optional[str] = None
+
+class IntentStatusOut(ApiModel):
+    """GET /intent/{id}. `status` is pending | applied | rejected; `result` is the human-readable outcome (the DM
+    text of a `tell` is redacted here — see AGENTS.md). 410 means it aged out of the retention window."""
+    id: int = 0; agent: int = 0; verb: str = ""; status: str = ""
+    result: Optional[str] = None; created: Optional[int] = None
 class WorldOut(ApiModel):
     tick: int = 0; tick_seconds: float = 2.0; entities: Dict[str, int] = {}; last_state_hash: Optional[str] = None; visitors: int = 0
 class DepotOut(ApiModel):
@@ -1161,7 +1184,7 @@ def _reg_rate_exceeded(cid):
         return len(hits) > _REG_MAX_NEW
 
 
-@app.post("/agents", tags=["agent"])
+@app.post("/agents", response_model=AgentRegisteredOut, tags=["agent"])
 def register_agent(a: AgentIn, request: Request, response: Response):
     """Spawn a fresh agent with starting materials → returns its id (use it for observe/intent)."""
     with _db() as conn:                    # Fix #4: never leak the connection on any raise/return path
@@ -1284,7 +1307,7 @@ class IntentIn(BaseModel):
         return v
 
 
-@app.post("/intent", tags=["agent"])
+@app.post("/intent", response_model=IntentQueuedOut, tags=["agent"])
 def submit_intent(it: IntentIn):
     """Enqueue an agent action. Applied (or loop-guarded) on the next tick — the world is authoritative."""
     agent = it.agent if it.agent is not None else it.agent_id   # accept `agent` OR the `agent_id` alias
@@ -1312,7 +1335,7 @@ def submit_intent(it: IntentIn):
             "note": f"queued at tick {tick}; applied on a later tick. GET /intent/{iid} for its status+result once the tick advances."}
 
 
-@app.get("/intent/{intent_id}", tags=["agent"])
+@app.get("/intent/{intent_id}", response_model=IntentStatusOut, tags=["agent"])
 def intent_status(intent_id: int):
     """The stored OUTCOME of a queued intent — how an agent learns whether its action worked.
     `status` is `pending` until a tick applies it, then `applied` or `rejected`; `result` is the outcome
