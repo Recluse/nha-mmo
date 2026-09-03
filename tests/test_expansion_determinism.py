@@ -12,13 +12,17 @@ Asserts the two runs produce an IDENTICAL tick_hash chain (forward replay is det
 the chain actually evolves. Same infra as test_determinism (isolated nha_test DB on 127.0.0.1:15432;
 SKIPS if unreachable, so it never blocks a deploy).
 """
+import atexit
 import os
 import sys
 import pytest
 
 _HOST = "host=127.0.0.1 port=15432 user=nhamoo"
 _ADMIN_DSN = _HOST + " dbname=nhamoo"
-_TEST_DSN = _HOST + " dbname=nha_test"
+# PER-PROCESS test DB — see the note in test_determinism.py: a single shared name meant two concurrent runs
+# terminated each other's connections via pg_terminate_backend and both failed mid-tick.
+_TEST_DB = "nha_test_x%d" % os.getpid()
+_TEST_DSN = _HOST + " dbname=" + _TEST_DB
 _ENGINE_DIR = os.path.join(os.path.dirname(__file__), "..", "engine")
 
 
@@ -36,10 +40,23 @@ def _connect_or_skip():
 def _recreate_test_db():
     import psycopg2
     c = psycopg2.connect(_ADMIN_DSN); c.autocommit = True; cur = c.cursor()
-    cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='nha_test' AND pid<>pg_backend_pid()")
-    cur.execute("DROP DATABASE IF EXISTS nha_test")
-    cur.execute("CREATE DATABASE nha_test")
+    cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s AND pid<>pg_backend_pid()", (_TEST_DB,))
+    cur.execute("DROP DATABASE IF EXISTS " + _TEST_DB)
+    cur.execute("CREATE DATABASE " + _TEST_DB)
     c.close()
+    atexit.register(_drop_test_db)
+
+
+def _drop_test_db():
+    """Best-effort teardown so per-process DBs don't accumulate."""
+    try:
+        import psycopg2
+        c = psycopg2.connect(_ADMIN_DSN, connect_timeout=3); c.autocommit = True; cur = c.cursor()
+        cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s AND pid<>pg_backend_pid()", (_TEST_DB,))
+        cur.execute("DROP DATABASE IF EXISTS " + _TEST_DB)
+        c.close()
+    except Exception:
+        pass
 
 
 def _run_once(n):

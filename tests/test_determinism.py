@@ -11,13 +11,20 @@ Needs a Postgres reachable at 127.0.0.1:15432 (isolated throwaway DB `nha_test`,
 `nhamoo`). Locally:  kubectl -n nha-mmo port-forward deploy/postgres 15432:5432  &  then run pytest.
 If no such Postgres is reachable (e.g. the CI shell runner), the test SKIPS rather than fails.
 """
+import atexit
 import os
 import sys
 import pytest
 
 _HOST = "host=127.0.0.1 port=15432 user=nhamoo"
 _ADMIN_DSN = _HOST + " dbname=nhamoo"
-_TEST_DSN = _HOST + " dbname=nha_test"
+# PER-PROCESS test DB. It used to be a single shared `nha_test`, and _recreate_test_db() below runs
+# pg_terminate_backend over EVERY connection to it — so two concurrent runs (e.g. a developer running the suite
+# locally while CI runs the same job against the same cluster Postgres) killed each other's connections mid-tick
+# and both failed with "server closed the connection unexpectedly". Observed for real on 2026-09-03. The DB name
+# never enters the hash chain, so scoping it per process is behaviour-neutral.
+_TEST_DB = "nha_test_%d" % os.getpid()
+_TEST_DSN = _HOST + " dbname=" + _TEST_DB
 _ENGINE_DIR = os.path.join(os.path.dirname(__file__), "..", "engine")
 
 
@@ -35,10 +42,23 @@ def _connect_or_skip():
 def _recreate_test_db():
     import psycopg2
     c = psycopg2.connect(_ADMIN_DSN); c.autocommit = True; cur = c.cursor()
-    cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='nha_test' AND pid<>pg_backend_pid()")
-    cur.execute("DROP DATABASE IF EXISTS nha_test")
-    cur.execute("CREATE DATABASE nha_test")
+    cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s AND pid<>pg_backend_pid()", (_TEST_DB,))
+    cur.execute("DROP DATABASE IF EXISTS " + _TEST_DB)
+    cur.execute("CREATE DATABASE " + _TEST_DB)
     c.close()
+    atexit.register(_drop_test_db)
+
+
+def _drop_test_db():
+    """Best-effort teardown so per-process DBs don't accumulate."""
+    try:
+        import psycopg2
+        c = psycopg2.connect(_ADMIN_DSN, connect_timeout=3); c.autocommit = True; cur = c.cursor()
+        cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s AND pid<>pg_backend_pid()", (_TEST_DB,))
+        cur.execute("DROP DATABASE IF EXISTS " + _TEST_DB)
+        c.close()
+    except Exception:
+        pass
 
 
 def _seed_rich(conn, engine):
