@@ -110,20 +110,49 @@ def _run_once(n):
     return chain
 
 
+def _run_in_subprocess(n, hashseed):
+    """Run the SAME replay in a fresh interpreter under an explicit PYTHONHASHSEED, returning the chain as JSON.
+
+    Why this exists: both replays used to run in ONE interpreter, so str/bytes hash randomisation was IDENTICAL
+    for both by construction — the equality assertion literally could not observe the class of bug it exists to
+    catch (a set/dict iteration order leaking into hashed state). Varying the seed across processes makes that
+    class reachable (audit 2026-09-03)."""
+    import json
+    import subprocess
+    env = dict(os.environ, PYTHONHASHSEED=str(hashseed))
+    r = subprocess.run([sys.executable, os.path.abspath(__file__), "--chain", str(n)],
+                       capture_output=True, text=True, env=env, timeout=600)
+    if r.returncode != 0:
+        raise AssertionError("subprocess replay failed:\n" + (r.stdout or "")[-2000:] + (r.stderr or "")[-2000:])
+    return [tuple(x) for x in json.loads(r.stdout.strip().splitlines()[-1])]
+
+
 @pytest.mark.integration
 def test_tick_chain_is_deterministic_and_evolving():
     """Same seed → identical tick_hash chain (replay-safe), and the chain actually changes tick-to-tick
-    (so the maintenance systems are genuinely exercised, not a static no-op world)."""
+    (so the maintenance systems are genuinely exercised, not a static no-op world).
+
+    The second replay runs in a SEPARATE interpreter with a DIFFERENT PYTHONHASHSEED, so this also proves the
+    chain does not depend on Python's per-process string hash randomisation."""
     _connect_or_skip()
     N = 40
     _recreate_test_db(); chain1 = _run_once(N)
-    _recreate_test_db(); chain2 = _run_once(N)
+    chain2 = _run_in_subprocess(N, hashseed=12345)     # different interpreter AND different hash seed
     assert len(chain1) == N, f"expected {N} ticks, got {len(chain1)}"
-    assert chain1 == chain2, "NON-DETERMINISTIC: identical seed produced different tick_hash chains"
+    assert chain1 == chain2, ("NON-DETERMINISTIC: the same seed produced different tick_hash chains across "
+                              "processes — most likely a set/dict iteration order reaching hashed state")
     assert len({h for _, h in chain1}) > 1, "world never changed — seed too static to exercise the tick systems"
 
 
 if __name__ == "__main__":
+    # `--chain N` is the subprocess entry point used by the cross-process determinism check: seed a fresh DB,
+    # run N ticks, print the chain as JSON on the last stdout line. Kept machine-readable and quiet.
+    if "--chain" in sys.argv:
+        import json
+        _n = int(sys.argv[sys.argv.index("--chain") + 1])
+        _recreate_test_db()
+        print(json.dumps(_run_once(_n)))
+        sys.exit(0)
     _connect_or_skip()
     import hashlib
     _recreate_test_db(); c1 = _run_once(40)

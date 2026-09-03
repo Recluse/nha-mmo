@@ -943,50 +943,49 @@ def _terraform_status(cur, body):
     return out
 
 
-_colony_cache = {"t": -999.0, "v": {}}
+# These four boards used ad-hoc {"t":…, "v":…} TTL caches with NO single-flight, so every 4s expiry released a
+# burst of duplicate rebuilds onto the 8-slot pool, and `body` is a client-supplied path param that was never
+# validated (an unbounded key domain). Routed through _cached(): per-tick invalidation, LRU-bounded, and one
+# designated builder per key. `body` is now checked against the engine's canonical list first, so an unknown body
+# is a cheap 404 that never reaches the DB or mints a cache key (audit 2026-09-03).
+def _valid_body(body):
+    b = re.sub(r"[^a-z]", "", (body or "").lower())[:16]
+    if b not in engine.EXPANSION_BODIES:
+        raise HTTPException(404, "unknown body — expected one of: " + ", ".join(sorted(engine.EXPANSION_BODIES)))
+    return b
+
+
 @app.get("/colony/{body}", tags=["world"])
 def colony_ep(body: str):
-    """Spectator view of a body's EXPANSION colony board (Phobos/Deimos/Mars/Venus). Returns null off-era / unknown body.
-    Cached 4s in-process like /station (spectator dashboards poll it)."""
-    now = time.monotonic()
-    key = (body or "").lower()
-    hit = _colony_cache["v"].get(key)
-    if hit and now - _colony_cache["t"] < 4.0:
-        return hit
-    with _db() as conn:
-        v = _colony_status(conn.cursor(cursor_factory=RealDictCursor), key)
-    if now - _colony_cache["t"] >= 4.0:
-        _colony_cache["t"] = now; _colony_cache["v"] = {}
-    _colony_cache["v"][key] = v
-    return v
+    """Spectator view of a body's EXPANSION colony board (Phobos/Deimos/Mars/Venus). Returns null off-era."""
+    b = _valid_body(body)
+    def build():
+        with _db() as conn:
+            return _colony_status(conn.cursor(cursor_factory=RealDictCursor), b)
+    return _cached(("colony", b), build)
 
 
-_terraform_cache = {"t": -999.0, "v": {}}
 @app.get("/terraform/{body}", tags=["world"])
 def terraform_ep(body: str):
-    """Spectator view of a planet's EXPANSION terraforming program (Mars/Venus) — sequential stages, progress, planetary
-    index. Returns null off-era / unknown body. Cached 4s in-process like /station."""
-    now = time.monotonic()
-    key = (body or "").lower()
-    hit = _terraform_cache["v"].get(key)
-    if hit and now - _terraform_cache["t"] < 4.0:
-        return hit
-    with _db() as conn:
-        v = _terraform_status(conn.cursor(cursor_factory=RealDictCursor), key)
-    if now - _terraform_cache["t"] >= 4.0:
-        _terraform_cache["t"] = now; _terraform_cache["v"] = {}
-    _terraform_cache["v"][key] = v
-    return v
+    """Spectator view of a planet's EXPANSION terraforming program (Mars/Venus) — sequential stages, progress,
+    planetary index. Returns null off-era or for a body with no program."""
+    b = _valid_body(body)
+    def build():
+        with _db() as conn:
+            return _terraform_status(conn.cursor(cursor_factory=RealDictCursor), b)
+    return _cached(("terraform", b), build)
 
 
-_expansion_cache = {"t": -999.0, "v": None}
 @app.get("/expansion", tags=["world"])
 def expansion_ep():
     """Spectator SUMMARY of the whole Expansion Era — every body's colony + terraforming board and the Solar Accord
-    status — in one call for the Colonies tab. Returns null off the space/expansion era. Cached 4s in-process."""
-    now = time.monotonic()
-    if _expansion_cache["v"] is not None and now - _expansion_cache["t"] < 4.0:
-        return _expansion_cache["v"]
+    status — in one call for the Colonies tab. Returns null off the space/expansion era."""
+    return _cached("expansion", _expansion_build)
+
+
+def _expansion_build():
+    # ~19 DB round trips; was an ad-hoc 4s TTL cache with no single-flight, so each expiry released a burst of
+    # duplicate rebuilds onto the 8-slot pool. Now single-flighted through _cached (audit 2026-09-03).
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
@@ -1017,7 +1016,6 @@ def expansion_ep():
                    "accord": {"mars_terraformed": mars_tf, "venus_held": venus_held, "moon_base": moon_base,
                               "conditions_met": int(mars_tf) + int(venus_held) + int(moon_base),
                               "declared": declared}}
-    _expansion_cache["t"] = now; _expansion_cache["v"] = out
     return out
 
 
@@ -1059,19 +1057,14 @@ def observe_ep(agent_id: int):
     return obs
 
 
-_station_cache = {"t": -999.0, "v": {}}                   # tiny in-process TTL cache — every spectator's dashboard polls /station every 2s
 @app.get("/station", response_model=StationOut, tags=["world"])
 def station_ep():
-    """Spectator view of the SPACE ERA orbital station — the live module bill + progress (no agent id needed). Returns {} outside the era.
-    Cached in-process for 4s so the per-spectator 2s polling serves from memory instead of hitting the DB on every request (the build moves slowly)."""
-    now = time.monotonic()
-    if now - _station_cache["t"] < 4.0:
-        return _station_cache["v"]
-    with _db() as conn:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        v = _station_status(cur) or {}
-    _station_cache["t"] = now; _station_cache["v"] = v   # benign race under the GIL — worst case two threads recompute once
-    return v
+    """Spectator view of the SPACE ERA orbital station — the live module bill + progress (no agent id needed).
+    Returns {} outside the era. Served from the shared per-tick cache (single-flighted like every other board)."""
+    def build():
+        with _db() as conn:
+            return _station_status(conn.cursor(cursor_factory=RealDictCursor)) or {}
+    return _cached("station", build)
 
 
 class AgentIn(BaseModel):
