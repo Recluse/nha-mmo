@@ -95,7 +95,14 @@ class DepotOut(ApiModel):
 class MapOut(ApiModel):
     seed: int = 0; w: int = 0; h: int = 0; ascii: Optional[str] = None; agents: List[Any] = []; loading: bool = False
 class SceneOut(ApiModel):
-    w: int = 0; h: int = 0; biomes: List[Any] = []; deposits: List[Any] = []; agents: List[Any] = []; loading: bool = False
+    """`biomes`/`deposits` are the STATIC layers — sent only when ?static=1 (the 3D client builds them once), and
+    absent (null) otherwise. They were declared with `[]` defaults, so ?static=0 fabricated empty arrays that a
+    client could not distinguish from "the world has no deposits" (audit 2026-09-03)."""
+    w: int = 0; h: int = 0; agents: List[Any] = []; loading: bool = False
+    biomes: Optional[List[Any]] = None; deposits: Optional[List[Any]] = None
+    structures: Optional[List[Any]] = None; vehicles: Optional[List[Any]] = None
+    artifacts: Optional[List[Any]] = None; asteroids: Optional[List[Any]] = None; geese: Optional[List[Any]] = None
+    bombs: Optional[List[Any]] = None; storm: Optional[Any] = None
 class RelationsOut(ApiModel):
     relations: List[Any] = []
 class MarketOut(ApiModel):
@@ -1328,6 +1335,14 @@ def intent_status(intent_id: int):
         cur.execute("SELECT id, agent, verb, status, result, created FROM intents WHERE id=%s", (intent_id,))
         row = cur.fetchone()
     if not row:
+        # Resolved intents are pruned once ~5000 newer ones exist (~hours at current pace). Distinguish "pruned,
+        # it did happen" from "never existed" so a slow client isn't told its applied action was bogus (audit).
+        with _db() as conn2:
+            c2 = conn2.cursor()
+            c2.execute("SELECT COALESCE(MIN(id), 0) FROM intents")
+            oldest = (c2.fetchone() or [0])[0]
+        if oldest and intent_id < oldest:
+            raise HTTPException(410, "intent expired from the retention window — it was applied or rejected long ago")
         raise HTTPException(404, "no such intent")
     out = dict(row)
     out["result"] = _redact_result(out.get("result"))
