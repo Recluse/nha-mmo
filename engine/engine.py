@@ -478,6 +478,8 @@ CREATE TABLE IF NOT EXISTS entities (id bigserial PRIMARY KEY, type text NOT NUL
   buffers jsonb NOT NULL DEFAULT '{}', attrs jsonb NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS entities_type_idx ON entities(type);
 CREATE INDEX IF NOT EXISTS entities_owner_idx ON entities(owner) WHERE owner IS NOT NULL;
+CREATE INDEX IF NOT EXISTS entities_deposit_xy_idx ON entities(x, y) WHERE type='deposit';   -- observe()'s nearby-deposit window; live on prod but was declared nowhere, so a rebuilt DB lost it (audit 2026-09-03)
+CREATE INDEX IF NOT EXISTS entities_struct_pos_idx ON entities(x, y) WHERE type='structure'; -- the four "is there a structure here?" LIMIT 1 probes on the per-intent path
 CREATE TABLE IF NOT EXISTS intents (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   verb text NOT NULL, args jsonb NOT NULL DEFAULT '{}', status text NOT NULL DEFAULT 'pending',
   result text, created int);
@@ -487,11 +489,17 @@ CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, tick int NOT NULL,
 CREATE INDEX IF NOT EXISTS events_kind_tick_idx ON events(kind, tick);
 CREATE INDEX IF NOT EXISTS events_entity_kind_tick_idx ON events(entity, kind, tick);   -- per-agent EXISTS/max(tick) subqueries in /agents,/scene,/roster (filter by entity+kind, order by tick)
 CREATE INDEX IF NOT EXISTS events_entity_id_idx ON events(entity, id);   -- /agent/{id} recent[] feed: WHERE entity=%s ORDER BY id DESC LIMIT N (bounded index scan; matters now events are full-history)
+-- The three below were live on prod (or newly required) but declared NOWHERE, so a DB rebuilt from this SCHEMA
+-- silently lost them and every history read fell back to a full scan of the unpruned events table (audit 2026-09-03).
+CREATE INDEX IF NOT EXISTS events_tick_idx ON events(tick);              -- /log?after=, the "since your last visit" digest
+CREATE INDEX IF NOT EXISTS events_kind_id_idx ON events(kind, id);       -- /timeline + /milestones: kind IN (...) ORDER BY id DESC (was a 9s backward pkey scan)
+CREATE INDEX IF NOT EXISTS events_tick_id_idx ON events(tick, id);       -- /log?before=/after= paging: WHERE tick <=/> %s ORDER BY id DESC
 CREATE TABLE IF NOT EXISTS tick_hashes (tick int PRIMARY KEY, hash text NOT NULL);
 CREATE TABLE IF NOT EXISTS market_orders (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   side text NOT NULL, resource text NOT NULL, qty int NOT NULL, price int NOT NULL,
   status text NOT NULL DEFAULT 'open', created int);
 CREATE INDEX IF NOT EXISTS market_open_idx ON market_orders(resource, side, status);
+CREATE INDEX IF NOT EXISTS market_orders_agent_open_idx ON market_orders(agent, id) WHERE status='open';   -- observe()'s per-agent open-order list (one agent held 29.5k of 29.5k open orders → every observe filtered the whole table)
 CREATE TABLE IF NOT EXISTS trades (id bigserial PRIMARY KEY, proposer bigint NOT NULL,
   target bigint NOT NULL, give jsonb NOT NULL, want jsonb NOT NULL,
   status text NOT NULL DEFAULT 'open', created int);
@@ -670,8 +678,13 @@ def apply_intent(it, ents, cur, t, events):
         new_entity(ents, cur, "part", a["x"], a["y"], a["id"], {"part": part, "stats": stats, "upgrades": ups})
         return "applied", f"built {part}" + (f" [+{'+'.join(ups)}]" if ups else "")
     if verb == "finalize":                               # assemble the agent's loose parts into a vehicle
+        # ORDER BY id is REQUIRED, not cosmetic: the resulting `parts` LIST is stored verbatim into the new
+        # vehicle's attrs, and _entity_canon's json.dumps(sort_keys=True) normalises dict KEYS but preserves LIST
+        # order — so an unordered read let two replays of the same tick produce different state_hash values with
+        # no gameplay symptom (audit 2026-09-03, F10). The serving index returns ctid order, which the per-tick
+        # dirty write-back makes unstable. Pure tie-break: identical on every run Postgres already ordered by id.
         cur.execute("SELECT id, attrs->>'part' part, attrs->'stats' stats, attrs->'upgrades' ups FROM entities "
-                    "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL", (a["id"],))
+                    "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL ORDER BY id", (a["id"],))
         rows = cur.fetchall()
         if not rows:
             return "rejected", "no loose parts"

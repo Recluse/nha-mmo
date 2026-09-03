@@ -43,6 +43,8 @@ from fastapi.responses import HTMLResponse, FileResponse   # noqa: E402
 from pydantic import BaseModel, field_validator, ConfigDict   # noqa: E402
 from typing import Optional, List, Dict, Any           # noqa: E402
 import uuid                                            # noqa: E402  — per-browser registration cookie id
+from collections import OrderedDict                    # noqa: E402  — LRU eviction for the bounded read cache
+from starlette.concurrency import run_in_threadpool     # noqa: E402  — keep blocking DB work off the event loop
 
 DSN          = os.environ.get("PG_DSN", "host=127.0.0.1 dbname=nhamoo user=nhamoo")
 GUILD_TOKEN  = os.environ.get("GUILD_TOKEN", "")    # if set, /guild/verdict requires a matching X-Guild-Token header.
@@ -157,9 +159,24 @@ _FRONTIER_Y = WORLD_H
 # than one tick). POST / observe / intent are NEVER cached.
 _CACHE_TTL   = float(os.environ.get("READ_CACHE_TTL", "3.0"))   # > the 2s dashboard poll interval, so the per-tick
                                                                 # invalidation (not the TTL) bounds staleness — fewer misses
-_cache       = {}                       # key -> (monotonic_ts, world_tick, payload)
+_CACHE_MAX   = int(os.environ.get("READ_CACHE_MAX", "512"))     # HARD cap on distinct keys — several cache keys are
+                                                                # built from client query params (?limit, ?kind, x/y),
+                                                                # so an unbounded dict was a remote memory-exhaustion
+                                                                # lever: ~3MB retained per /scene?static=N (audit F3).
+_CACHE_MAX_STALE = 30.0                 # never serve a stale-fallback payload older than this
+_cache       = OrderedDict()            # key -> (monotonic_ts, world_tick, payload); LRU-evicted at _CACHE_MAX
 _cache_lock  = threading.Lock()
 _cache_build_locks = {}                 # key -> Lock: single-flight guard, itself guarded by _cache_lock
+
+
+def _cache_store(key, payload, tick):
+    """Insert under _cache_lock and evict the least-recently-used keys past _CACHE_MAX, dropping each victim's
+    build lock too (else _cache_build_locks becomes the unbounded dict instead)."""
+    _cache[key] = (time.monotonic(), tick, payload)
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_MAX:
+        victim, _ = _cache.popitem(last=False)
+        _cache_build_locks.pop(victim, None)
 
 
 def _cached(key, builder):
@@ -168,15 +185,16 @@ def _cached(key, builder):
     bounded by ~one tick) instead of ALL stampeding Postgres at the tick boundary — that stampede pegged
     the DB and 502'd the site under the first big spectator spike (13k+ concurrent polls). Read-only only."""
     now = time.monotonic()
-    cur_tick = _state.get("tick", 0)
     with _cache_lock:
         hit = _cache.get(key)
-        if hit and (now - hit[0]) < _CACHE_TTL and hit[1] == cur_tick:
+        if hit and (now - hit[0]) < _CACHE_TTL and hit[1] == _state.get("tick", 0):
+            _cache.move_to_end(key)     # LRU: a served key is a recently-used key
             return hit[2]
         klock = _cache_build_locks.get(key)
         if klock is None:
             klock = _cache_build_locks[key] = threading.Lock()
-        stale = hit[2] if hit else None
+        # only serve a stale copy that is actually recent — an ancient payload must block for a real rebuild
+        stale = hit[2] if (hit and (now - hit[0]) < _CACHE_MAX_STALE) else None
     if stale is not None and not klock.acquire(blocking=False):
         return stale                    # a peer is already rebuilding this key — serve the ≤1-tick-stale copy
     if stale is None:
@@ -188,7 +206,10 @@ def _cached(key, builder):
                 return hit[2]
         payload = builder()             # the single designated builder hits Postgres; the lock is per-KEY,
         with _cache_lock:               # so other endpoints never block on it
-            _cache[key] = (time.monotonic(), cur_tick, payload)
+            # stamp the tick observed AFTER the build: sampling it before meant any build longer than one tick
+            # (2s) produced an entry that was already expired, so slow endpoints rebuilt on EVERY request
+            # instead of ever caching — the mechanism behind the /agents and /timeline meltdowns (audit F9).
+            _cache_store(key, payload, _state.get("tick", 0))
         return payload
     finally:
         klock.release()
@@ -528,6 +549,20 @@ import hashlib                                            # for hashed-IP unique
 _seen_ips = set()                                        # in-process dedup: touch the DB at most once per new IP per process
 
 
+def _record_visitor_blocking(h):
+    """The blocking half of the visitor counter: semaphore acquire + INSERT + commit. Runs in the threadpool,
+    NEVER on the event loop — it used to sit inline in async middleware, so whenever the 8-slot pool was
+    saturated it stalled /healthz and every other in-flight request on that worker (audit 2026-09-03, F16).
+    Best-effort by design: a failure here must never cost a page view."""
+    try:
+        with _db() as conn:
+            cur = conn.cursor()
+            cur.execute("INSERT INTO visitors(ip_hash) VALUES(%s) ON CONFLICT DO NOTHING", (h,))
+            conn.commit()
+    except Exception:
+        pass
+
+
 @app.middleware("http")
 async def _count_visitor(request, call_next):
     """Count unique spectators by hashed client IP (X-Forwarded-For from the the public gateway nginx). Only the dashboard
@@ -541,10 +576,7 @@ async def _count_visitor(request, call_next):
                 if len(_seen_ips) > 50000:       # bound memory: the INSERT is ON CONFLICT DO NOTHING, so a reset
                     _seen_ips.clear()             # only costs at most one extra (idempotent) DB touch per IP afterwards
                 _seen_ips.add(h)
-                with _db() as conn:        # Fix #4: don't leak the conn if the INSERT raises
-                    cur = conn.cursor()
-                    cur.execute("INSERT INTO visitors(ip_hash) VALUES(%s) ON CONFLICT DO NOTHING", (h,))
-                    conn.commit()
+                await run_in_threadpool(_record_visitor_blocking, h)   # off the event loop (audit F16)
         except Exception:
             pass
     return await call_next(request)
@@ -599,8 +631,8 @@ class DepositsOut(ApiModel):
 
 
 @app.get("/deposits", response_model=DepositsOut, tags=["world"])
-def deposits_ep(x: int = Query(..., description="reference x (usually your position)"),
-                y: int = Query(..., description="reference y"),
+def deposits_ep(x: int = Query(..., ge=0, le=4095, description="reference x (usually your position)"),
+                y: int = Query(..., ge=0, le=4095, description="reference y"),
                 resource: str = Query("", description="filter to one resource, e.g. aluminum/silicon/titanium; omit for any"),
                 limit: int = Query(8, ge=1, le=50)):
     """The nearest live (amount>0) deposits to (x,y), optionally of one `resource` — so an agent can find materials
@@ -735,7 +767,9 @@ def _scene(static=True):
 
 @app.get("/scene", response_model=SceneOut, tags=["world"])
 def scene(static: int = 1):
-    return _cached(("scene", static), lambda: _scene(bool(static)))
+    # key on the BOOL, not the raw int: every distinct ?static=N minted its own ~3MB full-scene entry, so a
+    # trivial loop over N walked the workers past their memory limit (audit F3). Two keys is the whole domain.
+    return _cached(("scene", bool(static)), lambda: _scene(bool(static)))
 
 
 def _relations():
@@ -1068,6 +1102,42 @@ def _name_blocked(name):
     return False
 
 
+_REG_IP_MAX = int(os.environ.get("REG_IP_MAX", "30"))     # NEW agents per client IP per _REG_WINDOW_SECS
+_AGENT_CAP  = int(os.environ.get("AGENT_CAP", "20000"))   # hard ceiling on agent entities (124 live today)
+_HUMAN_CAP  = int(os.environ.get("HUMAN_CAP", "5000"))    # ...and on adviser identities (37 live today)
+reg_ip_log  = {}                                          # ip_hash -> [monotonic_ts, ...] of NEW-agent creations
+
+
+def _client_ip_hash(request):
+    """Hashed client IP (X-Forwarded-For from the public gateway). Raw IPs are never stored — same treatment as
+    the visitor counter. Used for abuse limits that must NOT be forgeable by simply dropping a cookie."""
+    try:
+        xff = request.headers.get("x-forwarded-for", "")
+        ip = (xff.split(",")[0].strip() if xff else "") or (request.client.host if request.client else "")
+        return hashlib.sha256(ip.encode()).hexdigest()[:16] if ip else ""
+    except Exception:
+        return ""
+
+
+def _ip_rate_exceeded(iph, log, cap):
+    """Sliding-window counter keyed on a hashed IP. The cookie-based guards below are advisory only — the server
+    MINTS a cookie when the client sends none, so a client that simply ignores cookies (curl, any script) resets
+    every per-cookie limit on each request and registered without bound (audit 2026-09-03, F6)."""
+    if not iph:
+        return False
+    now = time.monotonic()
+    with _reg_lock:
+        hits = [t for t in log.get(iph, []) if now - t < _REG_WINDOW_SECS]
+        hits.append(now)
+        log[iph] = hits
+        if len(log) > 20000:                              # bounded like reg_log / _seen_ips
+            for k in [k for k, v in list(log.items()) if now - (v[-1] if v else 0) >= _REG_WINDOW_SECS]:
+                log.pop(k, None)
+            if len(log) > 20000:
+                log.clear()
+        return len(hits) > cap
+
+
 def _reg_rate_exceeded(cid):
     """Record a NEW-agent creation for `cid` and return True if it has now exceeded _REG_MAX_NEW in the window.
     Call this ONLY when an actual new agent is about to be created (never on the idempotent reuse path)."""
@@ -1138,6 +1208,18 @@ def register_agent(a: AgentIn, request: Request, response: Response):
         if _reg_rate_exceeded(cid):
             banned_cids.add(cid)
             raise HTTPException(403, "too many registrations")
+        # Layer 4 — NON-FORGEABLE. Everything above keys on a cookie this server mints when the client sends none,
+        # so any client that ignores cookies reset all of it per request and could create agents without bound
+        # (audit 2026-09-03, F6). Agent rows are permanent: prune_tables never deletes entities, _load_world reads
+        # them all every reload, and state_hash canonicalises every one — so unbounded creation is unbounded tick
+        # cost. Limits are deliberately generous: a Discord/community bot onboarding real users stays well under
+        # them, while a registration loop trips within seconds.
+        if _ip_rate_exceeded(_client_ip_hash(request), reg_ip_log, _REG_IP_MAX):
+            raise HTTPException(429, f"too many new agents from this address (limit {_REG_IP_MAX} per "
+                                     f"{_REG_WINDOW_SECS // 60} min) — reuse your existing agent, or ask the operator to raise it")
+        cur.execute("SELECT count(*) FROM entities WHERE type='agent'")
+        if (cur.fetchone() or [0])[0] >= _AGENT_CAP:
+            raise HTTPException(503, "the world is at its agent capacity — ask the operator to raise it")
 
         cur.execute("SELECT tick FROM world WHERE id=1"); born = cur.fetchone()[0]
         # materialize hp/hp_max + stamp the born tick at creation (NOT lazily) so serialized attrs are uniform and
@@ -1252,7 +1334,11 @@ def _list_agents():
               (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind='escape')) reached_space,
               (SELECT count(*) FROM entities p WHERE p.type='part' AND p.owner=e.id AND (p.attrs->>'used') IS NULL) loose_parts,
               (SELECT count(*) FROM entities v WHERE v.type='vehicle' AND v.owner=e.id) vehicles,
-              (SELECT max(tick) FROM events ev WHERE ev.entity=e.id AND ev.kind <> 'destroyed') last_act,
+              -- NOT max(tick): that cannot use an index and walked all ~1.39M events PER AGENT (measured 13.3s for
+              -- ONE agent, ~100s+ for the column, on the DEFAULT dashboard tab). id is monotonic with tick, so the
+              -- newest row by id IS the max tick — and (entity, id) serves it directly: 85ms for all 124 agents.
+              (SELECT ev.tick FROM events ev WHERE ev.entity=e.id AND ev.kind <> 'destroyed'
+                 ORDER BY ev.id DESC LIMIT 1) last_act,
               (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind <> 'destroyed' AND ev.tick >= %s)
                               OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
             FROM entities e WHERE e.type='agent'                 -- whole roster; offline shown greyed, online first
@@ -1352,7 +1438,7 @@ class HumanSay(BaseModel):
 
 
 @app.post("/chat", tags=["social"])
-def human_say(s: HumanSay):
+def human_say(s: HumanSay, request: Request):
     """A human spectator/adviser posts to the world chat — agents see it in their inbox (observe).
     Input is sanitized: nick = alphanumeric, text = letters/digits/punctuation only."""
     nick = clean_nick(s.nick)
@@ -1366,6 +1452,15 @@ def human_say(s: HumanSay):
         if row:
             hid = row[0]
         else:
+            # A brand-new nick mints a PERMANENT `human` entity, and entities are never pruned — every one is
+            # loaded and canonicalised into the state hash every tick. Unauthenticated and previously uncapped
+            # (audit 2026-09-03, F13), so bound new-identity creation the same way registration is bounded.
+            # Posting as an EXISTING nick is unaffected — this only gates minting a new identity.
+            if _ip_rate_exceeded(_client_ip_hash(request), reg_ip_log, _REG_IP_MAX):
+                raise HTTPException(429, "too many new adviser names from this address — keep using your nick")
+            cur.execute("SELECT count(*) FROM entities WHERE type='human'")
+            if (cur.fetchone() or [0])[0] >= _HUMAN_CAP:
+                raise HTTPException(503, "adviser roster is full — reuse an existing nick")
             cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('human',0,0,%s) RETURNING id",
                         (Json({"name": nick}),))
             hid = cur.fetchone()[0]
@@ -1400,6 +1495,12 @@ def _server_log(limit, kind, before=0, after=0):
 def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "",
                before: int = Query(0, ge=0), after: int = Query(0, ge=0)):
     limit = _clamp_limit(limit)
+    kind = re.sub(r"[^a-z_,]", "", (kind or "").lower())[:64]   # free-form `kind` was an unbounded cache-key domain
+    # `before`/`after` are tick numbers: clamp to the live tick so a huge value can't request a scan of the whole
+    # (unpruned, ~1.39M-row) events table, and so they collapse to a finite key domain (audit F3/F5).
+    t_now = int(_state.get("tick", 0)) or 1 << 31
+    before = min(before, t_now)
+    after = min(after, t_now)
     # before/after are visitor-unique history queries (each returning visitor mints a distinct 'after=<their last-seen tick>').
     # Routing those through the tick-keyed _cache would leak an entry per distinct tick that can never serve again. Skip the cache.
     if before or after:
@@ -1599,15 +1700,19 @@ def updates_ep():
 def announce(a: AnnounceIn, x_guild_token: str = Header("")):
     """Operator/CI push of a RULE UPDATE → reaches agents in observe.updates and spectators at /updates.
     Auth: reuses GUILD_TOKEN as the operator secret (X-Guild-Token header), same gate as /guild/verdict."""
-    if GUILD_TOKEN:
-        if not hmac.compare_digest(x_guild_token or "", GUILD_TOKEN):
-            raise HTTPException(403, "bad or missing operator token")
-    else:
-        print("WARN: /announce is UNAUTHENTICATED — set GUILD_TOKEN on the server", flush=True)
-    title = str(a.title or "").strip()[:120]
+    # FAIL CLOSED. This used to fall through to the handler when GUILD_TOKEN was unset, and the k8s secret is
+    # wired `optional: true` — so a deleted/renamed/mistyped secret produced a pod that passed every probe and
+    # served this endpoint OPEN. Whatever is posted here lands in the `updates` block that every LLM-driven agent
+    # reads on every observe: an unauthenticated prompt-injection channel into all players at once (audit F12).
+    if not GUILD_TOKEN:
+        print("ERROR: /announce disabled — GUILD_TOKEN is not configured", flush=True)
+        raise HTTPException(503, "operator endpoint disabled: GUILD_TOKEN not configured")
+    if not _secret_eq(x_guild_token or "", GUILD_TOKEN):   # _secret_eq pre-encodes → a non-ASCII header is a clean 403, not a 500
+        raise HTTPException(403, "bad or missing operator token")
+    title = clean_text(str(a.title or ""))[:120]           # sanitised like human chat: agents' LLMs read this text
     if not title:
         raise HTTPException(400, "title required")
-    detail = str(a.detail or "").strip()[:600]
+    detail = clean_text(str(a.detail or ""))[:600]
     verb = (str(a.verb).strip()[:40] or None) if a.verb else None
     with _db() as conn:
         cur = conn.cursor()
@@ -1692,7 +1797,9 @@ def _arena():
                    COALESCE((a.attrs->>'deaths')::int, 0) deaths, COALESCE((a.attrs->>'kills')::int, 0) kills,
                    COALESCE((a.buffers->>'credits')::int, 0) credits,
                    (a.attrs ? 'body_awarded') body,
-                   COALESCE((SELECT max(tick) FROM events e WHERE e.entity=a.id), 0) last_act
+                   -- same rewrite as _list_agents: max(tick) is unindexable and scanned all ~1.39M events per
+                   -- agent (this query alone hit the prod statement timeout); (entity, id) serves the LIMIT 1.
+                   COALESCE((SELECT e.tick FROM events e WHERE e.entity=a.id ORDER BY e.id DESC LIMIT 1), 0) last_act
             FROM entities a WHERE a.type='agent'""")
         agents = cur.fetchall()
         cur.execute("SELECT discoverer_name dn, COUNT(*) c, COALESCE(SUM(points), 0) p FROM dynamic_rules GROUP BY discoverer_name")
@@ -1767,12 +1874,14 @@ class Verdict(BaseModel):
 @app.post("/guild/verdict", tags=["guild"])
 def guild_verdict(v: Verdict, x_guild_token: str = Header("")):
     """The Guild referee records its ruling here; the tick loop applies it (mint rule / grant / refund).
-    Auth: if GUILD_TOKEN is configured, the X-Guild-Token header must match it (constant-time)."""
-    if GUILD_TOKEN:
-        if not hmac.compare_digest(x_guild_token or "", GUILD_TOKEN):
-            raise HTTPException(403, "bad or missing guild token")
-    else:
-        print("WARN: /guild/verdict is UNAUTHENTICATED — set GUILD_TOKEN on the server and the referee", flush=True)
+    Auth: the X-Guild-Token header must match GUILD_TOKEN (constant-time). FAILS CLOSED if it is unset."""
+    # Was fail-OPEN when GUILD_TOKEN was unset (and the secret is wired `optional: true`), which let anyone
+    # approve/reject any pending proposal and mint the dynamic rules the tick then applies (audit F12).
+    if not GUILD_TOKEN:
+        print("ERROR: /guild/verdict disabled — GUILD_TOKEN is not configured", flush=True)
+        raise HTTPException(503, "guild endpoint disabled: GUILD_TOKEN not configured")
+    if not _secret_eq(x_guild_token or "", GUILD_TOKEN):
+        raise HTTPException(403, "bad or missing guild token")
     with _db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT status, ings FROM proposals WHERE id=%s", (v.proposal_id,))

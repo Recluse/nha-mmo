@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS entities (id bigserial PRIMARY KEY, type text NOT NUL
   buffers jsonb NOT NULL DEFAULT '{}', attrs jsonb NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS entities_type_idx ON entities(type);
 CREATE INDEX IF NOT EXISTS entities_owner_idx ON entities(owner) WHERE owner IS NOT NULL;
+CREATE INDEX IF NOT EXISTS entities_deposit_xy_idx ON entities(x, y) WHERE type='deposit';
+CREATE INDEX IF NOT EXISTS entities_struct_pos_idx ON entities(x, y) WHERE type='structure';
 CREATE TABLE IF NOT EXISTS intents (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   verb text NOT NULL, args jsonb NOT NULL DEFAULT '{}', status text NOT NULL DEFAULT 'pending',
   result text, created int);
@@ -19,11 +21,16 @@ CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, tick int NOT NULL,
   entity bigint, kind text NOT NULL, data jsonb NOT NULL DEFAULT '{}');
 CREATE INDEX IF NOT EXISTS events_kind_tick_idx ON events(kind, tick);
 CREATE INDEX IF NOT EXISTS events_entity_kind_tick_idx ON events(entity, kind, tick);   -- per-agent EXISTS/max(tick) subqueries in /agents,/scene,/roster (filter by entity+kind, order by tick)
+CREATE INDEX IF NOT EXISTS events_entity_id_idx ON events(entity, id);   -- /agent/{id} recent[] feed + the last_act lookup
+CREATE INDEX IF NOT EXISTS events_tick_idx ON events(tick);
+CREATE INDEX IF NOT EXISTS events_kind_id_idx ON events(kind, id);       -- /timeline + /milestones
+CREATE INDEX IF NOT EXISTS events_tick_id_idx ON events(tick, id);       -- /log?before=/after=
 CREATE TABLE IF NOT EXISTS tick_hashes (tick int PRIMARY KEY, hash text NOT NULL);
 CREATE TABLE IF NOT EXISTS market_orders (id bigserial PRIMARY KEY, agent bigint NOT NULL,
   side text NOT NULL, resource text NOT NULL, qty int NOT NULL, price int NOT NULL,
   status text NOT NULL DEFAULT 'open', created int);
 CREATE INDEX IF NOT EXISTS market_open_idx ON market_orders(resource, side, status);
+CREATE INDEX IF NOT EXISTS market_orders_agent_open_idx ON market_orders(agent, id) WHERE status='open';
 CREATE TABLE IF NOT EXISTS trades (id bigserial PRIMARY KEY, proposer bigint NOT NULL,
   target bigint NOT NULL, give jsonb NOT NULL, want jsonb NOT NULL,
   status text NOT NULL DEFAULT 'open', created int);

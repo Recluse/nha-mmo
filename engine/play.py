@@ -48,14 +48,26 @@ def observe(cur, agent_id):
     cur.execute("SELECT attrs->>'part' part FROM entities "
                 "WHERE type='part' AND owner=%s AND (attrs->>'used') IS NULL", (agent_id,))
     loose = [r["part"] for r in cur.fetchall()]
+    # v_ground/v_air: CAST to int and use the DOCUMENTED names. These were the only uncast fields here (their
+    # neighbours all cast), so they came back as STRINGS under the undocumented aliases vg/va, while AGENTS.md and
+    # /agent/{id} both say v_ground/v_air as ints — a client written to the docs read undefined and its
+    # flight/speed checks silently never fired (audit 2026-09-03, F20). vg/va are kept as aliases for one
+    # deploy cycle so any client already reading them keeps working.
     cur.execute("SELECT attrs->>'name' name, (attrs->>'drives')::bool drives, (attrs->>'flies')::bool flies, "
-                "attrs->>'v_ground' vg, attrs->>'v_air' va, "
+                "(attrs->>'v_ground')::int v_ground, (attrs->>'v_air')::int v_air, "
+                "(attrs->>'v_ground')::int vg, (attrs->>'v_air')::int va, "
                 "COALESCE((attrs->>'orbital_engine')::bool,false) orbital_engine, (attrs->>'fuel_cap')::int fuel_cap "   # EXPANSION: is this an interplanetary (ion) ship + its tankage
                 "FROM entities WHERE type='vehicle' AND owner=%s", (agent_id,))
     vehicles = [dict(r) for r in cur.fetchall()]
+    # LIMIT like every other board below: one agent held 29,544 of the 29,554 open orders, so its observe built a
+    # 1.86MB payload every 2s (row dicts + validation + JSON + gzip = real worker CPU), and with no partial index
+    # EVERY agent's observe filtered the whole table (audit 2026-09-03, F17). Newest first + a total so a client
+    # can tell it was truncated. `market_orders_agent_open_idx (agent, id) WHERE status='open'` serves this.
     cur.execute("SELECT id,side,resource,qty,price FROM market_orders "
-                "WHERE agent=%s AND status='open' ORDER BY id", (agent_id,))
-    orders = [dict(r) for r in cur.fetchall()]
+                "WHERE agent=%s AND status='open' ORDER BY id DESC LIMIT 200", (agent_id,))
+    orders = [dict(r) for r in cur.fetchall()][::-1]        # back to ascending id (the order agents have always seen)
+    cur.execute("SELECT count(*) c FROM market_orders WHERE agent=%s AND status='open'", (agent_id,))
+    orders_total = (cur.fetchone() or {}).get("c", len(orders))
     cur.execute("SELECT id,proposer,give,want FROM trades "
                 "WHERE target=%s AND status='open' ORDER BY id", (agent_id,))
     offers = [dict(r) for r in cur.fetchall()]
@@ -240,7 +252,7 @@ def observe(cur, agent_id):
                     "orbit — it costs HP and jettisons your body haul, so a fueled depart{dest:'earth'} (which keeps your cargo) is always better."),
         }
     return {"tick": now, "position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
-            "vehicles": vehicles, "orders": orders, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,
+            "vehicles": vehicles, "orders": orders, "orders_total": orders_total, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,
             "nearby_deposits": nearby, "altitude": altitude, "atmosphere_top": 100, "in_space": in_space,
             "hp": hp, "hp_max": hp_max, "downed_until": downed_until,
             "nearby_agents": nearby_agents, "weapons": weapons, "ammo": ammo,
