@@ -1,0 +1,73 @@
+# SCHEDULED world backup — the gap this closes: there was NO scheduled backup at all. The only pg_dump in the
+# whole project ran in the CI deploy job, which coupled backup freshness to how often code is pushed: deploy ten
+# times a day and backups are fresh; go a quiet week without deploying and the newest copy of the world is a week
+# old. Meanwhile the world (~517MB, 1.09M ticks, a hash chain unreproducible from scratch) lives in ONE place:
+# postgres is pinned to k8s-w1 with a hostPath at /var/lib/nha-postgres — no PV, no replica, no snapshot.
+#
+# This job dumps DAILY, independent of deploys, onto a DIFFERENT NODE (k8s-w2) so the copy survives loss of w1's
+# disk. That is deliberately the modest step: it does not pretend to be off-site DR, it removes the single worst
+# property (backup exists only if you happened to deploy). An off-cluster copy is the natural next step and needs
+# a credential decision.
+#
+# pg_dump comes from postgres:16-alpine, matching the server's 16.13 exactly — a NEWER pg_dump can emit archives
+# an older server cannot restore, and an older one refuses to dump a newer server outright.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nha-world-backup
+  namespace: nha-mmo
+spec:
+  schedule: "17 3 * * *"                # 03:17 daily — off the hour, so it never lines up with other cron traffic
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid             # a slow dump must never overlap itself
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 3600         # if the cluster was down at 03:17, still run when it comes back
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          # ndots:1 is MANDATORY here, same as every other manifest in this directory. Without it the default
+          # ndots:5 search-suffixes a 4-dot FQDN before trying it literally, and the lookup escaped the cluster
+          # and resolved to the PUBLIC gateway IP — pg_dump then got "connection refused" from the wrong host.
+          dnsConfig: {options: [{name: ndots, value: "1"}]}
+          nodeName: k8s-w2.recluse.ru   # NOT w1 — the whole point is to land the copy on different hardware
+          securityContext:
+            runAsUser: 0                # writes into a root-owned hostPath on the node
+          containers:
+            - name: dump
+              image: postgres:16-alpine
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  OUT="/backups/world-$(date -u +%Y%m%d-%H%M%S).sql.gz"
+                  echo "dumping nhamoo -> $OUT"
+                  pg_dump -h postgres.nha-mmo.svc.cluster.local -U nhamoo -d nhamoo | gzip > "$OUT"
+                  # VERIFY before pruning: a truncated or corrupt dump must never evict a good one. The size floor
+                  # catches the classic "dump failed early, wrote a 20-byte gzip header" case that still passes -t.
+                  gzip -t "$OUT"
+                  SZ=$(stat -c%s "$OUT")
+                  [ "$SZ" -gt 1048576 ] || { echo "ABORT: $OUT is only ${SZ}B — refusing to prune with a suspect dump"; exit 1; }
+                  echo "ok: ${SZ} bytes, gzip verified"
+                  # Sweep STUB files before pruning. A failed dump (bad DNS, server restart) leaves a ~20-byte
+                  # gzip header behind; those would then occupy retention slots and silently push real backups
+                  # out. Observed for real on this job's first run. Anything under 1MiB cannot be a world dump.
+                  find /backups -name 'world-*.sql.gz' -size -1024k -delete
+                  ls -t /backups/world-*.sql.gz | tail -n +15 | xargs -r rm -f    # keep the newest 14
+                  echo "retained: $(ls -1 /backups/world-*.sql.gz | wc -l) dumps"
+              env:
+                - {name: PGCONNECT_TIMEOUT, value: "10"}
+              volumeMounts:
+                - {name: backups, mountPath: /backups}
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {memory: 512Mi}
+          volumes:
+            - name: backups
+              hostPath:
+                path: /var/lib/nha-backups
+                type: DirectoryOrCreate
