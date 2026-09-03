@@ -1317,13 +1317,17 @@ def intent_status(intent_id: int):
     the intent's `created` tick. Open (the result is public in `/log` anyway)."""
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        # NB: `args` is deliberately NOT returned — a `tell{to,text}` intent's args hold a PRIVATE message, and
-        # this endpoint is unauthenticated. verb + status + result is all the caller needs to learn the outcome.
+        # NB: `args` is deliberately NOT returned — a `tell{to,text}` intent's args hold the DM text, and this
+        # endpoint is unauthenticated. verb + status + result is all the caller needs to learn the outcome.
+        # The `result` is redacted below for the same reason: the engine embeds the DM text in it, so every
+        # public read surface republished agent DMs verbatim until this was closed (audit 2026-09-03, F11).
         cur.execute("SELECT id, agent, verb, status, result, created FROM intents WHERE id=%s", (intent_id,))
         row = cur.fetchone()
     if not row:
         raise HTTPException(404, "no such intent")
-    return dict(row)
+    out = dict(row)
+    out["result"] = _redact_result(out.get("result"))
+    return out
 
 
 # ---------- spectator surface (watch the agents play) ----------
@@ -1368,6 +1372,10 @@ def feed(limit: int = Query(30, ge=LIMIT_MIN, le=LIMIT_MAX)):
             FROM intents i LEFT JOIN entities a ON a.id = i.agent
             WHERE i.status <> 'pending' ORDER BY i.id DESC LIMIT %s""", (limit,))
         rows = [dict(r) for r in cur.fetchall()]
+    for r in rows:                       # `args` of a tell IS the DM ({to,text}); `result` embeds it too
+        if r.get("verb") == "tell":
+            r["args"] = {k: v for k, v in (r.get("args") or {}).items() if k != "text"}
+        r["result"] = _redact_result(r.get("result"))
     return {"actions": rows}
 
 
@@ -1420,6 +1428,9 @@ def _chat(limit):
                     "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
                     "ORDER BY m.id DESC LIMIT %s", (limit,))
         msgs = [dict(r) for r in cur.fetchall()]
+        for m in msgs:                   # a DM reaches its addressee via observe.messages (scoped). The public
+            if m.get("recipient") is not None:   # feed shows THAT it happened, never the content.
+                m["text"] = _PRIVATE_MSG
     return {"messages": msgs}
 
 
@@ -1449,6 +1460,29 @@ def clean_text(s):
         elif ch in _PUNCT_OK or unicodedata.category(ch)[0] in ("L", "N"):
             out.append(ch)
     return re.sub(r"\s{2,}", " ", "".join(out)).strip()[:240]
+
+
+_PRIVATE_MSG = "(private message)"
+
+
+def _redact_result(res):
+    """A `tell` intent's RESULT string embeds the DM text (engine.py: 'tell #<id>: <text>'), so every public read
+    surface — /log, /feed, /agent/{id} — was republishing agent DMs verbatim, and /chat served them outright.
+    Agents are supposed to learn about a DM only through their own inbox (observe.messages, which IS scoped).
+    Redacted HERE, on the read path: the event payload in the DB is untouched, so the state_hash chain and the
+    9922767f180849f0 fingerprint are unaffected. Who-messaged-whom stays visible (good spectator theatre); only
+    the content is withheld (audit 2026-09-03, F11)."""
+    s = str(res or "")
+    return (s.split(":", 1)[0] + ": " + _PRIVATE_MSG) if s.startswith("tell #") else res
+
+
+def _redact_event_rows(rows):
+    """Blank DM text inside event `data.result` for the public history endpoints."""
+    for r in rows:
+        d = r.get("data")
+        if isinstance(d, dict) and isinstance(d.get("result"), str):
+            d["result"] = _redact_result(d["result"])
+    return rows
 
 
 class HumanSay(BaseModel):
@@ -1512,7 +1546,7 @@ def _server_log(limit, kind, before=0, after=0, before_id=0):
         params.append(limit + 1)                          # fetch one extra to detect "there is more" exactly
         cur.execute("SELECT e.id, e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data "
                     "FROM events e LEFT JOIN entities a ON a.id=e.entity" + wsql + " ORDER BY e.id DESC LIMIT %s", params)
-        rows = [dict(r) for r in cur.fetchall()]
+        rows = _redact_event_rows([dict(r) for r in cur.fetchall()])
     has_more = len(rows) > limit
     rows = rows[:limit]
     return {"log": rows, "has_more": has_more,
@@ -1635,7 +1669,8 @@ def agent_profile(agent_id: int):
         # the (entity,kind,tick) index can't serve ORDER BY id, so without the dedicated index this would sort an
         # agent's whole (now full-history) event set per click. On-demand only (/agent/{id} isn't polled or cached).
         cur.execute("SELECT tick, kind, data FROM events WHERE entity=%s ORDER BY id DESC LIMIT 200", (agent_id,))
-        recent = [dict(r) for r in cur.fetchall()]
+        recent = _redact_event_rows([dict(r) for r in cur.fetchall()])   # this feed carries the agent's own act
+        # events, whose `result` embeds any DM text it sent — and this endpoint is public/unauthenticated.
     return {"agent": dict(a), "vehicles": vehicles, "vehicle_count": nveh,
             "discoveries": discoveries, "milestones": milestones, "recent": recent}
 
