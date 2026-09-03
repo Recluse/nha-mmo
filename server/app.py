@@ -1255,7 +1255,11 @@ def register_agent(a: AgentIn, request: Request, response: Response):
         cur.execute("INSERT INTO entities(type,x,y,buffers,attrs) VALUES('agent',%s,%s,%s,%s) RETURNING id",
                     (sx, sy, Json(materials), Json(attrs)))
         aid = cur.fetchone()[0]; conn.commit()
-    return {"agent_id": aid, "materials": materials, "token": tok, "spawn": [sx, sy],
+    # `reused` is the DISCRIMINATOR every /agents response carries. Without it on this path, a restarting bot that
+    # sent reuse:true for a name that no longer exists got a brand-new agent echoing back its own token and could
+    # not tell it had NOT reclaimed its old one — it just played on under a new id with a fresh inventory
+    # (audit 2026-09-03). Always present now, so a client can branch on it.
+    return {"agent_id": aid, "reused": False, "materials": materials, "token": tok, "spawn": [sx, sy],
             "note": ("materials are clamped to a cheap starter allowlist + 100 credits (anything else you "
                      "requested was dropped — you can't mint); you spawn near a completed orbital elevator, so "
                      "`ride` it to reach space for the co-op station.")}

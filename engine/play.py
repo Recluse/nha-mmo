@@ -8,21 +8,25 @@ asteroids, plus the medicine branch: nearby plant deposits, held medicines, and 
 Read-only over engine.py's `entities` schema; the caller passes a psycopg2 RealDictCursor.
 """
 
-# weapons the agent may hold (crafted items) + their consumable ammo — surfaced so attack/arm are usable.
-_WEAPON_ITEMS = ("kinetic_gun", "energy_weapon", "bomb")
-_AMMO_ITEMS = ("slug", "energy_cell")
+from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula (no drift) for the observatory forecast; safe — engine never imports play
+                    EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL, PRODUCERS,
+                    location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
+                    WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI)
+
+# DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
+# import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
+# new medicine/plant/weapon would be accepted by the engine yet invisible to every agent, with nothing failing
+# (audit 2026-09-03). All values were identical at the time of this change, so behaviour is unchanged.
+_WEAPON_ITEMS = tuple(WEAPON_STATS)
+_MEDICINE_ITEMS = tuple(MEDICINES)
+_PLANT_RESOURCES = tuple(PLANT_RESOURCES)
+_GATHER_RANGE = GATHER_RANGE
+_ORBIT_LO, _ORBIT_HI = ORBIT_LO, ORBIT_HI
+_AMMO_ITEMS = ("slug", "energy_cell")   # no engine constant to derive from — consumed by name in the attack path
 _NEARBY_RADIUS = 9          # Manhattan reach for nearby agents/loot/artifacts (covers max weapon range 9) — the BASE sight (fog of war)
 # FOG OF WAR is ADDITIVE: base sight is 9 and nobody ever sees less; effort BUYS a wider agent/threat scan.
 _RADAR_VISION_BONUS = 8         # a crafted `radar` (a finished magnet + a chip) widens the nearby_agents/threat scan 9 -> 17
 _OBSERVATORY_VISION_BONUS = 4   # an `observatory` doubles as a watchtower — a modest sight bump ON TOP of its forecast
-_ORBIT_LO, _ORBIT_HI = 300, 600   # an agent only sees asteroids while it is in orbit (mirror of engine constants)
-# --- season 3 medicine branch (mirror of engine constants) — surfaced so gather/heal are targetable ---
-_PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant deposits (renewable botany)
-_GATHER_RANGE = 8           # auto-walk reach of the `gather` verb (mirror of engine.GATHER_RANGE)
-_MEDICINE_ITEMS = ("salve", "stimpack", "medkit", "antidote")  # consumable HP medicines held in buffers (mirror engine.MEDICINES)
-from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula (no drift) for the observatory forecast; safe — engine never imports play
-                    EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL, PRODUCERS,
-                    location)   # canonical location reader (Phase 6) — the single authority for "where is this agent"
 _FORECAST_HORIZON = 30            # ticks of storm track an observatory reveals
 
 

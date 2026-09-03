@@ -2965,8 +2965,12 @@ def prune_tables(cur, t):
                     # milestone/achievement kinds are always kept — INCLUDING the fire-once idempotency guards
                     # (audit M1): 'accord' (Solar Accord), 'body_landing'/'moon_landing' (first-to-body/Moon) are read
                     # back as "already happened" guards, so pruning them would re-pay the pool / re-award the bonus.
-                    "('escape','invent','land','build','war','peace','attune','destroyed','generate','accord','body_landing','moon_landing')",
-                    (t - EVENTS_KEEP_TICKS,))
+                    # 'market' is preserved for the same class of reason (audit 2026-09-03): _node_fortune reads
+                    # kind='market' back over KARMA_WINDOW ticks, and that feeds a deposit amount — i.e. HASHED
+                    # state. Pruning it would silently change tick semantics, so any window shorter than
+                    # KARMA_WINDOW must not drop it. The floor below makes that impossible to misconfigure.
+                    "('escape','invent','land','build','war','peace','attune','destroyed','generate','accord','body_landing','moon_landing','market')",
+                    (t - max(EVENTS_KEEP_TICKS, KARMA_WINDOW),))
     cur.execute("DELETE FROM tick_hashes WHERE tick < %s", (t - 20000,))
     cur.execute("DELETE FROM intents WHERE status <> 'pending' AND id < (SELECT COALESCE(MAX(id),0) FROM intents) - 5000")
     cur.execute("DELETE FROM messages WHERE id < (SELECT COALESCE(MAX(id),0) FROM messages) - 2000")
