@@ -694,7 +694,7 @@ const sendMsg=async()=>{const nick=$('nick').value.trim(), msg=$('msg').value.tr
 $('nick').value=localStorage.getItem('nha_nick')||'';
 $('send').onclick=sendMsg;
 $('msg').addEventListener('keydown',e=>{if(e.key==='Enter')sendMsg();});
-const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');   // also >"' — escaped values land in ATTRIBUTES (title=, onclick=) and the server name regex deliberately permits quotes (audit 2026-09-03)
 let logCat='all';const LOGCATS={all:null,acts:['act'],combat:['damage','destroyed','theft'],trade:['market'],jobs:['contract'],guild:['invent','reject'],space:['escape'],geese:['honk']};   // Log tab category filter
 let logBefore=0;   // Log history scrub: 0 = live/recent, >0 = show events at/before this tick
 let logGroup=true; // Log episode grouping: collapse consecutive same-agent same-verb runs into one beat
@@ -715,7 +715,7 @@ function logTxt(e,tn){const dt=e.data||{};let txt;   // one event -> {who, txt} 
     else if(dt.event=='bounty_posted')txt=`&#127919; <span class=O>bounty #${dt.contract_id}</span> <span class=AG>${rw(dt.reward)}</span> <span class=sub>to down</span> #${dt.target}`;
     else if(dt.event=='fulfilled')txt=`&#128203; <span class=AG>fulfilled contract #${dt.contract_id}</span> <span class=sub>delivered</span> ${rw(dt.want)} <span class=sub>for</span> <span class=AG>${rw(dt.reward)}</span>`;
     else txt=`&#128203; <span class=O>posted contract #${dt.contract_id}</span> <span class=sub>reward</span> <span class=AG>${rw(dt.reward)}</span> <span class=sub>for</span> ${rw(dt.want)}`;}
-  else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${dt.resource} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
+  else if(e.kind=='market')txt=`<span class=O>* trade</span> ${dt.qty} ${esc(dt.resource)} @ ${dt.price} <span class=sub>(${tn(dt.seller)}->${tn(dt.buyer)})</span>`;
   else if(e.kind=='invent')txt=`&#129514; <span class=AG>GUILD INVENTED ${esc(dt.name||dt.item)}</span> <span class=sub>(${esc(dt.item)})</span> +${dt.points}`;
   else if(e.kind=='reject')txt=`<span class=rej>Guild rejected</span> <span class=sub>${esc(dt.reason||'')}</span>`;
   else if(e.kind=='escape')txt=`&#128640; <span class=AG>${dt.first?'FIRST TO SPACE!':'REACHED SPACE'}</span> escaped the atmosphere (twr ${dt.twr}) +${dt.points}`;
@@ -1015,11 +1015,11 @@ async function tick(){
   }).join('')||`<tr><td colspan=10 class=sub>${t('ph_no_agents')}</td></tr>`;
  }}
  if(need('/depot')){const d=await j('/depot');
- if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${r}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';}
+ if(d)$('depot').innerHTML=d.prices?Object.entries(d.prices).map(([r,p])=>`<span class=price>${esc(r)}: <span class=F>buy ${p.buy}</span> / <span class=O>sell ${p.sell}</span></span>`).join(''):'<span class=sub>-</span>';}
  if(need('/market')){const mk=await j('/market?limit=50');
- if(mk){const lp=Object.entries(mk.last_prices||{}).map(([r,p])=>`<span class=price>${r} <b>@${p}</b></span>`).join('')||`<span class=sub>${t('ph_no_trades')}</span>`;
+ if(mk){const lp=Object.entries(mk.last_prices||{}).map(([r,p])=>`<span class=price>${esc(r)} <b>@${p}</b></span>`).join('')||`<span class=sub>${t('ph_no_trades')}</span>`;
   const _agg={};(mk.orders||[]).forEach(o=>{const k=o.side+'|'+o.resource+'|'+o.price;(_agg[k]||(_agg[k]={side:o.side,resource:o.resource,price:o.price,qty:0,n:0})).qty+=o.qty;_agg[k].n++;});   // aggregate the book by price level (depth) instead of listing every order
-  const ob=Object.values(_agg).sort((a,b)=>(a.resource<b.resource?-1:a.resource>b.resource?1:0)||(a.side<b.side?1:a.side>b.side?-1:0)||(b.price-a.price)).slice(0,24).map(o=>`<div><span class=${o.side=='sell'?'O':'F'}>${o.side}</span> <b>${o.qty}</b> ${o.resource} @ ${o.price}${o.n>1?` <span class=sub>&times;${o.n}</span>`:''}</div>`).join('');
+  const ob=Object.values(_agg).sort((a,b)=>(a.resource<b.resource?-1:a.resource>b.resource?1:0)||(a.side<b.side?1:a.side>b.side?-1:0)||(b.price-a.price)).slice(0,24).map(o=>`<div><span class=${o.side=='sell'?'O':'F'}>${esc(o.side)}</span> <b>${o.qty}</b> ${esc(o.resource)} @ ${o.price}${o.n>1?` <span class=sub>&times;${o.n}</span>`:''}</div>`).join('');
   $('market').innerHTML=`<div style="margin-bottom:6px">${t('lbl_last')} ${lp}</div>${ob||`<span class=sub>${t('ph_orderbook_empty')}</span>`}`;}}
  if(need('/chat')){const ch=await j('/chat');
  if(ch)$('chat').innerHTML=ch.messages.map(x=>`<div><span class="pill${x.is_human?' human':''}"${(!x.is_human&&x.sender)?` style="cursor:pointer" onclick="loadProfile(${x.sender})" title="${esc(t('lbl_open_profile'))}"`:''}>${x.is_human?'🧑 ':''}${esc(x.sender_name||('#'+x.sender))}</span>${x.recipient?`<span class=sub>to ${tn(x.recipient)}</span> `:''}${esc(x.text)}</div>`).join('')||`<div class=sub>${t('ph_chat_silence')}</div>`;}

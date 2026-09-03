@@ -1292,6 +1292,11 @@ def _market(limit=0):
         else:
             cur.execute(q)
         orders = [dict(r) for r in cur.fetchall()]
+        for o in orders:                                  # defence in depth: `resource` is agent-supplied and the
+            # `order` verb applies no allowlist, so a crafted value reached the dashboard's innerHTML (audit
+            # 2026-09-03, F7). Normalised on the READ path only — never in apply_intent, which would change how
+            # past ticks replay and break the state_hash chain.
+            o["resource"] = re.sub(r"[^a-z0-9_]", "", str(o.get("resource") or "").lower())[:24]
         cur.execute("SELECT attrs->'last' last FROM entities WHERE type='market' LIMIT 1")
         row = cur.fetchone()
     return {"orders": orders, "last_prices": (row["last"] if row and row["last"] else {})}

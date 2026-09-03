@@ -601,13 +601,22 @@ def behave(e):
         e["attrs"]["prices"] = {r: depot_price(e, r) for r in e["attrs"]["base"]}   # publish for spectator
 
 # ---------- intents (the only agent->world channel) ----------
+_INT4_MAX = 2 ** 31 - 1                                   # several agent-supplied numbers land in `int` (int4)
+_INT4_MIN = -(2 ** 31)                                    # columns: market_orders.price/qty, contracts.deadline…
+
+
 def _ai(args, key, default=0):
     """Coerce an agent-supplied arg to int; junk (dict/list/non-numeric/None) -> default. Agents occasionally
-    send a dict/garbage where a number is expected — never let that raise (it surfaces as a generic 'bad intent')."""
+    send a dict/garbage where a number is expected — never let that raise (it surfaces as a generic 'bad intent').
+    CLAMPED to int4: an out-of-range value used to reach an int4 column and raise 22003 mid-tick, which aborted the
+    transaction and froze the world permanently (audit 2026-09-03, F1). Clamping cannot change any value the engine
+    accepts today — anything outside int4 either crashed at the DB, or is bounded again by a min()/ownership check
+    before use — so the state_hash chain (fingerprint 9922767f180849f0) is unaffected."""
     try:
-        return int(args.get(key, default))
+        v = int(args.get(key, default))
     except (TypeError, ValueError):
         return default
+    return max(_INT4_MIN, min(_INT4_MAX, v))
 
 def _aid(args, key):
     """Resolve an arg that names an entity id to an int (or None) — tolerates string ids ('5' -> 5) and rejects
@@ -2605,7 +2614,10 @@ def orbital_decay(ents, t, events, cur=None):
     vehicle takes a ONE-SHOT hard-fall hit the tick its altitude first crosses below FALL_FATAL_ALT (death fix D/E)."""
     flyers = {v["owner"] for v in ents.values()
               if v["type"] == "vehicle" and v["attrs"].get("flies") and not v["attrs"].get("wrecked")}
-    for a in ents.values():
+    for a in list(ents.values()):                          # SNAPSHOT: a fatal fall below calls apply_damage ->
+        # kill_agent -> new_entity, which inserts a loot row into THIS dict. Iterating the live view raised
+        # "dictionary changed size during iteration", which rolled the tick back forever (audit 2026-09-03, F2).
+        # Matches decay_loot / the behave loop / tick_bombs, which all snapshot or sort first.
         if a["type"] != "agent" or not a["attrs"].get("in_space"):
             continue
         if a["attrs"].get("transit_to") or a["attrs"].get("at_body") or a["attrs"].get("at_body_orbit"):
@@ -3046,10 +3058,22 @@ def _tick_body(conn, s):
             cur.execute("UPDATE intents SET status='rejected', result='loop detected (repeated failing action)' "
                         "WHERE id=%s", (it["id"],))
             continue
+        # SAVEPOINT so ONE bad intent can never freeze the world. The bare try/except below is not enough on its
+        # own: a Postgres error inside apply_intent (e.g. an int4 overflow) ABORTS the transaction, so the
+        # `UPDATE intents` that marks the intent handled would itself raise -> tick rolls back -> the intent stays
+        # `pending` -> every later tick re-runs it and dies identically -> the world stops advancing FOREVER
+        # (audit 2026-09-03, F1). Rolling back to the savepoint undoes only this intent's DB writes and leaves the
+        # transaction usable, so the UPDATE below always lands and the world keeps ticking.
+        # NB: in-memory `ents` mutations made before the failure are NOT rolled back (Python objects), so a
+        # half-applied intent can cost the agent its escrow — same as the pre-existing behaviour for a Python
+        # exception here, and self-heals on the next full reload. Bounded and vastly preferable to a freeze.
+        cur.execute("SAVEPOINT it")
         try:
             st, res = apply_intent(it, ents, cur, t, events)
         except Exception as e:                            # one malformed intent must never freeze the world
+            cur.execute("ROLLBACK TO SAVEPOINT it")       # ...including a DB error, which poisons the whole tx
             st, res = "rejected", f"bad intent ({str(e)[:80]})"
+        cur.execute("RELEASE SAVEPOINT it")               # also after a rollback — keeps the savepoint stack flat
         cur.execute("UPDATE intents SET status=%s, result=%s WHERE id=%s", (st, res, it["id"]))
         events.append((t, it["agent"], "act", {"verb": it["verb"], "status": st, "result": res}))
     _pd["intents"] = _pc() - _pm; _pm = _pc()
