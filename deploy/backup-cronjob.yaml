@@ -1,16 +1,24 @@
-# SCHEDULED world backup — the gap this closes: there was NO scheduled backup at all. The only pg_dump in the
-# whole project ran in the CI deploy job, which coupled backup freshness to how often code is pushed: deploy ten
-# times a day and backups are fresh; go a quiet week without deploying and the newest copy of the world is a week
-# old. Meanwhile the world (~517MB, 1.09M ticks, a hash chain unreproducible from scratch) lives in ONE place:
-# postgres is pinned to k8s-w1 with a hostPath at /var/lib/nha-postgres — no PV, no replica, no snapshot.
+# SECOND, in-cluster world backup — REDUNDANCY, not a gap-filler.
 #
-# This job dumps DAILY, independent of deploys, onto a DIFFERENT NODE (k8s-w2) so the copy survives loss of w1's
-# disk. That is deliberately the modest step: it does not pretend to be off-site DR, it removes the single worst
-# property (backup exists only if you happened to deploy). An off-cluster copy is the natural next step and needs
-# a credential decision.
+# CORRECTION (2026-09-03): this job was originally added on the claim that the world had NO scheduled backup.
+# THAT CLAIM WAS WRONG. It came from searching only the cluster (no CronJobs) and this repo (only the CI
+# pre-deploy dump) — but the real backup runs as a HOST-LEVEL job on the monitoring VM, outside both, and had
+# been working all along: /home/recluse/backups/db/postgres-nha-<ts>.sql.gz, daily at ~04:1x UTC, each with a
+# .sha256 companion, 12 generations retained. That off-cluster copy with checksums is STRICTLY BETTER than this
+# one. Lesson recorded on purpose: "I could not find it" is not "it does not exist".
+#
+# Why this job is still worth keeping (the operator may equally choose to delete it):
+#   - it is an INDEPENDENT mechanism, so it still produces a copy if the VM job silently stops;
+#   - it lands on k8s-w2, a different failure domain from both w1 (which holds the live hostPath) and the VM;
+#   - it gives a fast in-cluster restore path that needs no egress.
+# Cost is ~200MB on w2 (14 generations x ~15MB).
 #
 # pg_dump comes from postgres:16-alpine, matching the server's 16.13 exactly — a NEWER pg_dump can emit archives
 # an older server cannot restore, and an older one refuses to dump a newer server outright.
+#
+# NOT restore-verified: a restore probe into a throwaway DB tripled live spectator latency (/world 0.75s -> 4.2s)
+# by competing with the world for Postgres I/O, so it was aborted. A restore drill belongs on a separate instance
+# or in a quiet window.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
