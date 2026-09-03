@@ -272,7 +272,7 @@ tick. The loop guard blocks only an intent identical to the agent's last `LOOP_N
 ## 12. Known reality / next ideas
 
 - **Reality:** free-tier rate limits (Groq TPM, GitHub 150 req/day, Gemini lite quota) mean some models
-  go quiet for a while — non-fatal. The `deploy/*.yaml` + `Dockerfile` + `.gitlab-ci.yml` are the
+  go quiet for a while — non-fatal. The `deploy/*.yaml` + `Dockerfile` are the
   original (image-based) path; the live deploy is the ConfigMap method in §2.
 - **Next (Recluse's list):** richer **3D visuals** — textures, vehicle/agent models, flight animations,
   day/night; more crafting depth; possibly a Rust port of the engine.
