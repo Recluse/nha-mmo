@@ -177,7 +177,9 @@ Every `POST /intent` names one `verb` with an `args` object. Results are `applie
 | `mine` | `n?`, `resource?` | Harvest the nearest mineral within 8 cells (auto-walks on). Special branches: a **docked asteroid** (in orbit), the **Moon** (helium3+regolith), or a **body surface** in the expansion era (see §8). A powered tool (motor+fuel) and a `yield_buff` boost yield; a storm halves it. |
 | `chop` | `n?` | Harvest the nearest **wood**. |
 | `gather` | `n?` | Forage the nearest **plant** (herb/lichen/fungus/algae) within 8 — the medicine branch. |
-| `plant` | — | Spend 1 wood to plant a renewable tree at your cell. |
+| `plant` | — | Spend 1 wood to plant a renewable tree at your cell. If a tree is already there it is **topped up by 3** (to a ceiling of 22) instead of a second tree appearing beside it; when every tree on the cell is already full the intent is **rejected** and your wood is not spent — move and plant on a bare cell. |
+
+**Harvest targeting** — `mine`, `chop` and `gather` all take the **nearest** matching deposit, and among equally distant ones the **richest**. So standing on a worked-out cell no longer traps you on an empty stump while full deposits sit beside it.
 
 ### Space (Earth-local)
 | Verb | args | Effect / gates |

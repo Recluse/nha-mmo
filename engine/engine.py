@@ -103,6 +103,8 @@ PLANT_RESOURCES = ("herb", "lichen", "fungus", "algae")   # gatherable plant dep
 GATHER_RANGE = 8                  # auto-walk reach to the nearest plant deposit (mirrors chop)
 PLANT_REGROW_CAP = 18            # plant deposits regrow up to this (like respawn_deposits' mineral cap)
 PLANT_REGROW_EVERY = 8           # ...one unit every this-many ticks (staggered by id), like grow_trees
+TREE_MAX = 22                    # grow_trees' ceiling for a wood deposit — also what a `plant` tops an existing tree up to
+TREE_SAPLING = 3                 # wood a `plant` is worth: a fresh sapling's starting amount, or the top-up on a tree already here
 MEDICINES = ("salve", "stimpack", "medkit", "antidote")   # consumable HP medicines (heal value lives in crafting.ITEM_PROPS)
 HEAL_RANGE = 6                    # Manhattan reach to heal/revive another agent
 STIMPACK_BUFF_TICKS = 20         # a stimpack's short deterministic regen/speed buff window
@@ -1922,11 +1924,30 @@ def apply_intent(it, ents, cur, t, events):
     if verb == "plant":                                  # plant a sapling -> a renewable wood deposit (regrows over time)
         if get(a, "wood") < 1:
             return "rejected", "need 1 wood (a sapling) to plant a tree"
+        # A tree ALREADY on this cell is topped up instead of spawning another entity beside it. Planting used
+        # to append a new deposit every single time, so a tile someone farmed for hours grew hundreds of them —
+        # one live tile reached 200 deposits holding 4188 wood, and 14178 of the world's ~16000 deposits were
+        # agent-planted. Every one of those is walked by every chop/mine/gather intent in the world, so a single
+        # planter was quietly taxing everybody else's harvest.
+        here = sorted((x for x in ents.values()
+                       if x["type"] == "deposit" and x["x"] == a["x"] and x["y"] == a["y"]
+                       and x["attrs"].get("resource") == "wood"),
+                      key=lambda x: (int(x["attrs"].get("amount", 0)), x["id"]))   # emptiest first, id breaks ties
+        if here:
+            tree = here[0]                                # replanting heals the most-drained tree on the cell
+            amt = int(tree["attrs"].get("amount", 0))
+            if amt >= TREE_MAX:                           # nothing to heal → don't silently eat the sapling
+                return "rejected", (f"every tree on ({a['x']},{a['y']}) is already full ({TREE_MAX}) — "
+                                    "plant on a bare cell instead")
+            addb(a, "wood", -1)
+            tree["attrs"]["amount"] = min(TREE_MAX, amt + TREE_SAPLING)
+            return "applied", (f"replanted the tree at ({a['x']},{a['y']}) — now "
+                               f"{tree['attrs']['amount']}/{TREE_MAX}; trees regrow over time")
         cur.execute("SELECT attrs->>'gen_seed' s FROM entities WHERE type='deposit' AND attrs->>'gen_seed' IS NOT NULL LIMIT 1")
         row = cur.fetchone(); gs = (row["s"] if row else None) or "42"
         addb(a, "wood", -1)
-        new_entity(ents, cur, "deposit", a["x"], a["y"], None, {"resource": "wood", "amount": 3, "biome": "plains",
-                   "gen_seed": gs, "planted": True})
+        new_entity(ents, cur, "deposit", a["x"], a["y"], None, {"resource": "wood", "amount": TREE_SAPLING,
+                   "biome": "plains", "gen_seed": gs, "planted": True})
         return "applied", f"planted a tree at ({a['x']},{a['y']}) — chop it later; trees regrow over time"
     # ===================== SEASON 3 VERBS =====================
     if verb == "attack":                                 # fire a held ranged weapon at a target (consumes ammo)
@@ -2620,7 +2641,7 @@ def grow_trees(by_type, t):
     for e in by_type.get("deposit", ()):
         if e["attrs"].get("resource") == "wood":
             amt = int(e["attrs"].get("amount", 0))
-            if amt < 22 and (t + e["id"]) % 8 == 0:
+            if amt < TREE_MAX and (t + e["id"]) % 8 == 0:   # same ceiling `plant` tops a tree up to
                 e["attrs"]["amount"] = amt + 1
 
 def grow_plants(by_type, t):

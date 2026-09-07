@@ -17,15 +17,22 @@ published 9922767f180849f0 is deliberately NOT re-baselined — it is cited as a
 SEASON5-EXPANSION.md, server/app.py and engine.py, and moving it would turn "the chain is unchanged" into
 "the chain is whatever we just measured".
 
-HOTPATH_FINGERPRINT = 19e90d8cc35e5b33  (measured 2026-09-07, engine at commit 1c4af33 + the tie-break fix)
-    was 740cf6538dd9052f (2026-09-03, f1d24da). RE-BASELINED ON PURPOSE, once: mine/chop/gather stopped
-    breaking equidistant ties by lowest id and now prefer the RICHEST node (engine.py, the `deps` min-key).
-    That is a deliberate gameplay fix — the old rule always picked the OLDEST deposit on a tile, i.e. a
-    drained stump, so a tile could hold 162 mature trees and 3416 wood that no agent could ever reach.
-    This harness stacks same-cell wood deposits of differing amounts, so it SEES the new choice; the
-    published 9922767f180849f0 and expansion's 50ed051e1545e3b8 both stayed byte-identical across the
-    change (verified by running each harness on the engine with and without it), which is exactly the
-    expected blast radius: only the deposit-scan path moved.
+HOTPATH_FINGERPRINT = 709fffb1f1793eec  (measured 2026-09-07, engine at 339ccae + the plant top-up)
+    was 19e90d8cc35e5b33 earlier the same day. Moved by TWO things at once, so do not read it as one
+    behaviour delta: `plant` now tops up a tree already on the cell instead of appending another deposit
+    entity (14178 of the world's ~16000 deposits had become agent-planted, one cell holding 200 of them,
+    and every chop/mine/gather walks all of them), AND this harness gained a second `plant` intent in
+    tick 2 to actually execute that new branch — see the `plant_tops_up` coverage probe.
+
+    Before that: 19e90d8cc35e5b33, itself re-baselined from 740cf6538dd9052f (2026-09-03, f1d24da) when
+    mine/chop/gather stopped breaking equidistant ties by lowest id and began preferring the RICHEST node
+    (engine.py, the `deps` min-key). The old rule always picked the OLDEST deposit on a cell, i.e. a drained
+    stump, so a cell could hold 162 mature trees and 3416 wood that no agent could ever reach. This harness
+    stacks same-cell wood deposits of differing amounts, so it SEES that choice.
+
+    Across BOTH of these changes the published 9922767f180849f0 and expansion's 50ed051e1545e3b8 stayed
+    byte-identical (each harness run on the engine with and without), which is the expected blast radius:
+    only the deposit-scan and plant paths moved, and only this file watches them.
 
 Gate for any hot-path change: all THREE fingerprints byte-identical (this one, the published one, expansion's).
 Needs the same throwaway Postgres as the other determinism tests; SKIPS if unreachable.
@@ -154,6 +161,8 @@ def _run_once(n=8):
 
     # tick 2 — mine after the world moved; chop again so the freshly planted deposit competes
     intent(chopper, "chop", {"n": 1})
+    intent(farmer, "plant", {})                          # TOPS UP tick 1's tree — the farmer is still on it,
+                                                         # and `mine` below then walks him off the cell
     intent(farmer, "mine", {"n": 2})
     intent(ally_a, "declare_war", {"to": ally_b})
     conn.commit()
@@ -181,6 +190,7 @@ def _run_once(n=8):
         "gather_scan_hit":    "gathered" in res,
         "global_fallback":    "nearest tree is" in res and "nearest deposit is" in res,
         "plant_creates_dep":  "planted a tree" in res,
+        "plant_tops_up":      "replanted the tree" in res,   # the branch that stops deposits piling up on one cell
         "los_blocked":        "no line of sight" in res,
         "structure_built":    "built box" in res,
         "relation_written":   "war" in kinds,
