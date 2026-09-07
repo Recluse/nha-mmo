@@ -54,6 +54,14 @@ TICK_SECONDS = float(os.environ.get("TICK_SECONDS", "2"))
 TICK_MAX_FAILS  = int(os.environ.get("TICK_MAX_FAILS", "20"))     # audit(liveness): after this many CONSECUTIVE tick failures the writer exits so k8s restarts it
 TICK_STALL_SECS = float(os.environ.get("TICK_STALL_SECS", "120")) # ...or if this long passes with no committed tick — a systemic freeze must not stay invisible
 ONLINE_TICKS = int(os.environ.get("ONLINE_TICKS", "180"))   # "online" = acted within this many ticks (~6 min @2s/tick) — covers the ~2-min cloud cadence + the odd 429-skip
+INTENT_PENDING_CAP = int(os.environ.get("INTENT_PENDING_CAP", "40"))
+# ...max intents ONE agent may have queued-but-unapplied at a time. The tick applies EVERY pending intent in a
+# single pass (engine: `WHERE status='pending' ORDER BY id`), so an agent that queues faster than the world
+# drains stretches one tick without bound — measured worst case, a single agent's backlog froze the world ~31s.
+# Live measurement 2026-09-06 (one hour, 5428 intents): the busiest agent peaked at 10 in a tick, so 40 is ~4x
+# headroom over anything real play has ever produced. Enforced per AGENT (the token's scope), on POST /intent
+# only — reads are unlimited and edge-cached. If the tick writer dies the cap does start refusing at 40, which
+# is the correct signal: nothing would be applied anyway.
 WORLD_W      = int(os.environ.get("WORLD_W", "220"))   # season 3: grown 156->220 (square) — non-wipe frontier expansion
 WORLD_H      = int(os.environ.get("WORLD_H", "220"))
 WORLD_SEED   = int(os.environ.get("WORLD_SEED", "42"))
@@ -1308,11 +1316,24 @@ class IntentIn(BaseModel):
 
 
 @app.post("/intent", response_model=IntentQueuedOut, tags=["agent"])
-def submit_intent(it: IntentIn):
-    """Enqueue an agent action. Applied (or loop-guarded) on the next tick — the world is authoritative."""
+def submit_intent(it: IntentIn, response: Response):
+    """Enqueue an agent action. Applied (or loop-guarded) on the next tick — the world is authoritative.
+
+    RATE LIMIT — at most INTENT_PENDING_CAP (40) intents may sit UNAPPLIED for one agent at a time. The bucket
+    is per-AGENT (the token's scope), applies to this endpoint only, and is drained by the world tick, so a full
+    bucket always clears within one tick (~2s). Every 2xx carries `X-RateLimit-Limit`, `X-RateLimit-Remaining`
+    and `X-RateLimit-Reset-After`; exceeding it is a real `429` with `Retry-After` and `X-RateLimit-Global:
+    false`, never a dropped connection. That header set is deliberately Discord-shaped so a Discord-style HTTP
+    client throttles and retries against this API unchanged."""
     agent = it.agent if it.agent is not None else it.agent_id   # accept `agent` OR the `agent_id` alias
     if agent is None:
         raise HTTPException(422, "missing agent (send \"agent\": <id>)")
+    reset_after = f"{TICK_SECONDS:.3f}"      # the tick drains the bucket, so waiting one tick is always enough
+    rl = {"X-RateLimit-Limit": str(INTENT_PENDING_CAP), "X-RateLimit-Reset-After": reset_after}
+    too_many = HTTPException(
+        429, f"too many queued intents for agent {agent} — up to {INTENT_PENDING_CAP} may await the tick at "
+             f"once. They are applied on the next tick (~{TICK_SECONDS:g}s); retry after that.",
+        headers={**rl, "X-RateLimit-Remaining": "0", "Retry-After": reset_after, "X-RateLimit-Global": "false"})
     with _db() as conn:
         cur = conn.cursor()
         cur.execute("SELECT attrs->>'token' t FROM entities WHERE id=%s AND type='agent'", (agent,))
@@ -1325,9 +1346,22 @@ def submit_intent(it: IntentIn):
         if not row[0] or not it.token or not _secret_eq(it.token, row[0]):
             raise HTTPException(403, "bad or missing agent token")
         tick = int(_state.get("tick", 0))
-        cur.execute("INSERT INTO intents(agent, verb, args, created) VALUES(%s,%s,%s,%s) RETURNING id",
-                    (agent, it.verb, Json(it.args), tick))
-        iid = cur.fetchone()[0]; conn.commit()
+        cur.execute("SELECT count(*) FROM intents WHERE agent=%s AND status='pending'", (agent,))
+        pending = int(cur.fetchone()[0])
+        if pending >= INTENT_PENDING_CAP:
+            raise too_many
+        # The insert is CONDITIONAL on the count in the SAME statement, so two submissions racing for this
+        # agent's last slot cannot both read "39 pending" and both get in. No row back = the other one won.
+        cur.execute("INSERT INTO intents(agent, verb, args, created) "
+                    "SELECT %s,%s,%s,%s WHERE (SELECT count(*) FROM intents "
+                    "WHERE agent=%s AND status='pending') < %s RETURNING id",
+                    (agent, it.verb, Json(it.args), tick, agent, INTENT_PENDING_CAP))
+        got = cur.fetchone(); conn.commit()
+        if got is None:
+            raise too_many
+        iid = got[0]
+    response.headers.update(rl)
+    response.headers["X-RateLimit-Remaining"] = str(max(0, INTENT_PENDING_CAP - pending - 1))
     # Return the queue tick + where to read the OUTCOME. The world is authoritative and async: the intent is
     # applied on a LATER tick, so this response can't carry the result — poll GET /intent/{id} once the world
     # tick has advanced (or watch /observe / /log). This is how an agent learns whether its action succeeded.
