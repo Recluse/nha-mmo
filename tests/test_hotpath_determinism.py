@@ -17,7 +17,15 @@ published 9922767f180849f0 is deliberately NOT re-baselined — it is cited as a
 SEASON5-EXPANSION.md, server/app.py and engine.py, and moving it would turn "the chain is unchanged" into
 "the chain is whatever we just measured".
 
-HOTPATH_FINGERPRINT = 740cf6538dd9052f  (measured 2026-09-03, engine at commit f1d24da)
+HOTPATH_FINGERPRINT = 19e90d8cc35e5b33  (measured 2026-09-07, engine at commit 1c4af33 + the tie-break fix)
+    was 740cf6538dd9052f (2026-09-03, f1d24da). RE-BASELINED ON PURPOSE, once: mine/chop/gather stopped
+    breaking equidistant ties by lowest id and now prefer the RICHEST node (engine.py, the `deps` min-key).
+    That is a deliberate gameplay fix — the old rule always picked the OLDEST deposit on a tile, i.e. a
+    drained stump, so a tile could hold 162 mature trees and 3416 wood that no agent could ever reach.
+    This harness stacks same-cell wood deposits of differing amounts, so it SEES the new choice; the
+    published 9922767f180849f0 and expansion's 50ed051e1545e3b8 both stayed byte-identical across the
+    change (verified by running each harness on the engine with and without it), which is exactly the
+    expected blast radius: only the deposit-scan path moved.
 
 Gate for any hot-path change: all THREE fingerprints byte-identical (this one, the published one, expansion's).
 Needs the same throwaway Postgres as the other determinism tests; SKIPS if unreachable.

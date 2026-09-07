@@ -946,7 +946,14 @@ def apply_intent(it, ents, cur, t, events):
             if want_res:
                 return "rejected", f"no {want_res} deposit with any left in reach — check observe.nearby_deposits, or roam / pick another resource"
             return "rejected", ("no trees left to chop" if want_wood else "no mineral deposits left")
-        dep = min(deps, key=lambda x: abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]))
+        # Nearest first, then RICHEST, then lowest id. The richness term is the fix for a trap that made a
+        # whole tile unharvestable: ties used to fall to the lowest id, i.e. the OLDEST node, which is
+        # normally a stump someone already drained. Trees regrow +1 every 8 ticks, so an agent standing on
+        # such a tile got exactly 1 wood per visit, forever, while mature trees sat beside it at the cap —
+        # one live tile held 162 planted trees and 3416 wood that nobody could reach. Still fully
+        # deterministic: `amount` and `id` are both world state, and id breaks any remaining tie.
+        dep = min(deps, key=lambda x: (abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]),
+                                       -int(x["attrs"].get("amount", 0)), x["id"]))
         dist = abs(dep["x"] - a["x"]) + abs(dep["y"] - a["y"])
         if dist > 8:
             tgt = "tree" if want_wood else "deposit"
@@ -978,7 +985,8 @@ def apply_intent(it, ents, cur, t, events):
                 and x["attrs"].get("resource") in PLANT_RESOURCES]
         if not deps:
             return "rejected", "no plants left to gather"
-        dep = min(deps, key=lambda x: abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]))
+        dep = min(deps, key=lambda x: (abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]),   # same richest-first
+                                       -int(x["attrs"].get("amount", 0)), x["id"]))   # tie-break as chop/mine
         dist = abs(dep["x"] - a["x"]) + abs(dep["y"] - a["y"])
         if dist > GATHER_RANGE:
             return "rejected", f"nearest plant is {dist} cells away — move toward it first (see nearby_deposits)"
@@ -3016,7 +3024,7 @@ RELOAD_EVERY = 10          # full SELECT*-reload every N ticks: drift-check vs c
 def _load_world(cur):
     """Full load of the entities table into an id-keyed dict, with the API-owned `token` stripped — the tick
     treats token as read-through (never holds/hashes/persists it). Returns (world, max_id)."""
-    cur.execute("SELECT * FROM entities ORDER BY id")     # audit(determinism): id-ordered so equidistant-deposit tie-breaks (mine/chop/gather pick the FIRST min) are stable across reloads + replay
+    cur.execute("SELECT * FROM entities ORDER BY id")     # audit(determinism): id-ordered so iteration is stable across reloads + replay. mine/chop/gather no longer LEAN on that order — they sort by (distance, -amount, id) explicitly — but everything else that walks ents in order still does.
     w, mx = {}, 0
     for e in cur.fetchall():
         e["attrs"].pop("token", None)
