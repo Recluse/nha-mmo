@@ -1692,6 +1692,25 @@ void main(){
   if(done){const lb=label('\u{1F6F0} '+(s.name||'Orbital Station'),3.2); lb.position.y=7.5; grp.add(lb);}     // 🛰 label once complete (canvas auto-fits the full name)
   return grp;
  }
+ function makeWarpGate(s){                                        // SEASON 6 — a warp gate: standing ring + event-horizon disc
+  const grp=new T.Group(), done=!!s.complete;
+  const mat=(c,e)=>new T.MeshLambertMaterial({color:c,emissive:e||0x0f1320,flatShading:true});
+  const ring=new T.Mesh(new T.TorusGeometry(3.2,0.42,10,36),mat(done?0x9d7bff:0x6b6f7a,done?0x2a1b5e:0x101216));   // violet & lit once open, dead grey while funding
+  grp.add(ring);
+  [-1,1].forEach(sd=>{                                            // two buttresses holding the ring upright
+   const leg=new T.Mesh(new T.BoxGeometry(0.5,2.6,0.5),mat(done?0x6f5ac4:0x5a5e68)); leg.position.set(sd*2.4,-2.4,0); leg.rotation.z=sd*0.30; grp.add(leg);
+  });
+  const base=new T.Mesh(new T.BoxGeometry(7.4,0.5,2.2),mat(done?0x6f5ac4:0x5a5e68)); base.position.y=-3.6; grp.add(base);
+  if(done){                                                       // the throat only glows on a FINISHED gate — a half-funded ring is inert
+   const disc=new T.Mesh(new T.CircleGeometry(2.85,36),new T.MeshBasicMaterial({color:0x8f6cff,transparent:true,opacity:0.34,side:T.DoubleSide}));
+   grp.add(disc);
+   const halo=new T.Mesh(new T.TorusGeometry(3.2,0.13,8,36),new T.MeshBasicMaterial({color:0xd9c8ff,transparent:true,opacity:0.55}));
+   grp.add(halo);
+  }
+  const p=P(s.x,s.y); grp.position.set(p[0],p[1]+3.8+(s.alt||0)/9,p[2]);
+  const lb=label((done?'\u{1F300} ':'\u{1F6A7} ')+(s.name||'Warp Gate'),2.8); lb.position.y=5.4; grp.add(lb);   // open / under construction
+  return grp;
+ }
  function buildStructures(ss){
   while(strG.children.length)strG.remove(strG.children[0]);
   zigFX.length=0;                                             // drop last frame's shimmer refs before rebuilding
@@ -1700,6 +1719,7 @@ void main(){
    if(s.shape=='ziggurat'){strG.add(makeZiggurat(s,zigN++));return;}   // Moon-only monument — placed on the Moon, not the terrain
    if(s.shape=='monument'){strG.add(makeMonument(s));return;}          // terrain megastructure spanning a w x h footprint
    if(s.shape=='station'){strG.add(makeStation(s));return;}            // SPACE ERA: the co-op orbital station, high in orbit
+   if(s.shape=='warpgate'){strG.add(makeWarpGate(s));return;}          // SEASON 6: the warp gate — a ring you can actually see the far side through
    const p=P(s.x,s.y),sz=Math.max(0.8,(s.size||2)*0.6);let geo,vh;
    if(s.shape=='elevator'){vh=Math.max(1,(s.height||20)/9);geo=new T.CylinderGeometry(0.6,0.95,vh,8);}
    else{vh=Math.max(0.8,Math.min(16,(s.height||3)/4));
