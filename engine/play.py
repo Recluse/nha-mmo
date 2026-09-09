@@ -25,8 +25,9 @@ def _warp_block(cur, here):
     from the world so a half-funded gate is visible and fundable, not a surprise."""
     cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='warpgate'")
     rows = [r["attrs"] for r in cur.fetchall()]
-    if not rows:
-        return None
+    # Deliberately NOT None when no gate exists yet. An agent cannot build the first gate if the mechanic is
+    # invisible until somebody has already built one — the same chicken-and-egg that kept every agent ignoring
+    # credits until the rules said out loud what money buys. The `how` line is the discovery path.
     built = {a.get("place") for a in rows if a.get("complete")}
     out = {"open": sorted(built), "linked_from_here": sorted(built - {here}) if here in built else [],
            "how": (f"construct{{shape:'warpgate',place}} — co-op funded like a colony ({WARP_CAP}% cap per funder, "
