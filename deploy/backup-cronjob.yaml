@@ -56,8 +56,17 @@ spec:
               args:
                 - |
                   set -eu
-                  OUT="/backups/world-$(date -u +%Y%m%d-%H%M%S).dump"
-                  echo "dumping nhamoo -> $OUT"
+                  # WEEKLY FULL, DAILY STATE. Measured 2026-09-10 while this job ran: it spent 17+ minutes inside
+                  # a single `COPY public.events TO stdout`, waiting on ClientWrite — every other table together
+                  # took seconds. `events` is 8.8M rows / 2.6GB of the 2.9GB database, kept in full ON PURPOSE for
+                  # replay, and growing ~0.5GB/month, so a nightly full dump only gets slower forever.
+                  # A restore needs WORLD STATE (entities, world, market_orders, contracts, messages...); the
+                  # event log is history. So the daily copy excludes the event ROWS (the table and its schema are
+                  # still in the archive, so a restore yields a working world with an empty log), and Sunday takes
+                  # the full one. The off-site VM job remains a full daily copy regardless — see the header.
+                  if [ "$(date -u +%u)" = "7" ]; then KIND=full; EXCL=""; else KIND=state; EXCL="--exclude-table-data=events"; fi
+                  OUT="/backups/world-$(date -u +%Y%m%d-%H%M%S)-$KIND.dump"
+                  echo "dumping nhamoo ($KIND) -> $OUT"
                   # -Fc -Z1, not `| gzip`. The old form ran 43min, then 56min, then blew the 1h deadline outright
                   # on 2026-09-10 and produced NO backup at all. It was never the database's fault: `events` is
                   # 2.6GB of the 2.9GB (8.8M rows of full history, ~0.5GB/month by design), and the pod compressed
@@ -67,7 +76,7 @@ spec:
                   # RESTORE IS NOW `pg_restore`, not `gunzip | psql`:
                   #   pg_restore -h <host> -U nhamoo -d nhamoo --clean --if-exists world-<ts>.dump
                   #   pg_restore -t entities -a ...            # one table, data only
-                  pg_dump -h postgres.nha-mmo.svc.cluster.local -U nhamoo -d nhamoo -Fc -Z1 -f "$OUT"
+                  pg_dump -h postgres.nha-mmo.svc.cluster.local -U nhamoo -d nhamoo $EXCL -Fc -Z1 -f "$OUT"
                   # VERIFY before pruning: a truncated or corrupt dump must never evict a good one. Reading the
                   # archive's table of contents is the -Fc equivalent of `gzip -t` and is strictly stronger — it
                   # proves the footer was written, which is exactly what a killed dump lacks. The size floor
@@ -82,8 +91,12 @@ spec:
                   # are swept and retained together so the older .sql.gz generations age out normally.
                   find /backups -name 'world-*.dump' -size -1024k -delete
                   find /backups -name 'world-*.sql.gz' -size -1024k -delete
-                  ls -t /backups/world-*.dump /backups/world-*.sql.gz 2>/dev/null | tail -n +15 | xargs -r rm -f
-                  echo "retained: $(ls -1 /backups/world-*.dump /backups/world-*.sql.gz 2>/dev/null | wc -l) dumps"
+                  # Retained SEPARATELY, or the 6 state dumps between two Sundays would evict every full one
+                  # inside a fortnight and the weekly history copy would quietly cease to exist.
+                  ls -t /backups/world-*-state.dump 2>/dev/null | tail -n +15 | xargs -r rm -f   # 14 daily
+                  ls -t /backups/world-*-full.dump  2>/dev/null | tail -n +6  | xargs -r rm -f   # 5 weekly
+                  ls -t /backups/world-*.sql.gz     2>/dev/null | tail -n +4  | xargs -r rm -f   # legacy, ageing out
+                  echo "retained: $(ls -1 /backups/world-*state.dump 2>/dev/null | wc -l) state, $(ls -1 /backups/world-*full.dump 2>/dev/null | wc -l) full, $(ls -1 /backups/world-*.sql.gz 2>/dev/null | wc -l) legacy"
               env:
                 - {name: PGCONNECT_TIMEOUT, value: "10"}
               volumeMounts:
