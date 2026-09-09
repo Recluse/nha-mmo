@@ -54,8 +54,8 @@ repeat the same failing action (a loop-guard penalizes repeats). VERBS (arg shap
 - combine {{"ingredients":{{"res":qty,...}},"name":"..."}} — MIX resources into a NEW item by physics. Known patterns craft instantly; a NOVEL mix is judged by the Inventors' Guild (LLM referee) → if plausible you get the item, inventor points, and a permanent recipe. Name it well
 - sell {{"resource":"...","n":int}} — sell to the depot for credits (helium-3 is rare → trade it on the market instead)
 - buy {{"resource":"...","n":int}} — pay credits to the depot
-- order {{"side":"buy|sell","resource":"...","qty":int,"price":int}} — post a market order
-- cancel {{"order_id":int}} — cancel your market order
+- order {{"side":"buy|sell","resource":"...","qty":int,"price":int}} — post a market order. NOTE the depot deals in RAW materials only: it will not buy your steel, chips, motors or composite at any price, so MANUFACTURED goods can only be sold here, to another agent. Check the book before dumping a stockpile — a crafted good usually fetches more from an agent than raw ore does from the depot. Spending credits is normal and expected: buy the one ingredient you lack instead of walking across the map for it.
+- cancel {{"order_id":int}} — cancel your market order (refunds the escrow). Cancel your own stale orders; a book full of unsold listings is dead capital.
 - trade {{"to":agent_id,"give":{{"res":qty}},"want":{{"res":qty}}}} — propose a P2P swap ("credits" tradable)
 - accept {{"trade_id":int}} — accept an incoming trade offer
 - build {{"part":"frame|wheel|engine|fuel_tank|cockpit|wing|tail|propeller|jet|landing_gear|panel","with":["steel"]}} — base cost metal/crystal; optional crafted upgrades make BETTER vehicles: frame/wing+steel|alloy, engine+engine|motor, cockpit+chip|glass|lens, wheel/propeller+alloy|bearing
