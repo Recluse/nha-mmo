@@ -34,7 +34,11 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 2
-      activeDeadlineSeconds: 3600
+      # 3600 was not a safety margin, it was a tripwire: the dump crept 43min -> 56min -> over the hour, and on
+      # 2026-09-10 the job was killed by this deadline having produced nothing. With -Fc -Z1 and a real CPU share
+      # it should finish in minutes; the generous ceiling is there so a slow night degrades into a slow backup
+      # rather than into no backup.
+      activeDeadlineSeconds: 10800
       template:
         spec:
           restartPolicy: Never
@@ -52,28 +56,43 @@ spec:
               args:
                 - |
                   set -eu
-                  OUT="/backups/world-$(date -u +%Y%m%d-%H%M%S).sql.gz"
+                  OUT="/backups/world-$(date -u +%Y%m%d-%H%M%S).dump"
                   echo "dumping nhamoo -> $OUT"
-                  pg_dump -h postgres.nha-mmo.svc.cluster.local -U nhamoo -d nhamoo | gzip > "$OUT"
-                  # VERIFY before pruning: a truncated or corrupt dump must never evict a good one. The size floor
-                  # catches the classic "dump failed early, wrote a 20-byte gzip header" case that still passes -t.
-                  gzip -t "$OUT"
+                  # -Fc -Z1, not `| gzip`. The old form ran 43min, then 56min, then blew the 1h deadline outright
+                  # on 2026-09-10 and produced NO backup at all. It was never the database's fault: `events` is
+                  # 2.6GB of the 2.9GB (8.8M rows of full history, ~0.5GB/month by design), and the pod compressed
+                  # all of it through gzip at the default level on a 100m CPU share. pg_dump's own format at
+                  # level 1 compresses far cheaper, streams straight to a file, and — unlike a flat .sql.gz —
+                  # restores selectively, so a single table can be pulled back without replaying the whole world.
+                  # RESTORE IS NOW `pg_restore`, not `gunzip | psql`:
+                  #   pg_restore -h <host> -U nhamoo -d nhamoo --clean --if-exists world-<ts>.dump
+                  #   pg_restore -t entities -a ...            # one table, data only
+                  pg_dump -h postgres.nha-mmo.svc.cluster.local -U nhamoo -d nhamoo -Fc -Z1 -f "$OUT"
+                  # VERIFY before pruning: a truncated or corrupt dump must never evict a good one. Reading the
+                  # archive's table of contents is the -Fc equivalent of `gzip -t` and is strictly stronger — it
+                  # proves the footer was written, which is exactly what a killed dump lacks. The size floor
+                  # still catches the "died early but wrote a valid-looking header" case.
+                  pg_restore -l "$OUT" > /dev/null
                   SZ=$(stat -c%s "$OUT")
                   [ "$SZ" -gt 1048576 ] || { echo "ABORT: $OUT is only ${SZ}B — refusing to prune with a suspect dump"; exit 1; }
-                  echo "ok: ${SZ} bytes, gzip verified"
-                  # Sweep STUB files before pruning. A failed dump (bad DNS, server restart) leaves a ~20-byte
-                  # gzip header behind; those would then occupy retention slots and silently push real backups
-                  # out. Observed for real on this job's first run. Anything under 1MiB cannot be a world dump.
+                  echo "ok: ${SZ} bytes, archive TOC readable"
+                  # Sweep STUB files before pruning. A failed dump (bad DNS, server restart) leaves a tiny header
+                  # behind; those would then occupy retention slots and silently push real backups out. Observed
+                  # for real on this job's first run. Anything under 1MiB cannot be a world dump. Both patterns
+                  # are swept and retained together so the older .sql.gz generations age out normally.
+                  find /backups -name 'world-*.dump' -size -1024k -delete
                   find /backups -name 'world-*.sql.gz' -size -1024k -delete
-                  ls -t /backups/world-*.sql.gz | tail -n +15 | xargs -r rm -f    # keep the newest 14
-                  echo "retained: $(ls -1 /backups/world-*.sql.gz | wc -l) dumps"
+                  ls -t /backups/world-*.dump /backups/world-*.sql.gz 2>/dev/null | tail -n +15 | xargs -r rm -f
+                  echo "retained: $(ls -1 /backups/world-*.dump /backups/world-*.sql.gz 2>/dev/null | wc -l) dumps"
               env:
                 - {name: PGCONNECT_TIMEOUT, value: "10"}
               volumeMounts:
                 - {name: backups, mountPath: /backups}
               resources:
-                requests: {cpu: 100m, memory: 128Mi}
-                limits: {memory: 512Mi}
+                # 100m was the real bottleneck: under node contention the dump got a tenth of a core to compress
+                # 2.9GB through, which is how a backup starts taking the better part of an hour.
+                requests: {cpu: 500m, memory: 256Mi}
+                limits: {memory: 1Gi}
           volumes:
             - name: backups
               hostPath:
