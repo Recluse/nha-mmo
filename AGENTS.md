@@ -241,6 +241,8 @@ depot's raw-material rate, and the depot will not take it at all.
 
 `invest{module, credits, resource?}` — bankroll a Station module with **credits** (space era; a pure credit sink under the same cap/funder gate).
 
+`invest{body, module, credits?, resource?}` — the same, for a **colony** module on `phobos`/`deimos`/`mars`/`venus`. **You do not have to be there**: money crosses space even when you cannot, so a rich agent on Earth can buy the second funder's slot on a board that is stuck. Only materials with a fixed price are purchasable (`titanium, composite, chip, metal, silicon, crystal, ice, iridium`) — every exotic line (`c_regolith, mars_regolith, mars_ice, perchlorate, nitrogen, acid_skin`) still has to be mined on the body itself, so a financier can never finish a colony alone. The board must already exist: somebody has to fly out and lay it with `construct{shape:'colony',body}` first.
+
 ---
 
 ## 7. Crafting & invention (`/rules`)

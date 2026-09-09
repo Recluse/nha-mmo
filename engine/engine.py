@@ -363,6 +363,121 @@ def _terraform_done(ents, body):
               and e["attrs"].get("body") == body and e["attrs"].get("complete") for e in ents.values())
 
 
+def _invest_colony(a, body, args, ents, cur, t):
+    """`invest{body,module,credits?,resource?}` — fund a COLONY module with credits instead of materials.
+
+    Mirrors the station branch of `invest`, but keyed on the body and using that body's cap / min-funder rules.
+    Only materials with a fixed EXPANSION_PRICES quote can be bought, so the exotic lines still require somebody
+    physically on the surface; the buyer can never finish a colony alone. Purchased units go straight into the
+    board and never touch the buyer's buffer, so credits are destroyed, not laundered back into goods.
+    """
+    if _era_now(cur) not in ("space", "expansion", "accord"):
+        return "rejected", "investing in a colony needs the SPACE / EXPANSION era"
+    if body not in COLONY_MODULES:
+        return "rejected", "colony body must be one of: " + "/".join(COLONY_MODULES)
+    mods_def = COLONY_MODULES[body]
+    module = str(args.get("module", "")).lower()
+    if module not in mods_def:
+        return "rejected", "module must be one of: " + "/".join(mods_def)
+    st = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "colony"
+               and e["attrs"].get("body") == body), None)
+    if st is None:
+        return "rejected", (f"no colony board on {BODY_LABEL[body]} yet — somebody has to GO there and lay it with "
+                            f"construct{{shape:'colony',body:'{body}'}} before it can be financed from afar")
+    if st["attrs"].get("complete"):
+        return "rejected", f"{COLONY_LABEL[body]} is already COMPLETE — it stands, finished"
+    mod = st["attrs"]["modules"].setdefault(module, {"have": {}, "contrib": {}, "complete": False})
+    if mod.get("complete"):
+        return "rejected", f"the {mods_def[module]['label']} is already complete — fund another module"
+    held_cr = int(get(a, "credits")); req = _ai(args, "credits", 0)
+    budget = min(held_cr, INVEST_TICK_CAP)
+    if req > 0:
+        budget = min(budget, req)
+    if budget <= 0:
+        return "rejected", "you hold no credits to invest"
+    want_res = str(args.get("resource", "")).lower() or None       # optional: focus one resource line
+    need = mods_def[module]["need"]
+    have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {})
+    st["attrs"].setdefault("ctotal", {})
+    ct = st["attrs"]["ctotal"]
+    cap_frac = COLONY_CAP[body]
+    aid = str(a["id"]); moved = {}; spent = 0
+    for r in sorted(need):                                          # sorted → replay-stable; same greedy cap loop
+        if want_res and r != want_res:
+            continue
+        price = EXPANSION_PRICES.get(r)
+        if not price:                                               # exotic line — has to be mined on the body
+            continue
+        tgt = need[r]; cur_have = int(have.get(r, 0))
+        if cur_have >= tgt:
+            continue
+        cap = (tgt * cap_frac + 99) // 100
+        already = int(contrib.get(aid, {}).get(r, 0))
+        units = min(tgt - cur_have, max(0, cap - already), (budget - spent) // price)
+        if units > 0:
+            spent += units * price
+            have[r] = cur_have + units
+            contrib.setdefault(aid, {})[r] = already + units
+            ct[aid] = int(ct.get(aid, 0)) + units
+            moved[r] = units
+    if not moved:
+        buyable = sorted(r for r in need if EXPANSION_PRICES.get(r))
+        return "rejected", (f"invested nothing in {COLONY_LABEL[body]} · {mods_def[module]['label']} — you may be at "
+                            f"your {cap_frac}% cap on its fundable lines, your budget may be too small, or the lines "
+                            f"you can buy are already full. Purchasable here: {buyable or 'none'}; the rest must be "
+                            f"mined on {BODY_LABEL[body]}.")
+    addb(a, "credits", -spent)                                      # THE SINK: credits are gone, converted to materials
+    msg = f"invested {spent} credits → funded {moved} to {COLONY_LABEL[body]} · {mods_def[module]['label']}"
+    return "applied", msg + _colony_award(a, st, body, module, moved, mod, ents, cur, t)
+
+
+def _colony_award(a, st, body, module, moved, mod, ents, cur, t):
+    """Immediate points + the module/colony completion cascade, after `moved` units have landed in a colony module.
+
+    Shared by BOTH funding routes — `construct{shape:'colony'}` (materials, on site) and `invest{body,module}`
+    (credits, from anywhere) — so the two can never drift apart. Returns the suffix to append to the caller's
+    message; the caller owns the prefix, since "funded" and "invested" read differently.
+    """
+    mods_def = COLONY_MODULES[body]
+    need = mods_def[module]["need"]
+    have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {})
+    ct = st["attrs"].setdefault("ctotal", {})
+    msg = ""
+    imm = sum(moved.values()) // 10
+    if imm > 0:
+        a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
+        msg += f" — +{imm} pts now"
+    if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= COLONY_MIN[body] and not mod.get("complete"):
+        mod["complete"] = True
+        tot = sum(sum(v.values()) for v in contrib.values()) or 1
+        for fid in sorted(contrib):
+            pts = COLONY_MODULE_REWARD * sum(contrib[fid].values()) // tot
+            fe = ents.get(int(fid))
+            if fe and pts > 0:
+                fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+        cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                    (t, a["id"], Json({"colony": body, "colony_module": module, "complete": True, "funders": len(contrib)})))
+        msg += f" — MODULE COMPLETE! {mods_def[module]['label']} online ({len(contrib)} funders)"
+        if all(st["attrs"]["modules"].get(k, {}).get("complete") for k in mods_def):
+            st["attrs"]["complete"] = True
+            if body == "venus":
+                st["attrs"]["acid_integrity"] = ACID_INTEGRITY_MAX   # Phase 5: the cloud city now needs continuous acid-shield upkeep
+            grand = sum(ct.values()) or 1
+            order = sorted(ct, key=lambda k: (-ct[k], int(k)))   # deterministic: most units, then lowest id
+            for fid in order:
+                fe = ents.get(int(fid)); pts = COLONY_FINISH_REWARD * ct[fid] // grand
+                if fe and pts > 0:
+                    fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+                    if not fe["attrs"].get("title"):
+                        fe["attrs"]["title"] = COLONY_TITLE[body]
+            cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                        (t, a["id"], Json({"colony": body, "complete": True, "architect": order[0] if order else None})))
+            extra = " Mars & Venus routes are now cheaper for EVERYONE (−5 Δv per moon base)." if body in ("phobos", "deimos") else ""
+            msg += f" — 🪐 {COLONY_LABEL[body].upper()} IS COMPLETE!{extra}"
+            msg += _check_solar_accord(a, ents, cur, t)   # a colony finishing last can complete the Accord too
+    return msg
+
+
 def _check_solar_accord(a, ents, cur, t):
     """THE ERA META-WIN. Fires ONCE, when Mars is terraformed (Biosphere) AND Venus is held (Cloud City colony OR its
     surface terraform) AND ≥1 moon Forward Base stands — the moons pay for the routes, the routes let the planets be
@@ -1301,14 +1416,27 @@ def apply_intent(it, ents, cur, t, events):
         kind = "a flyer — send it up so it mines asteroids in orbit" if v["attrs"].get("flies") else "it mines ground deposits it roams over (and paves roads)"
         return "applied", (f"deployed #{v['id']} ({v['attrs'].get('name','vehicle')}) — it now roams on its own, "
                            f"MINING into your inventory as it goes ({kind}). Deploy it where the resource is.")
-    if verb == "invest":                                 # EXPANSION FINANCING: bankroll a co-op station module with CREDITS.
-        # Credits buy the scarce materials at a FIXED price and fund the module under the SAME 40% cap / >=3-funder gate
-        # as construct — the rich pay for their 40% instead of mining it (never buys them out of cooperation). A pure
+    if verb == "invest":                                 # EXPANSION FINANCING: bankroll a co-op module with CREDITS.
+        # Credits buy the scarce materials at a FIXED price and fund the module under the SAME cap / min-funder gate
+        # as construct — the rich pay for their share instead of mining it (never buys them out of cooperation). A pure
         # credit SINK: bought materials never land in the agent's buffer, so there is no credit->material->credit loop.
+        #
+        # COLONIES (`invest{body,module}`) — added 2026-09-09. This used to work on the Orbital Station only, and the
+        # station was finished long ago in an era the world has since left, so the verb was dead code. Meanwhile every
+        # colony board sat at ONE funder while modules need 2 (moons) or 3 (Mars/Venus) — materials partly collected,
+        # nothing completable, the whole era stuck on a coordination problem rather than on scarcity.
+        # Deliberately NO presence requirement: money crosses space, people do not, and an Earth-bound financier
+        # buying the second funder's slot is exactly the unlock. It cannot trivialise the era, because only
+        # EXPANSION_PRICES materials are purchasable — every exotic line (c_regolith, mars_regolith, mars_ice,
+        # perchlorate, nitrogen, acid_skin) still has to be mined ON the body by somebody who actually went.
+        body = str(args.get("body", "")).lower()
+        if body:
+            return _invest_colony(a, body, args, ents, cur, t)
         cur.execute("SELECT to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")
         erow = cur.fetchone()
         if not erow or (erow.get("era") or "architect") != "space":
-            return "rejected", "investing in the Orbital Station needs the SPACE ERA"
+            return "rejected", ("investing in the Orbital Station needs the SPACE ERA "
+                                "(for a colony pass body=phobos/deimos/mars/venus)")
         module = str(args.get("module", "")).lower()
         if module not in STATION_MODULES:
             return "rejected", "invest needs module=one of: " + "/".join(STATION_MODULES)
@@ -1547,39 +1675,7 @@ def apply_intent(it, ents, cur, t, events):
                                     f"You may be at your {cap_frac}% per-resource cap (others must chip in), or hold none of these "
                                     f"(mine them here or haul from Earth/another body).")
             msg = f"funded {moved} to {COLONY_LABEL[body]} · {mods_def[module]['label']}"
-            imm = sum(moved.values()) // 10
-            if imm > 0:
-                a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
-                msg += f" — +{imm} pts now"
-            if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= min_contrib and not mod.get("complete"):
-                mod["complete"] = True
-                tot = sum(sum(v.values()) for v in contrib.values()) or 1
-                for fid in sorted(contrib):
-                    pts = COLONY_MODULE_REWARD * sum(contrib[fid].values()) // tot
-                    fe = ents.get(int(fid))
-                    if fe and pts > 0:
-                        fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
-                cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
-                            (t, a["id"], Json({"colony": body, "colony_module": module, "complete": True, "funders": len(contrib)})))
-                msg += f" — MODULE COMPLETE! {mods_def[module]['label']} online ({len(contrib)} funders)"
-                if all(st["attrs"]["modules"].get(k, {}).get("complete") for k in mods_def):
-                    st["attrs"]["complete"] = True
-                    if body == "venus":
-                        st["attrs"]["acid_integrity"] = ACID_INTEGRITY_MAX   # Phase 5: the cloud city now needs continuous acid-shield upkeep
-                    grand = sum(ct.values()) or 1
-                    order = sorted(ct, key=lambda k: (-ct[k], int(k)))   # deterministic: most units, then lowest id
-                    for fid in order:
-                        fe = ents.get(int(fid)); pts = COLONY_FINISH_REWARD * ct[fid] // grand
-                        if fe and pts > 0:
-                            fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
-                            if not fe["attrs"].get("title"):
-                                fe["attrs"]["title"] = COLONY_TITLE[body]
-                    cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
-                                (t, a["id"], Json({"colony": body, "complete": True, "architect": order[0] if order else None})))
-                    extra = " Mars & Venus routes are now cheaper for EVERYONE (−5 Δv per moon base)." if body in ("phobos", "deimos") else ""
-                    msg += f" — 🪐 {COLONY_LABEL[body].upper()} IS COMPLETE!{extra}"
-                    msg += _check_solar_accord(a, ents, cur, t)   # a colony finishing last can complete the Accord too
-            return "applied", msg
+            return "applied", msg + _colony_award(a, st, body, module, moved, mod, ents, cur, t)
         if shape == "terraform":                         # EXPANSION ERA Phase 3: staged, planet-scale co-op terraforming
             if _era_now(cur) not in ("space", "expansion", "accord"):
                 return "rejected", "terraforming needs the SPACE / EXPANSION era"

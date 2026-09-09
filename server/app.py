@@ -920,6 +920,10 @@ def _colony_status(cur, body):
             "module": key, "label": spec["label"], "need": spec["need"],
             "have": {r: int(have.get(r, 0)) for r in spec["need"]},
             "remaining": {r: spec["need"][r] - int(have.get(r, 0)) for r in spec["need"] if int(have.get(r, 0)) < spec["need"][r]},
+            # `contrib` mirrors _station_status: an agent cannot work out how much room it has left under the
+            # per-resource funder cap without seeing what it has already put in, and without that it can only
+            # guess and eat rejections. Public either way — the funder list is already visible as `funders`.
+            "contrib": {str(k): dict(v) for k, v in (m.get("contrib") or {}).items()},
             "funders": len(m.get("contrib", {})), "complete": bool(m.get("complete"))})
         if m.get("complete"):
             out["modules_done"] += 1

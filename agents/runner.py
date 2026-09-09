@@ -466,30 +466,63 @@ def baron_invest(obs, aid):
         win = int(obs.get("tick", 0)) // INVEST_PERIOD
         if _last_invest_window.get(aid) == win:                 # already invested this window
             return None
-        st = api("/station")
-        if not st or st.get("complete"):
-            return None
         best = None                                             # (module, resource, fundable_qty) — biggest open line I'm not capped on
-        for m in (st.get("modules") or []):
-            if m.get("complete"):
+        st = api("/station")
+        if st and not st.get("complete"):
+            for m in (st.get("modules") or []):
+                if m.get("complete"):
+                    continue
+                need = m.get("need") or {}
+                mine = (m.get("contrib") or {}).get(str(aid)) or {}
+                for r, q in (m.get("remaining") or {}).items():
+                    if int(q) <= 0 or r not in _INVEST_PRICES:
+                        continue
+                    cap = (int(need.get(r, 0)) * 40 + 99) // 100     # ceil(40%) — my hard per-line ceiling
+                    room = cap - int(mine.get(r, 0))
+                    if room <= 0:                                    # already at my cap on this line — skip so I never spam a reject
+                        continue
+                    fundable = min(int(q), room)
+                    if best is None or fundable > best[2]:
+                        best = (m["module"], r, fundable)
+        if best:
+            _last_invest_window[aid] = win
+            budget = max(1, min(int((cr - INVEST_RESERVE) * INVEST_SLICE), 25000))   # 5% of surplus, capped at INVEST_TICK_CAP
+            return "invest", {"module": best[0], "resource": best[1], "credits": budget}
+        # THE STATION IS FINISHED — bankroll a stalled COLONY board instead (invest{body,...}, added 2026-09-09).
+        # A baron only ever JOINS: it requires the module to already have a funder, so somebody had to fly out,
+        # lay the board and commit first. That keeps the "a colony is a joint effort" story intact while removing
+        # the wall the era was actually stuck behind — every board sat at exactly ONE funder while modules need
+        # 2 (moons) or 3 (Mars/Venus), so nothing could ever complete no matter how much material was collected.
+        # The exotic lines are unbuyable, so a baron can only ever pay for the industrial half.
+        pick = None                                             # (body, module, resource, fundable_qty)
+        for body in ("phobos", "deimos", "mars", "venus"):
+            try:
+                col = api(f"/colony/{body}")
+            except Exception:
                 continue
-            need = m.get("need") or {}
-            mine = (m.get("contrib") or {}).get(str(aid)) or {}
-            for r, q in (m.get("remaining") or {}).items():
-                if int(q) <= 0 or r not in _INVEST_PRICES:
+            if not col or not col.get("colony_exists") or col.get("complete"):
+                continue
+            cap_frac = int(col.get("cap_pct_per_agent") or 40)
+            for m in (col.get("modules") or []):
+                if m.get("complete") or int(m.get("funders") or 0) < 1:   # never be the FIRST funder
                     continue
-                cap = (int(need.get(r, 0)) * 40 + 99) // 100     # ceil(40%) — my hard per-line ceiling
-                room = cap - int(mine.get(r, 0))
-                if room <= 0:                                    # already at my cap on this line — skip so I never spam a reject
-                    continue
-                fundable = min(int(q), room)
-                if best is None or fundable > best[2]:
-                    best = (m["module"], r, fundable)
-        if not best:
+                need = m.get("need") or {}
+                mine = (m.get("contrib") or {}).get(str(aid)) or {}
+                for r, q in (m.get("remaining") or {}).items():
+                    if int(q) <= 0 or r not in _INVEST_PRICES:
+                        continue
+                    cap = (int(need.get(r, 0)) * cap_frac + 99) // 100
+                    room = cap - int(mine.get(r, 0))
+                    if room <= 0:
+                        continue
+                    fundable = min(int(q), room)
+                    if pick is None or fundable > pick[3]:
+                        pick = (body, m["module"], r, fundable)
+        if not pick:
             return None
         _last_invest_window[aid] = win
-        budget = max(1, min(int((cr - INVEST_RESERVE) * INVEST_SLICE), 25000))   # 5% of surplus, capped at INVEST_TICK_CAP
-        return "invest", {"module": best[0], "resource": best[1], "credits": budget}
+        budget = max(1, min(int((cr - INVEST_RESERVE) * INVEST_SLICE), 25000))
+        return "invest", {"body": pick[0], "module": pick[1], "resource": pick[2], "credits": budget}
     except Exception:
         return None
 
