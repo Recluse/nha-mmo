@@ -88,6 +88,7 @@ ITEM_PROPS = {
     "ion_thruster":  {"power": 2, "thrust_field": 1, "light": 1},                     # fusion + power + semiconductor — orbital drive
     "heat_shield":   {"ablative": 1, "hardness": 9, "shaped": 1, "sheds_heat": 1},    # EXPANSION EDL — ablative re-entry shield (consumed at Mars/Venus arrival)
     "acid_skin":     {"acid_proof": 1, "insulator": 6, "shielding": 1},               # EXPANSION — H2SO4-proof hull coat (consumed at Venus arrival)
+    "warp_container": {"stasis": 1, "shielding": 1, "hollow": 1, "hardness": 9},      # SEASON 6b — single-use crate: the ONLY way exotic body cargo crosses a warp gate (consumed on transit)
     "graphite":      {"carbon": 9, "hardness": 4, "conductivity": 4, "shaped": 1},    # EXPANSION — co2 reduced with heat → structural carbon "from thin air" (feeds composite; Venus/Mars colony material)
     "o2":            {"breathable": 1, "oxygen": 1, "gas": 1},                         # EXPANSION P3 — perchlorate scrubbed / co2 split → breathable oxygen (terraform biosphere)
     "mars_brick":    {"hardness": 6, "shaped": 1, "shield": 1, "sintered": 1},         # EXPANSION P3 — sintered Mars regolith → dome shell + radiation shield
@@ -144,6 +145,7 @@ RULE_NOTE = {
     "ion_thruster": "a fusion fuel (helium3/iridium) + a motor (power) + a semiconductor — orbital drive",
     "heat_shield": "a superalloy (heat-proof) + a composite (shaped, hard) — an ablative re-entry shield for Mars/Venus arrival",
     "acid_skin": "acid + rubber — an H₂SO₄-proof hull coat for the Venus cloud deck",
+    "warp_container": "a superalloy (heat-proof) + a chip (logic) + a crystal (insulator) — a single-use stasis crate; the only way exotic body cargo crosses a warp gate",
     "graphite": "co2 (mined at Mars/Venus) reduced with a fuel (heat) — structural carbon from thin air; feeds composite + colony builds",
     "o2": "perchlorate (Mars) scrubbed with water or heat — breathable oxygen for terraforming",
     "mars_brick": "mars_regolith sintered with a fuel (heat) — dome shell + radiation shield",
@@ -202,6 +204,9 @@ RULES = [
     ("ion_thruster",  lambda a: a["has"]("fusion") and a["has"]("power") and a["has"]("semiconductor")),  # fusion fuel + motor + chip/silicon
     # --- EXPANSION ERA re-entry gear (unique heat_proof/grip+elastic pins keep them off every existing mix; ABOVE
     #     composite/acid/rubber so a finished-superalloy or acid+rubber mix resolves here, not to those primitives) ---
+    # SEASON 6b — the warp crate. ABOVE heat_shield on purpose: both start from a superalloy, and `logic` (a chip)
+    # is what separates them, so a superalloy+composite mix still resolves to a heat_shield exactly as before.
+    ("warp_container", lambda a: a["has"]("heat_proof") and a["has"]("logic") and a["has"]("insulator")),  # superalloy + chip + crystal → a stasis crate for gate cargo
     ("heat_shield",   lambda a: a["has"]("heat_proof") and a["has"]("shaped") and a["mx"]("hardness") >= 8),  # superalloy(heat_proof) + composite(shaped,hard) → an ablative EDL shield (Mars/Venus entry)
     ("acid_skin",     lambda a: a["has"]("acid_former") and a["has"]("grip") and a["has"]("elastic")),  # acid + rubber(grip/elastic) → an H2SO4-proof hull coat (Venus cloud deck)
     ("graphite",      lambda a: a["has"]("carbon_ox") and a["heat"] and a["n_metals"] == 0),  # co2 (carbon_ox) reduced with a fuel → structural carbon (Venus/Mars build material)

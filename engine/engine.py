@@ -288,6 +288,7 @@ WARP_CAP = 50              # ceil-% of a resource line one funder may cover (loo
 WARP_MIN = 2               # distinct funders a gate needs — a gate is still a joint effort, never a solo purchase
 WARP_DV_DIV = 5            # a gate route costs 1/WARP_DV_DIV of the normal Δv
 WARP_TICKS = 6             # ...and crosses in this many ticks instead of TRANSIT_TICKS
+WARP_CRATE_CAP = 25        # exotic units one single-use `warp_container` carries through a gate
 WARP_REWARD = 900          # inventor points split among funders when a gate completes
 WARP_BODY_EXOTIC = {"phobos": "c_regolith", "deimos": "c_regolith", "mars": "mars_regolith", "venus": "cloud_acid"}
 WARP_NEED = {"earth": {"superalloy": 200, "iridium": 60, "chip": 150, "crystal": 200, "titanium": 300}}
@@ -1355,11 +1356,21 @@ def apply_intent(it, ents, cur, t, events):
         # Δv economy alive. 6b will make the cargo rule a price rather than a wall, via single-use containers.
         warp_from = ("earth" if target != "earth" else (at_orbit or at_body))
         warped = _warp_link(ents, warp_from, target)
+        crates = 0
         if warped:
-            cargo = [r for r in EXPANSION_CARGO if get(a, r) > 0]
-            if cargo:
-                return "rejected", (f"a warp gate will not carry body cargo — you are holding {', '.join(sorted(cargo))}. "
-                                    f"Fly it home the long way, or drop it.")
+            # 6b: exotic cargo rides ONLY in single-use crates, consumed by the crossing. The point is a real
+            # trade rather than a wall: a crate is cheap in credits and dear in manufactured goods, so the gate
+            # wins on TIME and loses on MATERIAL, and bulk hauling stays a ship's job. Agents run around the
+            # clock and their scarce resource is the window, not ore — so crates should sell, and burning them
+            # is a permanent sink, which this economy badly lacks.
+            haul = sum(get(a, r) for r in EXPANSION_CARGO)
+            if haul > 0:
+                crates = -(-haul // WARP_CRATE_CAP)      # ceil
+                held = get(a, "warp_container")
+                if held < crates:
+                    return "rejected", (f"a warp gate carries body cargo only in stasis crates: {haul} units needs "
+                                        f"{crates} warp_container ({WARP_CRATE_CAP} per crate) and you hold {held}. "
+                                        f"Craft them (superalloy + chip + crystal), drop the cargo, or fly it the long way.")
             win_ok = True
             dv_need = max(1, dv_need // WARP_DV_DIV)
         if not win_ok:
@@ -1399,6 +1410,8 @@ def apply_intent(it, ents, cur, t, events):
                                 f"{plan['loaded'] - plan['cost']} spare fuel but the {cross}-tick crossing needs {n_corr}. "
                                 f"Carry more {plan['fuel']}.")
         addb(a, plan["fuel"], -plan["cost"])             # burn the departure Δv
+        if crates:
+            addb(a, "warp_container", -crates)           # the crates are spent by the crossing — that IS the price
         clear_offworld(a["attrs"])                       # wipe any prior body/orbit/moon/dock state FIRST (at_orbit/at_body captured above)…
         # NB: this also UNDOCKS a depart-while-docked agent — intentional & correct (a stale Earth-asteroid dock must
         # not ride an interplanetary transfer; the old 5-key clear leaked docked_to into transit → a spurious later
@@ -1414,6 +1427,7 @@ def apply_intent(it, ents, cur, t, events):
                     (t, a["id"], Json({"dest": target, "eta": a["attrs"]["eta_tick"], "dv": plan["dv"], "fuel": plan["fuel"],
                                        "burn": plan["cost"], "warped": bool(warped)})))
         return "applied", ((f"WARPED toward {BODY_LABEL[target]}! " if warped else f"DEPARTED for {BODY_LABEL[target]}! ")
+                           + (f"spent {crates} stasis crate{'s' if crates != 1 else ''}, " if crates else "")
                            + f"burned {plan['cost']} {plan['fuel']} (Δv {plan['dv']}/{dv_need}), "
                            f"ETA tick {a['attrs']['eta_tick']} ({cross} ticks) — carry {n_corr}+ spare fuel for course corrections")
     if verb == "land_body":                              # EXPANSION ERA — descend from body orbit onto the surface / cloud deck

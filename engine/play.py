@@ -12,7 +12,7 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
                     EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL, PRODUCERS,
                     location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
                     WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
-                    WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS)
+                    WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
 # import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
@@ -32,8 +32,9 @@ def _warp_block(cur, here):
            "how": (f"construct{{shape:'warpgate',place}} — co-op funded like a colony ({WARP_CAP}% cap per funder, "
                    f"{WARP_MIN}+ funders). A body gate needs that body's colony COMPLETE and you standing on it; "
                    f"the Earth gate needs you home. Blueprint = having funded any FINISHED colony. A live pair "
-                   f"warps in {WARP_TICKS} ticks at 1/{WARP_DV_DIV} the Δv and ignores the window — but it will NOT "
-                   f"carry exotic body cargo, so haul that the long way."),
+                   f"warps in {WARP_TICKS} ticks at 1/{WARP_DV_DIV} the Δv and ignores the window. Exotic body cargo "
+                   f"rides ONLY in single-use warp_container crates ({WARP_CRATE_CAP} units each, spent by the "
+                   f"crossing) — craft them from superalloy + chip + crystal."),
            "building": [{"place": a.get("place"), "need": WARP_NEED.get(a.get("place"), {}),
                          "have": {r: int((a.get("have") or {}).get(r, 0)) for r in WARP_NEED.get(a.get("place"), {})},
                          "funders": len(a.get("contrib") or {})}
