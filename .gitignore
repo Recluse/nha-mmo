@@ -13,3 +13,4 @@ agents/logs/
 .pytest_cache/
 .pip-cache/
 server/AGENTS.md
+tg-claude.cmd
