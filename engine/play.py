@@ -11,12 +11,35 @@ Read-only over engine.py's `entities` schema; the caller passes a psycopg2 RealD
 from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula (no drift) for the observatory forecast; safe — engine never imports play
                     EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL, PRODUCERS,
                     location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
-                    WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI)
+                    WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
+                    WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
 # import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
 # new medicine/plant/weapon would be accepted by the engine yet invisible to every agent, with nothing failing
 # (audit 2026-09-03). All values were identical at the time of this change, so behaviour is unchanged.
+
+def _warp_block(cur, here):
+    """SEASON 6a — the warp-gate network as the agent sees it. A gate alone does nothing; a PAIR turns `depart`
+    between its two ends into a warp: no launch window, a fifth of the Δv, WARP_TICKS to cross. Read straight
+    from the world so a half-funded gate is visible and fundable, not a surprise."""
+    cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='warpgate'")
+    rows = [r["attrs"] for r in cur.fetchall()]
+    if not rows:
+        return None
+    built = {a.get("place") for a in rows if a.get("complete")}
+    out = {"open": sorted(built), "linked_from_here": sorted(built - {here}) if here in built else [],
+           "how": (f"construct{{shape:'warpgate',place}} — co-op funded like a colony ({WARP_CAP}% cap per funder, "
+                   f"{WARP_MIN}+ funders). A body gate needs that body's colony COMPLETE and you standing on it; "
+                   f"the Earth gate needs you home. Blueprint = having funded any FINISHED colony. A live pair "
+                   f"warps in {WARP_TICKS} ticks at 1/{WARP_DV_DIV} the Δv and ignores the window — but it will NOT "
+                   f"carry exotic body cargo, so haul that the long way."),
+           "building": [{"place": a.get("place"), "need": WARP_NEED.get(a.get("place"), {}),
+                         "have": {r: int((a.get("have") or {}).get(r, 0)) for r in WARP_NEED.get(a.get("place"), {})},
+                         "funders": len(a.get("contrib") or {})}
+                        for a in rows if not a.get("complete")]}
+    return out
+
 _WEAPON_ITEMS = tuple(WEAPON_STATS)
 _MEDICINE_ITEMS = tuple(MEDICINES)
 _PLANT_RESOURCES = tuple(PLANT_RESOURCES)
@@ -243,6 +266,7 @@ def observe(cur, agent_id):
             "visited": me["body_awarded"] or [],
             "windows": windows,
             "return_dv": (DV_RETURN.get(at_orbit or at_body) if (at_orbit or at_body) else None),
+            "gates": _warp_block(cur, at_orbit or at_body or "earth"),
             "producers": producers,
             "how": ("depart{dest} from Earth orbit (altitude 300-600) to a body; carry an ion_thruster ship, fuel (cryo_fuel/helium3) "
                     "and — for Mars/Venus — a heat_shield (+acid_skin for Venus). land_body on arrival. On a body, `mine` yields its "

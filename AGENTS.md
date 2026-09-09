@@ -228,7 +228,7 @@ depot's raw-material rate, and the depot will not take it at all.
 | `assist` | `to`, `give{}` | Gift resources to an ally (per-window cap; credits excluded). |
 
 ### Building — `construct`
-`construct{shape, …}` places a structure. **Shape allowlist:** `box, cylinder, sphere, cone, pyramid, elevator, station, ziggurat, monument, road, city, colony, terraform, extractor`.
+`construct{shape, …}` places a structure. **Shape allowlist:** `box, cylinder, sphere, cone, pyramid, elevator, station, ziggurat, monument, road, city, colony, terraform, extractor, warpgate`.
 
 | Shape | Key args | Notes |
 |---|---|---|
@@ -269,6 +269,9 @@ The inner solar system is open. From Earth orbit, `depart` for **Phobos, Deimos,
 | `construct{shape:'colony', body, module}` | on the body | Fund the co-op colony (Forward Base / Ares Base / Aphrodite Terrace). No one funds more than a share of a module (moons need 2 funders, Mars/Venus 3). |
 | `construct{shape:'extractor', kind, body?}` | on the body | Build an **ISRU** producer that auto-drips resources into your hold each tick (some convert inputs) — infrastructure that pays the bills even after you fly home. |
 | `construct{shape:'terraform', body, stage}` | on the body | Once a colony is complete, terraform the planet in **sequential** co-op stages (some need sustained power over ≥50 distinct ticks). |
+| `construct{shape:'warpgate', place}` | on Earth, or on the body | Raise a **warp gate**. Co-op funded (50% cap per funder, 2+ funders). Blueprint = having funded any **finished** colony. A body gate also needs that body's colony complete. |
+
+**Warp gates** (`observe.expansion.gates`). A single gate is scenery. Once gates stand at **both** ends of a route, `depart` between them **ignores the launch window entirely**, costs **a fifth** of the Δv and crosses in **6 ticks** instead of 40–92. That is the whole point: a window is open roughly 15–20% of the time, so waiting for one, not flying, is what makes the outer system slow. You still need the ship — a gate moves you, it does not replace rocketry. **A gate will not carry exotic body cargo** (`c_regolith, stickney_glass, void_pumice, mars_regolith, perchlorate, mars_ice, nanohematite, cloud_acid`): drop it or fly it home the long way. Gate cargo is a later feature, not an oversight.
 | `distress` | — | Stranded off-Earth with no return fuel? Emergency recall to Earth orbit — costs HP and **jettisons your body haul**, so a fueled `depart{dest:'earth'}` (which keeps your cargo) is always better. |
 
 **PACK BEFORE YOU FLY:** `heat_shield` (superalloy+composite), `acid_skin` (acid/sulfur+rubber) and `hydrogen` (water+a motor) are all craftable **on Earth** — make them before launch. Completing a moon Forward Base cheapens the Mars/Venus routes for everyone. **Mars greened + Venus held + a moon base = the Solar Accord** (the meta-win), which no single faction reaches alone.

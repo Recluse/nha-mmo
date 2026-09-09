@@ -275,6 +275,25 @@ COLONY_CAP = {"phobos": 60, "deimos": 60, "mars": 40, "venus": 40}   # ceil-% on
 COLONY_MIN = {"phobos": 2, "deimos": 2, "mars": 3, "venus": 3}       # distinct funders a module needs before it completes
 COLONY_MODULE_REWARD = 180
 COLONY_FINISH_REWARD = 1600
+
+# ---- WARP GATES (Season 6a) — the payoff for finishing a colony -------------------------------------------
+# What actually makes the outer system miserable is not the flight, it is the WAIT: a launch window is open
+# 120 ticks out of 780 (584 for Venus), so a Mars round trip is ~150 ticks of travel and up to 660 ticks of
+# standing still. A gate PAIR (Earth <-> body, or body <-> body) makes `depart` between its two endpoints
+# ignore the window entirely, cost a fifth of the Δv and cross in WARP_TICKS.
+# It cannot swallow the era, for two reasons kept deliberately: you still need the ship (gates move you, they
+# do not replace rocketry, and the whole build economy hangs off that), and EXOTIC BODY CARGO CANNOT RIDE A
+# GATE at all in 6a — haul it the slow way. 6b introduces single-use containers as the priced exception.
+WARP_CAP = 50              # ceil-% of a resource line one funder may cover (looser than a colony: fewer, richer builders)
+WARP_MIN = 2               # distinct funders a gate needs — a gate is still a joint effort, never a solo purchase
+WARP_DV_DIV = 5            # a gate route costs 1/WARP_DV_DIV of the normal Δv
+WARP_TICKS = 6             # ...and crosses in this many ticks instead of TRANSIT_TICKS
+WARP_REWARD = 900          # inventor points split among funders when a gate completes
+WARP_BODY_EXOTIC = {"phobos": "c_regolith", "deimos": "c_regolith", "mars": "mars_regolith", "venus": "cloud_acid"}
+WARP_NEED = {"earth": {"superalloy": 200, "iridium": 60, "chip": 150, "crystal": 200, "titanium": 300}}
+for _b, _x in WARP_BODY_EXOTIC.items():   # a body gate is paid for largely in that body's own exotic — only
+    WARP_NEED[_b] = {"superalloy": 160, "chip": 120, _x: 200}   # somebody who has actually been out there can pay
+WARP_PLACES = ("earth",) + EXPANSION_BODIES
 COLONY_LABEL = {"phobos": "Forward Base (Phobos)", "deimos": "Forward Base (Deimos)", "mars": "Ares Base", "venus": "Aphrodite Terrace"}
 COLONY_TITLE = {"phobos": "Moonwright", "deimos": "Moonwright", "mars": "Areoformer", "venus": "Cytherean"}
 COLONY_MODULES = {
@@ -361,6 +380,29 @@ def _colony_done(ents, body):
 def _terraform_done(ents, body):
     return any(e["type"] == "structure" and e["attrs"].get("shape") == "terraform"
               and e["attrs"].get("body") == body and e["attrs"].get("complete") for e in ents.values())
+
+
+def _warp_gate(ents, place):
+    """The COMPLETE warp gate at `place` ('earth' or a body), or None. Complete gates are the only ones that link."""
+    return next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "warpgate"
+                 and e["attrs"].get("place") == place and e["attrs"].get("complete")), None)
+
+
+def _warp_link(ents, origin, dest):
+    """True when a gate stands at BOTH ends. One gate is scenery; a pair is a route."""
+    return bool(origin and dest and origin != dest and _warp_gate(ents, origin) and _warp_gate(ents, dest))
+
+
+def _funded_a_finished_colony(a, ents):
+    """The gate blueprint. Not a per-agent flag to keep in sync — derived from the world: you may raise a gate
+    once you have helped FINISH a colony anywhere. The prize belongs to the people who paid for the milestone."""
+    aid = str(a["id"])
+    for e in ents.values():
+        if e["type"] == "structure" and e["attrs"].get("shape") == "colony" and e["attrs"].get("complete"):
+            for mod in (e["attrs"].get("modules") or {}).values():
+                if aid in (mod.get("contrib") or {}):
+                    return True
+    return False
 
 
 def _invest_colony(a, body, args, ents, cur, t):
@@ -1307,6 +1349,19 @@ def apply_intent(it, ents, cur, t, events):
             if dest in ("mars", "venus"):                # moon Forward Bases discount the Mars/Venus routes world-wide
                 dv_need = max(20, dv_need - _route_discount(ents))
             target = dest; win_ok = window_open(dest, t)
+        # SEASON 6a — a completed gate at BOTH ends turns this leg into a warp: no window, a fifth of the Δv, and
+        # WARP_TICKS instead of the Hohmann crossing. The ship is still required (a gate moves you, it does not
+        # replace rocketry), and EXOTIC BODY CARGO CANNOT RIDE — that is what keeps hauling a ship's job and the
+        # Δv economy alive. 6b will make the cargo rule a price rather than a wall, via single-use containers.
+        warp_from = ("earth" if target != "earth" else (at_orbit or at_body))
+        warped = _warp_link(ents, warp_from, target)
+        if warped:
+            cargo = [r for r in EXPANSION_CARGO if get(a, r) > 0]
+            if cargo:
+                return "rejected", (f"a warp gate will not carry body cargo — you are holding {', '.join(sorted(cargo))}. "
+                                    f"Fly it home the long way, or drop it.")
+            win_ok = True
+            dv_need = max(1, dv_need // WARP_DV_DIV)
         if not win_ok:
             nxt = SYNODIC[dest] - (t % SYNODIC[dest])
             return "rejected", f"the {BODY_LABEL[dest]} launch window is CLOSED — opens again in ~{nxt} ticks (windows last {WINDOW_OPEN} ticks)"
@@ -1337,10 +1392,11 @@ def apply_intent(it, ents, cur, t, events):
         if plan["dv"] < dv_need:
             return "rejected", (f"Δv too low: your ship makes {plan['dv']} but {BODY_LABEL[target]} needs {dv_need}. "
                                 f"Load more/better fuel (cryo_fuel/helium3) or lighten the ship.")
-        n_corr = TRANSIT_TICKS[target] // CORRECTION_EVERY           # R3: gate must also cover the mid-course correction burns
+        cross = WARP_TICKS if warped else TRANSIT_TICKS[target]
+        n_corr = cross // CORRECTION_EVERY                           # R3: gate must also cover the mid-course correction burns
         if plan["loaded"] - plan["cost"] < n_corr:
             return "rejected", (f"not enough correction margin: after the {plan['cost']}-unit departure burn you'd have "
-                                f"{plan['loaded'] - plan['cost']} spare fuel but the {TRANSIT_TICKS[target]}-tick crossing needs {n_corr}. "
+                                f"{plan['loaded'] - plan['cost']} spare fuel but the {cross}-tick crossing needs {n_corr}. "
                                 f"Carry more {plan['fuel']}.")
         addb(a, plan["fuel"], -plan["cost"])             # burn the departure Δv
         clear_offworld(a["attrs"])                       # wipe any prior body/orbit/moon/dock state FIRST (at_orbit/at_body captured above)…
@@ -1350,14 +1406,16 @@ def apply_intent(it, ents, cur, t, events):
         # phase tests don't exercise (so the seed fp 9922767f180849f0 + all phase fps are unaffected — audit MEDIUM).
         a["attrs"]["transit_to"] = target                # …then commit the new transit
         a["attrs"]["depart_tick"] = t
-        a["attrs"]["eta_tick"] = t + TRANSIT_TICKS[target]
+        a["attrs"]["eta_tick"] = t + cross
         a["attrs"]["depart_from"] = ("earth" if target != "earth" else (at_orbit or at_body))
         a["attrs"]["in_space"] = True
         a["attrs"]["altitude"] = SKY_TOP                 # beyond-LEO sentinel (orbital_decay skips in-transit agents)
         cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'depart',%s)",
-                    (t, a["id"], Json({"dest": target, "eta": a["attrs"]["eta_tick"], "dv": plan["dv"], "fuel": plan["fuel"], "burn": plan["cost"]})))
-        return "applied", (f"DEPARTED for {BODY_LABEL[target]}! burned {plan['cost']} {plan['fuel']} (Δv {plan['dv']}/{dv_need}), "
-                           f"ETA tick {a['attrs']['eta_tick']} ({TRANSIT_TICKS[target]} ticks) — carry {n_corr}+ spare fuel for course corrections")
+                    (t, a["id"], Json({"dest": target, "eta": a["attrs"]["eta_tick"], "dv": plan["dv"], "fuel": plan["fuel"],
+                                       "burn": plan["cost"], "warped": bool(warped)})))
+        return "applied", ((f"WARPED toward {BODY_LABEL[target]}! " if warped else f"DEPARTED for {BODY_LABEL[target]}! ")
+                           + f"burned {plan['cost']} {plan['fuel']} (Δv {plan['dv']}/{dv_need}), "
+                           f"ETA tick {a['attrs']['eta_tick']} ({cross} ticks) — carry {n_corr}+ spare fuel for course corrections")
     if verb == "land_body":                              # EXPANSION ERA — descend from body orbit onto the surface / cloud deck
         if a["attrs"].get("transit_to"):
             return "rejected", f"still in transit to {BODY_LABEL.get(a['attrs']['transit_to'], a['attrs']['transit_to'])} — arrive first (ETA tick {a['attrs'].get('eta_tick')})"
@@ -1676,6 +1734,80 @@ def apply_intent(it, ents, cur, t, events):
                                     f"(mine them here or haul from Earth/another body).")
             msg = f"funded {moved} to {COLONY_LABEL[body]} · {mods_def[module]['label']}"
             return "applied", msg + _colony_award(a, st, body, module, moved, mod, ents, cur, t)
+        if shape == "warpgate":                          # SEASON 6a: the co-op gate. A PAIR of these kills the window wait.
+            if _era_now(cur) not in ("space", "expansion", "accord"):
+                return "rejected", "warp gates need the SPACE / EXPANSION era"
+            place = str(args.get("place") or args.get("body") or "").lower()
+            if place not in WARP_PLACES:
+                return "rejected", "warpgate place must be one of: " + "/".join(WARP_PLACES)
+            if not _funded_a_finished_colony(a, ents):
+                return "rejected", ("gate engineering is the reward for FINISHING a colony — help complete one "
+                                    "(fund any of its modules) and the blueprint is yours")
+            if place == "earth":
+                if a["attrs"].get("transit_to") or a["attrs"].get("at_body") or a["attrs"].get("at_body_orbit") \
+                   or a["attrs"].get("in_space") or a["attrs"].get("on_moon"):
+                    return "rejected", "build the Earth gate ON EARTH — come home and land first"
+            else:
+                if a["attrs"].get("at_body") != place:
+                    return "rejected", f"you must be ON {BODY_LABEL[place]} to raise its gate (arrive + land_body first)"
+                col = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "colony"
+                            and e["attrs"].get("body") == place), None)
+                if not (col and col["attrs"].get("complete")):
+                    return "rejected", (f"{COLONY_LABEL[place]} must be COMPLETE before a gate can anchor to it — "
+                                        f"a gate needs a colony to stand on")
+            st = next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "warpgate"
+                       and e["attrs"].get("place") == place), None)
+            if st is None:                               # the first funder lays the gate (a per-place singleton)
+                gx, gy = (a["x"], a["y"]) if place == "earth" else (W // 2, H // 2)
+                sid = new_entity(ents, cur, "structure", gx, gy, a["id"],
+                                 {"shape": "warpgate", "place": place, "name": f"Warp Gate ({BODY_LABEL[place]})",
+                                  "have": {}, "contrib": {}, "complete": False, "alt": 0 if place == "earth" else SKY_TOP,
+                                  "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
+                st = ents[sid]
+            if st["attrs"].get("complete"):
+                return "rejected", f"the {BODY_LABEL[place]} gate already stands"
+            need = WARP_NEED[place]
+            have = st["attrs"].setdefault("have", {}); contrib = st["attrs"].setdefault("contrib", {})
+            aid = str(a["id"]); moved = {}
+            for r in sorted(need):                       # sorted → replay-stable; same greedy cap loop as everywhere else
+                tgt = need[r]; cur_have = int(have.get(r, 0))
+                if cur_have >= tgt:
+                    continue
+                cap = (tgt * WARP_CAP + 99) // 100
+                already = int(contrib.get(aid, {}).get(r, 0))
+                give = min(get(a, r), tgt - cur_have, max(0, cap - already))
+                if give > 0:
+                    addb(a, r, -give)
+                    have[r] = cur_have + give
+                    contrib.setdefault(aid, {})[r] = already + give
+                    moved[r] = give
+            if not moved:
+                short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
+                return "rejected", (f"funded nothing to the {BODY_LABEL[place]} gate — it still needs {short}. You may be "
+                                    f"at your {WARP_CAP}% per-resource cap (someone else must chip in), or hold none of these.")
+            msg = f"funded {moved} to the {BODY_LABEL[place]} warp gate"
+            imm = sum(moved.values()) // 10
+            if imm > 0:
+                a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
+                msg += f" — +{imm} pts now"
+            if all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= WARP_MIN:
+                st["attrs"]["complete"] = True
+                tot = sum(sum(v.values()) for v in contrib.values()) or 1
+                order = sorted(contrib, key=lambda k: (-sum(contrib[k].values()), int(k)))
+                for fid in order:
+                    fe = ents.get(int(fid)); pts = WARP_REWARD * sum(contrib[fid].values()) // tot
+                    if fe and pts > 0:
+                        fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+                lead = ents.get(int(order[0])) if order else None
+                if lead and not lead["attrs"].get("title"):
+                    lead["attrs"]["title"] = "Gatekeeper"
+                cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
+                            (t, a["id"], Json({"warpgate": place, "complete": True, "funders": len(contrib)})))
+                msg += f" — 🌀 THE {BODY_LABEL[place].upper()} GATE IS OPEN ({len(contrib)} funders)"
+                linked = [p for p in WARP_PLACES if p != place and _warp_gate(ents, p)]
+                msg += (" — it links to " + ", ".join(BODY_LABEL[p] for p in linked) + ": those routes now ignore "
+                        "the launch window") if linked else " — build its PAIR: one gate alone is scenery"
+            return "applied", msg
         if shape == "terraform":                         # EXPANSION ERA Phase 3: staged, planet-scale co-op terraforming
             if _era_now(cur) not in ("space", "expansion", "accord"):
                 return "rejected", "terraforming needs the SPACE / EXPANSION era"
