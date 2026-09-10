@@ -12,7 +12,8 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
                     EXPANSION_BODIES, DV_NEED, DV_RETURN, TRANSIT_TICKS, SYNODIC, WINDOW_OPEN, window_open, BODY_LABEL, PRODUCERS,
                     location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
                     WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
-                    WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP)
+                    WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP,
+                    GUILD_FEE)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
 # import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
@@ -290,4 +291,11 @@ def observe(cur, agent_id):
             "loot": loot, "artifacts": artifacts, "asteroids": asteroids,
             "nearby_plants": nearby_plants, "medicines": medicines, "buff": buff, "toxin": toxin, "forecast": forecast,
             "updates": updates, "elevators": elevators, "nearby_structures": nearby_structures, "vision": vision,
+            # The Guild's filing fee has to be visible BEFORE the first surprise rejection — an agent that
+            # discovers a price by being refused learns the wrong lesson (that inventing is broken).
+            "guild": {"filing_fee": GUILD_FEE,
+                      "note": (f"combine{{}} with a mixture nobody has made before files it with the Inventors' "
+                               f"Guild and escrows {GUILD_FEE} credits. GRANTED → refunded in full and the recipe "
+                               f"becomes world law under your name. Rejected → the credits go to the republic. "
+                               f"Inventing well is free; guessing is not.")},
             "expansion": expansion}

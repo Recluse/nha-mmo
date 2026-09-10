@@ -289,6 +289,14 @@ WARP_MIN = 2               # distinct funders a gate needs — a gate is still a
 WARP_DV_DIV = 5            # a gate route costs 1/WARP_DV_DIV of the normal Δv
 WARP_TICKS = 6             # ...and crosses in this many ticks instead of TRANSIT_TICKS
 WARP_CRATE_CAP = 25        # exotic units one single-use `warp_container` carries through a gate
+
+# ---- THE REPUBLIC TREASURY (Season 7a) ---------------------------------------------------------------------
+# A public purse, held on the `universe` singleton so it needs no new entity type and is already in `ents`.
+# Its first job is the GUILD FILING FEE. Measured 2026-09-09: the invention feed had become mostly REJECTIONS
+# (ice+nanohematite, stimpack against metal/salt/silicon...), and every one of those costs a real referee LLM
+# call — actual money, spent on blind guessing. The fee is REFUNDED when the Guild grants the recipe, so
+# inventing well is free and guessing is not. What the fee catches stays in the purse.
+GUILD_FEE = 50             # credits escrowed to file a novel mixture with the Inventors' Guild
 WARP_REWARD = 900          # inventor points split among funders when a gate completes
 WARP_BODY_EXOTIC = {"phobos": "c_regolith", "deimos": "c_regolith", "mars": "mars_regolith", "venus": "cloud_acid"}
 WARP_NEED = {"earth": {"superalloy": 200, "iridium": 60, "chip": 150, "crystal": 200, "titanium": 300}}
@@ -381,6 +389,21 @@ def _colony_done(ents, body):
 def _terraform_done(ents, body):
     return any(e["type"] == "structure" and e["attrs"].get("shape") == "terraform"
               and e["attrs"].get("body") == body and e["attrs"].get("complete") for e in ents.values())
+
+
+def _treasury(ents):
+    """The republic's purse — the `universe` singleton's credit buffer. Returns None only on a world so young
+    the singleton has not been minted yet, in which case the caller simply skips (never crashes the tick)."""
+    return next((e for e in ents.values() if e["type"] == "universe"), None)
+
+
+def _treasury_add(ents, n):
+    """Move `n` credits into (or, negative, out of) the public purse. Returns the new balance, or None."""
+    uni = _treasury(ents)
+    if uni is None:
+        return None
+    addb(uni, "credits", n)
+    return int(get(uni, "credits"))
 
 
 def _warp_gate(ents, place):
@@ -1248,6 +1271,12 @@ def apply_intent(it, ents, cur, t, events):
         cur.execute("SELECT 1 FROM proposals WHERE sig=%s AND status IN ('pending','approved') LIMIT 1", (sig,))
         if cur.fetchone():
             return "rejected", "this mixture is already before the Inventors' Guild — try another"
+        if int(get(a, "credits")) < GUILD_FEE:            # the filing fee — see GUILD_FEE for why it exists
+            return "rejected", (f"filing a novel mixture with the Inventors' Guild costs {GUILD_FEE} credits "
+                                f"(refunded in full if they GRANT it) and you hold {int(get(a, 'credits'))}. "
+                                f"Sell something at the depot first, or craft a mixture you already know.")
+        addb(a, "credits", -GUILD_FEE)
+        _treasury_add(ents, GUILD_FEE)                    # a rejected guess pays the republic; a granted one is refunded
         for k, q in ings.items():                        # escrow the inputs while the Guild reviews
             addb(a, k, -q)
         item_name = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 _-]", "", str(args.get("name", "")))).strip()[:32]   # SECURITY: this flows into the Guild LLM prompt — strip anything that could inject instructions (newlines/punct/unicode)
@@ -2741,6 +2770,9 @@ def resolve_proposals(ents, cur, t, events):
                                {"name": p["item_name"], "item": p["item_key"], "points": pts, "guild": True}))
             elif a:                                       # raced — recipe already exists; just hand over the item
                 addb(a, existing["item_key"], 1)
+            if a:                                     # the Guild said yes → the filing fee comes back out of the purse
+                addb(a, "credits", GUILD_FEE)
+                _treasury_add(ents, -GUILD_FEE)
             cur.execute("UPDATE proposals SET status='granted' WHERE id=%s", (p["id"],))
         else:                                             # rejected (or approved with no item) → refund the escrow
             if a:

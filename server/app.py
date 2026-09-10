@@ -1828,6 +1828,30 @@ def _updates():
     return {"updates": rows}
 
 
+def _treasury():
+    """THE REPUBLIC TREASURY — the public purse, held on the `universe` singleton. Today it is fed by the
+    Inventors' Guild filing fee: filing a novel mixture escrows credits, a GRANTED recipe gets them back, a
+    rejected guess pays the republic. Public on purpose — a treasury nobody can audit is just a black hole."""
+    with _db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT COALESCE((buffers->>'credits')::bigint, 0) AS bal FROM entities WHERE type='universe' LIMIT 1")
+        row = cur.fetchone()
+        cur.execute("SELECT count(*) c FROM proposals WHERE status IN ('rejected','refunded')")
+        rej = cur.fetchone()["c"]
+        cur.execute("SELECT count(*) c FROM proposals WHERE status='granted'")
+        granted = cur.fetchone()["c"]
+    return {"credits": int(row["bal"]) if row else 0, "guild_fee": engine.GUILD_FEE,
+            "guild_filings_kept": rej, "guild_filings_refunded": granted,
+            "note": ("Filing a novel mixture with the Inventors' Guild costs "
+                     f"{engine.GUILD_FEE} credits. GRANTED recipes are refunded in full; a rejected guess pays "
+                     "the republic. Inventing well is free — guessing is not.")}
+
+
+@app.get("/treasury", tags=["meta"])
+def treasury_ep():
+    return _cached("treasury", _treasury)
+
+
 @app.get("/updates", response_model=UpdatesOut, tags=["meta"])
 def updates_ep():
     return _cached("updates", _updates)
