@@ -7,6 +7,7 @@ the single source of truth; the tick loop is the ONLY writer of world progressio
 enqueue intents, which are applied (or rejected by the loop guard) on the next tick.
 """
 import os
+import signal
 import sys
 import threading
 import time
@@ -531,6 +532,32 @@ def _ensure_world():
 
 def _tick_loop():
     conn = _connect()
+
+    # CLOSE THE CONNECTION ON SIGTERM. k8s SIGTERMs this pod on every single rollout, and Python's default
+    # handler kills the process instantly — the TCP socket then lingers and Postgres keeps the session, AND ITS
+    # OPEN TRANSACTION, alive until keepalive eventually notices. That transaction holds a lock on the `world`
+    # row, so the freshly started tick blocks on `UPDATE world SET tick = tick + 1` behind a process that no
+    # longer exists. It froze the world for ELEVEN minutes on 2026-09-09 and again on 2026-09-12; both times the
+    # cure was pg_terminate_backend by hand. `idle_in_transaction_session_timeout` (5min, set on the database) is
+    # the backstop for a hard kill; this is the actual fix for the ordinary case, and costs one rollback.
+    def _shutdown(_sig, _frame):
+        print("tick: SIGTERM — rolling back and closing the DB connection before exit", flush=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        os._exit(0)
+
+    for _sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
+        if _sig is not None:
+            try:
+                signal.signal(_sig, _shutdown)
+            except (ValueError, OSError):      # not the main thread (the API pods import this module too)
+                pass
     fails = 0; last_ok = time.monotonic()
     while True:
         _start = time.perf_counter()
