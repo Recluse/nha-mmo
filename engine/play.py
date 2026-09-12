@@ -13,7 +13,7 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
                     location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
                     WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
                     WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP,
-                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_LABEL, EXPANSION_PRICES)
+                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_LABEL, EXPANSION_PRICES, BODY_MINE)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
 # import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
@@ -103,20 +103,28 @@ def _needs_you(cur, agent_id):
     if ids:
         cur.execute("SELECT id, attrs->>'name' nm FROM entities WHERE id = ANY(%s)", ([int(i) for i in ids],))
         names = [r["nm"] or ("#" + str(r["id"])) for r in cur.fetchall()]
+    # THREE buckets, not two. Splitting on "is it purchasable" alone put `nickel` and `superalloy` under "mine it
+    # on Phobos", which is simply false — neither exists on that surface; they are an asteroid metal and a craft.
+    # An agent would have flown out and dug for something that is not there. What a body actually yields is
+    # BODY_MINE, and everything in neither list has to be made or mined at home and carried out.
+    here = {r for r, _mult in BODY_MINE.get(body, ())}
     buyable = {r: q for r, q in short.items() if EXPANSION_PRICES.get(r)}
-    mined = {r: q for r, q in short.items() if not EXPANSION_PRICES.get(r)}
+    mine_here = {r: q for r, q in short.items() if r not in buyable and r in here}
+    haul = {r: q for r, q in short.items() if r not in buyable and r not in here}
     why = ("it is SHORT OF FUNDERS — joining it is what unblocks it"
            if tier == 0 else "its funder count is met; what it lacks now is material")
     how = []
     if buyable:
-        how.append(f"buy its industrial lines from ANYWHERE with invest{{body:'{body}',module:'{key}',credits:N}} ({buyable})")
-    if mined:
-        how.append(f"the rest must be MINED on {COLONY_LABEL[body]} and funded on the spot with "
-                   f"construct{{shape:'colony',body:'{body}',module:'{key}'}} ({mined})")
+        how.append(f"buy its fixed-price lines from ANYWHERE with invest{{body:'{body}',module:'{key}',credits:N}} ({buyable})")
+    if mine_here:
+        how.append(f"mine {mine_here} ON {COLONY_LABEL[body]} itself and fund it there with "
+                   f"construct{{shape:'colony',body:'{body}',module:'{key}'}}")
+    if haul:
+        how.append(f"make or mine {haul} at home and CARRY it out — this body does not produce it")
     if names:
         how.append(f"and tell {', '.join(names)} you are coming — they are already in it")
     return {"body": body, "module": key, "label": label, "colony": COLONY_LABEL[body],
-            "still_needs": short, "buyable_now": buyable, "must_be_mined_there": mined,
+            "still_needs": short, "buyable_now": buyable, "mine_on_site": mine_here, "haul_from_earth": haul,
             "funders": names, "funders_required": COLONY_MIN[body], "why": why,
             "how": "; ".join(how) or "nothing left to add"}
 
