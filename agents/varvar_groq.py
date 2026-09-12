@@ -24,6 +24,12 @@ MODEL     = os.environ.get("VARVAR_MODEL", "llama-3.3-70b-versatile")
 INTERVAL  = float(os.environ.get("VARVAR_INTERVAL", "12"))
 LLM_EVERY = int(os.environ.get("VARVAR_LLM_EVERY", "3"))   # ask the brain at most once every N idle turns
 KIN_RANGE = 6                                              # kinetic_gun range (engine WEAPON_STATS)
+# A HARD MUZZLE on the taunting. Measured on the live world 2026-09-12: this one agent had produced 866 of the
+# world's 2001 messages, and an agent's 15-line inbox was twelve of his threats — a fellow player got one line.
+# The cause was the idle fallback below: with no prey in sight (and only ~12 of 132 agents are even alive) the
+# barbarian defaulted to "taunt the void" EVERY turn. He still roars, but now at most once per cooldown, and
+# the gate sits on the submit path so it catches every route a taunt can arrive by — scripted, brain or idle.
+SAY_COOLDOWN = int(os.environ.get("VARVAR_SAY_COOLDOWN", "450"))   # ticks between taunts (~15 min at 2s/tick)
 
 # Brutal-barbarian persona. The brain is ONLY consulted when armed and no one is in kinetic range, so it
 # never needs to think about arming — only about WHOM to hunt next and whether to declare war / taunt.
@@ -153,6 +159,7 @@ def main():
     aid, tok = register()
     print(f"{NAME} registered as #{aid}", flush=True)
     last_sig = None        # signature of the LAST submitted intent — never submit the same one twice in a row
+    last_say = -10**9      # tick of the last taunt actually submitted (the muzzle)
     idle = 0               # idle-turn counter -> throttles the LLM brain
     while True:
         try:
@@ -180,8 +187,11 @@ def main():
                     sk = seek_target(aid, obs)             # FALLBACK: scripted scene-wide march toward nearest live agent
                     if sk:
                         verb, args = sk; tag = "(seek) "
-                    else:                                  # no prey anywhere -> taunt the void
+                    else:                                  # no prey anywhere -> prowl (the muzzle below rations the roars)
                         verb, args = "say", {"text": random.choice(TAUNTS)}; tag = "(taunt) "
+                        if random.random() < 0.75:         # mostly keep hunting instead of monologuing to an empty map
+                            verb, args = "move", {"dx": random.randint(-3, 3) or 1, "dy": random.randint(-3, 3) or -1}
+                            tag = "(prowl) "
 
             # loop-guard safety: /intent is ASYNC (returns {"queued_intent":...}, no synchronous status — the
             # engine only judges it on the next tick), so we can't react to a rejection. Instead we PROACTIVELY
@@ -200,6 +210,13 @@ def main():
                 sig = (verb, json.dumps(args, sort_keys=True, ensure_ascii=False))
                 tag += "(varied) "
 
+            if verb == "say":                          # THE MUZZLE — one taunt per SAY_COOLDOWN ticks, whatever produced it
+                _now = int((obs or {}).get("tick") or 0)
+                if _now - last_say < SAY_COOLDOWN:
+                    verb, args = "move", {"dx": random.randint(-3, 3) or 1, "dy": random.randint(-3, 3) or -1}
+                    tag += "(muzzled) "
+                else:
+                    last_say = _now
             r = runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
             last_sig = sig
             print(f"[{NAME} #{aid}] {tag}{verb} {json.dumps(args, ensure_ascii=False)} -> {(r or {}).get('queued_intent', 'queued')}", flush=True)
