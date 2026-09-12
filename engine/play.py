@@ -13,7 +13,7 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
                     location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
                     WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
                     WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP,
-                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_LABEL)
+                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_LABEL, EXPANSION_PRICES)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
 # import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
@@ -82,26 +82,43 @@ def _needs_you(cur, agent_id):
             if mod.get("complete"):
                 continue
             contrib = mod.get("contrib") or {}
-            if str(agent_id) in contrib or len(contrib) >= COLONY_MIN[body]:
-                continue                       # already mine, or it does not need another body
+            if str(agent_id) in contrib:
+                continue                       # already mine
             have = mod.get("have") or {}
             short = {r: spec["need"][r] - int(have.get(r, 0))
                      for r in sorted(spec["need"]) if int(have.get(r, 0)) < spec["need"][r]}
-            gap = sum(short.values())
-            if best is None or gap < best[0]:
-                best = (gap, body, key, spec["label"], short, sorted(contrib))
+            # Two tiers. A module still short of DISTINCT funders is the strongest ask — joining it literally
+            # unblocks it — so it always beats one that merely needs more material. Once the funder gap is
+            # closed everywhere (as it was within a day of `invest` shipping), fall back to whatever is nearest
+            # to finishing, because "who is on it and what is it short of" is still the only actionable social
+            # fact on the board. Without this tier the whole block returned null and helped nobody.
+            tier = 0 if len(contrib) < COLONY_MIN[body] else 1
+            rank = (tier, sum(short.values()))
+            if best is None or rank < best[0]:
+                best = (rank, body, key, spec["label"], short, sorted(contrib), tier)
     if best is None:
         return None
-    _, body, key, label, short, ids = best
+    _, body, key, label, short, ids, tier = best
     names = []
     if ids:
         cur.execute("SELECT id, attrs->>'name' nm FROM entities WHERE id = ANY(%s)", ([int(i) for i in ids],))
         names = [r["nm"] or ("#" + str(r["id"])) for r in cur.fetchall()]
+    buyable = {r: q for r, q in short.items() if EXPANSION_PRICES.get(r)}
+    mined = {r: q for r, q in short.items() if not EXPANSION_PRICES.get(r)}
+    why = ("it is SHORT OF FUNDERS — joining it is what unblocks it"
+           if tier == 0 else "its funder count is met; what it lacks now is material")
+    how = []
+    if buyable:
+        how.append(f"buy its industrial lines from ANYWHERE with invest{{body:'{body}',module:'{key}',credits:N}} ({buyable})")
+    if mined:
+        how.append(f"the rest must be MINED on {COLONY_LABEL[body]} and funded on the spot with "
+                   f"construct{{shape:'colony',body:'{body}',module:'{key}'}} ({mined})")
+    if names:
+        how.append(f"and tell {', '.join(names)} you are coming — they are already in it")
     return {"body": body, "module": key, "label": label, "colony": COLONY_LABEL[body],
-            "still_needs": short, "funders": names, "funders_required": COLONY_MIN[body],
-            "how": (f"fund it on the surface with construct{{shape:'colony',body:'{body}',module:'{key}'}}, or pay "
-                    f"from anywhere with invest{{body:'{body}',module:'{key}',credits:N}}. "
-                    + (f"Say so to {', '.join(names)} — they are already in it." if names else ""))}
+            "still_needs": short, "buyable_now": buyable, "must_be_mined_there": mined,
+            "funders": names, "funders_required": COLONY_MIN[body], "why": why,
+            "how": "; ".join(how) or "nothing left to add"}
 
 
 def _warp_block(cur, here):
