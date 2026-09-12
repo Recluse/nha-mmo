@@ -13,7 +13,8 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
                     location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
                     WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
                     WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP,
-                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_LABEL, EXPANSION_PRICES, BODY_MINE)
+                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_LABEL, EXPANSION_PRICES, BODY_MINE,
+                    BODY_ITEMS, TWR_DEPART, GRAVITY, FUEL_VE, CORRECTION_EVERY, TRANSIT_TICKS)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
 # import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
@@ -60,7 +61,52 @@ def _collapse_repeats(msgs, keep=15):
 
 
 
-def _needs_you(cur, agent_id):
+
+def _preflight(inv, vehicles, altitude, in_space):
+    """Can THIS agent depart, and if not, what exactly is missing.
+
+    `observe.expansion` explained where you could go and why, and a playtester reported it was still not enough to
+    prepare a first flight: no assembly order, no gear requirement, no round-trip fuel, and nothing checked against
+    the inventory actually held. This answers per destination with the agent's own ship and hold — deliberately as
+    a CHECKLIST rather than a Δv figure, because the engine owns that arithmetic and two copies of it would drift.
+    """
+    inv = inv or {}
+    ships = [v for v in (vehicles or [])
+             if v.get("flies") and v.get("orbital_engine")]
+    fuels = {f: int(inv.get(f, 0) or 0) for f in FUEL_VE if int(inv.get(f, 0) or 0) > 0}
+    out = {"has_interplanetary_ship": bool(ships),
+           "in_earth_orbit": bool(in_space and _ORBIT_LO <= int(altitude or 0) <= _ORBIT_HI),
+           "fuel_held": fuels,
+           "ship": (ships[0].get("name") if ships else None),
+           "destinations": {}}
+    for body, items in BODY_ITEMS.items():
+        missing_items = [it for it in items if int(inv.get(it, 0) or 0) < 1]
+        corr = TRANSIT_TICKS[body] // CORRECTION_EVERY
+        blockers = []
+        if not ships:
+            blockers.append("no ship that flies with an ion_thruster (build parts, then finalize)")
+        if missing_items:
+            blockers.append(f"missing {', '.join(missing_items)} in your hold — craft before launch, not after")
+        if not out["in_earth_orbit"]:
+            blockers.append(f"you are not in Earth orbit (altitude {_ORBIT_LO}-{_ORBIT_HI}) — ride an elevator or launch")
+        if not fuels:
+            blockers.append("no usable fuel held (cryo_fuel or helium3 carry the most per unit)")
+        out["destinations"][body] = {
+            "needs_in_hold": list(items) or [],
+            "needs_landing_gear_on_ship": body in ("deimos", "phobos", "mars"),
+            "min_thrust_to_weight": TWR_DEPART[body],
+            "course_correction_fuel": corr,     # spare units the crossing burns on top of the departure Δv
+            "ready": not blockers,
+            "blockers": blockers,
+        }
+    out["how"] = ("build{part:...} the pieces, finalize{} into one ship (it must FLY and carry an ion_thruster), "
+                  "craft the protective items on EARTH, ride an elevator or launch to orbit 300-600, then "
+                  "depart{dest}. Carry spare fuel beyond the departure burn: the crossing spends one unit per "
+                  f"{CORRECTION_EVERY} ticks on course corrections, and you still need the fuel to come home.")
+    return out
+
+
+def _needs_you(cur, agent_id, inv=None):
     """The one co-op module where THIS agent would be the funder that unblocks it — with the names of the people
     already in it.
 
@@ -113,6 +159,28 @@ def _needs_you(cur, agent_id):
     # An agent would have flown out and dug for something that is not there. What a body actually yields is
     # BODY_MINE, and everything in neither list has to be made or mined at home and carried out.
     here = {r for r, _mult in BODY_MINE.get(body, ())}
+    # WHAT CAN *YOU* PUT IN, RIGHT NOW. The first cut described the module and left the agent to work out whether
+    # it could help — a playtester had to read a separate endpoint, then guess. This answers with the agent's own
+    # wallet and hold: `credits` buys the fixed-price lines (capped by the per-funder ceiling), held materials
+    # cover any line, and `would_complete` says whether doing it finishes the module outright.
+    inv = inv or {}
+    cap_frac = COLONY_CAP[body]
+    spec_need = COLONY_MODULES[body][key]["need"]
+    budget = int(inv.get("credits", 0) or 0)
+    can_buy, can_give = {}, {}
+    for r, q in sorted(short.items()):
+        cap = (spec_need[r] * cap_frac + 99) // 100        # my ceiling on this line, same rule the engine applies
+        price = EXPANSION_PRICES.get(r)
+        if price:
+            units = min(q, cap, budget // price)
+            if units > 0:
+                can_buy[r] = units; budget -= units * price
+        held = int(inv.get(r, 0) or 0)
+        units = min(q, cap, held)
+        if units > 0:
+            can_give[r] = units
+    covered = {r: max(can_buy.get(r, 0), can_give.get(r, 0)) for r in short}
+    would_complete = all(covered.get(r, 0) >= q for r, q in short.items())
     buyable = {r: q for r, q in short.items() if EXPANSION_PRICES.get(r)}
     mine_here = {r: q for r, q in short.items() if r not in buyable and r in here}
     haul = {r: q for r, q in short.items() if r not in buyable and r not in here}
@@ -130,6 +198,7 @@ def _needs_you(cur, agent_id):
         how.append(f"and tell {', '.join(names)} you are coming — they are already in it")
     return {"body": body, "module": key, "label": label, "colony": COLONY_LABEL[body],
             "still_needs": short, "buyable_now": buyable, "mine_on_site": mine_here, "haul_from_earth": haul,
+            "you_can_buy_now": can_buy, "you_can_give_now": can_give, "would_complete_it": would_complete,
             "funders": names, "funders_required": COLONY_MIN[body], "why": why,
             "how": "; ".join(how) or "nothing left to add"}
 
@@ -278,6 +347,11 @@ def observe(cur, agent_id):
                 "(COALESCE((e.attrs->>'wanted_until')::int,0) > %s) wanted, "
                 "(SELECT ev.tick FROM events ev WHERE ev.entity=e.id AND ev.kind <> 'destroyed' "
                 " ORDER BY ev.id DESC LIMIT 1) last_act, "
+                # `live` says an agent DID something; it does not say it will answer you. A playtester wrote to
+                # the most active agent in the world and got nothing back — correctly, since most of these are
+                # scripted and never read their inbox. When somebody last SPOKE is the better signal for "is
+                # there a conversation to be had here", so both are reported and the agent can choose.
+                "(SELECT m.tick FROM messages m WHERE m.sender=e.id ORDER BY m.id DESC LIMIT 1) last_spoke, "
                 "(abs(e.x-%s)+abs(e.y-%s)) dist FROM entities e "
                 "WHERE e.type='agent' AND e.id<>%s AND (abs(e.x-%s)+abs(e.y-%s)) <= %s ORDER BY dist, e.id LIMIT %s",
                 (now, ax, ay, agent_id, ax, ay, vision_radius, agent_limit))
@@ -288,7 +362,9 @@ def observe(cur, agent_id):
     nearby_agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
                       "hp": r["hp"], "wanted": bool(r["wanted"]), "dist": r["dist"],
                       "acted_ago": (now - int(r["last_act"])) if r["last_act"] else None,
-                      "live": bool(r["last_act"] and (now - int(r["last_act"])) <= _ONLINE_TICKS)}
+                      "live": bool(r["last_act"] and (now - int(r["last_act"])) <= _ONLINE_TICKS),
+                      "spoke_ago": (now - int(r["last_spoke"])) if r["last_spoke"] else None,
+                      "talks": bool(r["last_spoke"])}    # has this one EVER said anything? most never have
                      for r in cur.fetchall()]
     vision = {"radius": vision_radius, "base": _NEARBY_RADIUS,
               "bonus": {k: v for k, v in (("radar", radar_bonus), ("observatory", obs_bonus)) if v},
@@ -423,7 +499,8 @@ def observe(cur, agent_id):
             "windows": windows,
             "return_dv": (DV_RETURN.get(at_orbit or at_body) if (at_orbit or at_body) else None),
             "gates": _warp_block(cur, at_orbit or at_body or "earth"),
-            "needs_you": _needs_you(cur, agent_id),   # the board where YOU would be the unblocking funder, and who to talk to
+            "needs_you": _needs_you(cur, agent_id, inv),   # the board YOU can move right now, what YOU can put in, and who to tell
+            "preflight": _preflight(inv, vehicles, altitude, in_space),   # can I actually fly yet, and what is missing
             "producers": producers,
             "how": ("depart{dest} from Earth orbit (altitude 300-600) to a body; carry an ion_thruster ship, fuel (cryo_fuel/helium3) "
                     "and — for Mars/Venus — a heat_shield (+acid_skin for Venus). land_body on arrival. On a body, `mine` yields its "
@@ -448,8 +525,13 @@ def observe(cur, agent_id):
             # The Guild's filing fee has to be visible BEFORE the first surprise rejection — an agent that
             # discovers a price by being refused learns the wrong lesson (that inventing is broken).
             "guild": {"filing_fee": GUILD_FEE,
+                      # Said plainly. The first wording led with "inventing well is free", which buried the two
+                      # facts that actually matter to a poor agent deciding whether to try: you pay UP FRONT, and
+                      # you only get it back if the Guild grants the recipe. A playtester called that out.
                       "note": (f"combine{{}} with a mixture nobody has made before files it with the Inventors' "
-                               f"Guild and escrows {GUILD_FEE} credits. GRANTED → refunded in full and the recipe "
-                               f"becomes world law under your name. Rejected → the credits go to the republic. "
-                               f"Inventing well is free; guessing is not.")},
+                               f"Guild. You pay {GUILD_FEE} credits AT THE MOMENT YOU FILE, whatever the outcome. "
+                               f"If the Guild GRANTS it you get all {GUILD_FEE} back and the recipe becomes world "
+                               f"law under your name; if it rejects, the credits are gone to the republic. "
+                               f"Historically about four filings in five are rejected, so file a mixture whose "
+                               f"physics you can argue for — and pass `name` to say what you think you made.")},
             "expansion": expansion}
