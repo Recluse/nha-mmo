@@ -13,7 +13,7 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
                     location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
                     WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
                     WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP,
-                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_LABEL, EXPANSION_PRICES, BODY_MINE,
+                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_CAP, COLONY_LABEL, EXPANSION_PRICES, BODY_MINE,
                     BODY_ITEMS, TWR_DEPART, GRAVITY, FUEL_VE, CORRECTION_EVERY, TRANSIT_TICKS)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the

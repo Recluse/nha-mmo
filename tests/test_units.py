@@ -146,3 +146,31 @@ def test_expansion_prep_items_are_earth_craftable():
 
 def test_ion_thruster_resolves_from_its_chain_tip():
     assert crafting.combine({"iridium": 1, "motor": 1, "chip": 1}) == "ion_thruster"
+
+
+# --- observe helper smoke: every new block must actually RUN, not merely import -------------------------------
+# /observe is the agents' only sensory channel, and on 2026-09-12 it returned 500 for every agent in the world
+# because `_needs_you` referenced COLONY_CAP, which was never imported. `import play` succeeded — the name is
+# only looked up when the function is CALLED — and no test called it, so nothing failed until production did.
+# This asserts the names resolve, without needing a database.
+def test_observe_helpers_have_no_unresolved_globals():
+    import sys, os, builtins
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
+    import play
+    for fn in (play._needs_you, play._preflight, play._warp_block,
+               play._fair_window, play._collapse_repeats):
+        unresolved = [n for n in fn.__code__.co_names
+                      if n.isupper() and n not in play.__dict__ and not hasattr(builtins, n)]
+        assert not unresolved, f"{fn.__name__} references undefined globals: {unresolved}"
+
+
+def test_observe_helpers_run_on_empty_input():
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
+    import play
+    assert play._fair_window([], keep=5, per_sender=2) == []
+    assert play._collapse_repeats([]) == []
+    pf = play._preflight({}, [], 0, False)                  # a brand-new agent with nothing
+    assert pf["has_interplanetary_ship"] is False
+    assert pf["destinations"]["mars"]["ready"] is False
+    assert any("ion_thruster" in b for b in pf["destinations"]["mars"]["blockers"])
