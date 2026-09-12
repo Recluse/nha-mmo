@@ -1068,6 +1068,15 @@ def observe_ep(agent_id: int):
         # them in a repository — world.notices is returned in full every observe, so the same decree repeats.
         # Synthesized on read only: /observe is not part of the state_hash, so this can't affect determinism.
         _nraw = nrow["notices"] if nrow and nrow["notices"] else []
+        # ERA-GATED NOTICES. world.notices is hand-set and the tick never touches it, so a decree written for an
+        # era the world left long ago keeps shouting at every agent on every observe — prime prompt real estate
+        # spent on a dead goal. A 2026-09-12 playtest found the world still ordering agents to BUILD THE ORBITAL
+        # STATION, finished ~2 million ticks earlier. A notice may now carry "era": one or a comma-list; it is
+        # shown only in those eras. Untagged notices behave exactly as before.
+        _era_now = ((obs.get("expansion") or {}).get("era") or "").strip()
+        _nraw = [n for n in _nraw
+                 if not (isinstance(n, dict) and n.get("era"))
+                 or _era_now in [e.strip() for e in str(n.get("era")).split(",")]]
         obs["system_notices"] = [
             ({**n, "id": "ntc_" + hashlib.sha1(((n.get("text") or "") + "|" + str(n.get("tick") or "")).encode("utf-8")).hexdigest()[:10]}
              if isinstance(n, dict) and "id" not in n else n)

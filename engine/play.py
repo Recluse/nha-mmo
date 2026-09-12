@@ -20,6 +20,26 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
 # new medicine/plant/weapon would be accepted by the engine yet invisible to every agent, with nothing failing
 # (audit 2026-09-03). All values were identical at the time of this change, so behaviour is unchanged.
 
+
+def _collapse_repeats(msgs, keep=15):
+    """Fold a sender's consecutive identical lines into one carrying `repeated`.
+
+    The inbox is a fixed-size window, so one agent shouting the same line every few ticks silently evicts every
+    other voice — a playtester found the feed was wall-to-wall Barbarian threats with no room left for messages
+    from actual players. Collapsing is honest (the count is kept, nothing is invented) and it hands the window
+    back to distinct speakers. Newest-first order in, newest-first order out.
+    """
+    out = []
+    for m in msgs:
+        prev = out[-1] if out else None
+        if prev and prev.get("sender") == m.get("sender") and prev.get("text") == m.get("text"):
+            prev["repeated"] = int(prev.get("repeated", 1)) + 1
+            prev["tick"] = m.get("tick")          # keep the OLDEST tick of the run, so "since when" reads right
+            continue
+        out.append(m)
+    return out[:keep]
+
+
 def _warp_block(cur, here):
     """SEASON 6a — the warp-gate network as the agent sees it. A gate alone does nothing; a PAIR turns `depart`
     between its two ends into a warp: no launch window, a fifth of the Δv, WARP_TICKS to cross. Read straight
@@ -47,6 +67,8 @@ _WEAPON_ITEMS = tuple(WEAPON_STATS)
 _MEDICINE_ITEMS = tuple(MEDICINES)
 _PLANT_RESOURCES = tuple(PLANT_RESOURCES)
 _GATHER_RANGE = GATHER_RANGE
+# Same env var app.py reads for ONLINE_TICKS, so the two cannot drift apart: "acted within this many ticks".
+_ONLINE_TICKS = int(__import__("os").environ.get("ONLINE_TICKS", "180"))
 _ORBIT_LO, _ORBIT_HI = ORBIT_LO, ORBIT_HI
 _AMMO_ITEMS = ("slug", "energy_cell")   # no engine constant to derive from — consumed by name in the attack path
 _NEARBY_RADIUS = 9          # Manhattan reach for nearby agents/loot/artifacts (covers max weapon range 9) — the BASE sight (fog of war)
@@ -117,8 +139,10 @@ def observe(cur, agent_id):
     updates = [dict(r) for r in cur.fetchall()]
     cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
                 "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
-                "WHERE m.recipient IS NULL OR m.recipient=%s ORDER BY m.id DESC LIMIT 15", (agent_id,))
-    inbox = [dict(r) for r in cur.fetchall()]
+                # Pull a WIDE window and collapse it down to 15 distinct voices. Collapsing a 15-row window that
+                # is already all one shouter just yields one line and still hides everybody else.
+                "WHERE m.recipient IS NULL OR m.recipient=%s ORDER BY m.id DESC LIMIT 80", (agent_id,))
+    inbox = _collapse_repeats([dict(r) for r in cur.fetchall()])
     cur.execute("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
                 "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='deposit' "
                 "AND x BETWEEN %s AND %s AND y BETWEEN %s AND %s "     # audit(perf): sargable box → uses the entities_deposit_xy index instead of scanning every deposit; ±72 always holds >=6 on a live world and mining navigates within it
@@ -137,11 +161,19 @@ def observe(cur, agent_id):
     # nearby agents (others within the VISION radius): id/name/x/y/hp/wanted — NO karma/yield_buff/notoriety surfaced.
     cur.execute("SELECT id, attrs->>'name' name, x, y, COALESCE((attrs->>'hp')::int, 100) hp, "
                 "(COALESCE((attrs->>'wanted_until')::int,0) > %s) wanted, "
+                "COALESCE((attrs->>'last_act')::int, 0) last_act, "
                 "(abs(x-%s)+abs(y-%s)) dist FROM entities "
                 "WHERE type='agent' AND id<>%s AND (abs(x-%s)+abs(y-%s)) <= %s ORDER BY dist, id LIMIT %s",
                 (now, ax, ay, agent_id, ax, ay, vision_radius, agent_limit))
+    # `acted_ago`/`live` answer the question a newcomer actually has. A playtest put it exactly: "nearby agents are
+    # visible, but there is no way to tell who has done anything recently" — and most of the bodies standing around
+    # this world are long abandoned. Finding a partner was harder than reaching orbit, which is the wrong ordering
+    # for a game whose every co-op board needs two or three people.
     nearby_agents = [{"id": r["id"], "name": r["name"], "x": r["x"], "y": r["y"],
-                      "hp": r["hp"], "wanted": bool(r["wanted"]), "dist": r["dist"]} for r in cur.fetchall()]
+                      "hp": r["hp"], "wanted": bool(r["wanted"]), "dist": r["dist"],
+                      "acted_ago": (now - int(r["last_act"])) if r["last_act"] else None,
+                      "live": bool(r["last_act"] and (now - int(r["last_act"])) <= _ONLINE_TICKS)}
+                     for r in cur.fetchall()]
     vision = {"radius": vision_radius, "base": _NEARBY_RADIUS,
               "bonus": {k: v for k, v in (("radar", radar_bonus), ("observatory", obs_bonus)) if v},
               "note": "fog of war: you only see agents within this Manhattan radius. craft a radar "
@@ -223,7 +255,12 @@ def observe(cur, agent_id):
                 "ORDER BY dist, id LIMIT 8", (ax, ay))   # two placeholders — the query below takes four
     elevators = [dict(r) for r in cur.fetchall()]
     # nearby ground structures (cities/monuments/roads + UNFINISHED elevators) so the built world is visible, not just on the map.
-    cur.execute("SELECT id, x, y, attrs->>'shape' shape, COALESCE((attrs->>'complete')::boolean, false) complete, "
+    # Only STAGED builds carry a `complete` flag. Everything else — a road, a city block, a monument — is finished
+    # the instant it exists, and defaulting those to false reported every completed build as a building site.
+    # A playtester built a road, was paid for it, and was still shown `complete:false`.
+    cur.execute("SELECT id, x, y, attrs->>'shape' shape, "
+                "COALESCE((attrs->>'complete')::boolean, "
+                "         attrs->>'shape' NOT IN ('elevator','station','colony','terraform','warpgate')) complete, "
                 "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='structure' "
                 "AND COALESCE((attrs->>'alt')::int,0)=0 AND (abs(x-%s)+abs(y-%s)) <= %s ORDER BY dist, id LIMIT 12",
                 (ax, ay, ax, ay, _NEARBY_RADIUS * 2))
