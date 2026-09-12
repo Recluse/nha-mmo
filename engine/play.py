@@ -21,6 +21,25 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
 # (audit 2026-09-03). All values were identical at the time of this change, so behaviour is unchanged.
 
 
+def _fair_window(msgs, keep=15, per_sender=3):
+    """Trim a newest-first feed to `keep` lines, letting no single sender hold more than `per_sender` of them.
+
+    Collapsing identical repeats is not enough on its own: a shouter that VARIES its threats slips straight past
+    it and still owned 12 of 15 lines on the live world. This gives the window back to distinct voices without
+    silencing anyone — the loudest sender keeps its newest few lines, the rest of the feed keeps the others.
+    """
+    out, seen = [], {}
+    for m in msgs:
+        sid = m.get("sender")
+        if seen.get(sid, 0) >= per_sender:
+            continue
+        seen[sid] = seen.get(sid, 0) + 1
+        out.append(m)
+        if len(out) >= keep:
+            break
+    return out
+
+
 def _collapse_repeats(msgs, keep=15):
     """Fold a sender's consecutive identical lines into one carrying `repeated`.
 
@@ -137,12 +156,26 @@ def observe(cur, agent_id):
     # mechanics/verbs without re-reading the docs. Read-only.
     cur.execute("SELECT tick, title, detail, verb FROM rule_updates ORDER BY id DESC LIMIT 6")
     updates = [dict(r) for r in cur.fetchall()]
-    cur.execute("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
-                "m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender "
-                # Pull a WIDE window and collapse it down to 15 distinct voices. Collapsing a 15-row window that
-                # is already all one shouter just yields one line and still hides everybody else.
-                "WHERE m.recipient IS NULL OR m.recipient=%s ORDER BY m.id DESC LIMIT 80", (agent_id,))
-    inbox = _collapse_repeats([dict(r) for r in cur.fetchall()])
+    # THE INBOX, IN THREE CHANNELS. Measured on the live world 2026-09-12: of the 15 lines an agent actually saw,
+    # TWELVE were one shouting agent and two were system decrees — one line in fifteen came from a fellow player.
+    # An LLM reading that learns, correctly, that chat is noise, and stops reading it. So: a message addressed TO
+    # this agent is fetched SEPARATELY and can never be evicted by a burst of shouting; the public feed is capped
+    # per sender so one voice cannot own the window; and every line is tagged with its `channel`, so "the system
+    # is flooding" and "someone is talking to me" stop looking like the same thing.
+    _MSG_COLS = ("SELECT m.tick, m.sender, s.attrs->>'name' sender_name, (s.type='human') is_human, "
+                 "s.type sender_type, m.recipient, m.text FROM messages m LEFT JOIN entities s ON s.id = m.sender ")
+    cur.execute(_MSG_COLS + "WHERE m.recipient=%s ORDER BY m.id DESC LIMIT 10", (agent_id,))
+    direct = [dict(r) for r in cur.fetchall()]
+    cur.execute(_MSG_COLS + "WHERE m.recipient IS NULL ORDER BY m.id DESC LIMIT 120")
+    public = _fair_window(_collapse_repeats([dict(r) for r in cur.fetchall()], keep=120), keep=15, per_sender=3)
+    for m in direct:
+        m["channel"] = "direct"
+    for m in public:
+        m["channel"] = ("system" if (m.get("sender_type") in ("universe", "oracle"))
+                        else ("adviser" if m.get("is_human") else "public"))
+    for m in direct + public:
+        m.pop("sender_type", None)
+    inbox = sorted(direct + public, key=lambda m: -(m.get("tick") or 0))[:20]
     cur.execute("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
                 "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='deposit' "
                 "AND x BETWEEN %s AND %s AND y BETWEEN %s AND %s "     # audit(perf): sargable box → uses the entities_deposit_xy index instead of scanning every deposit; ±72 always holds >=6 on a live world and mining navigates within it
@@ -325,7 +358,7 @@ def observe(cur, agent_id):
                     "orbit — it costs HP and jettisons your body haul, so a fueled depart{dest:'earth'} (which keeps your cargo) is always better."),
         }
     return {"tick": now, "position": [ax, ay], "inventory": inv, "inventor_points": ipts, "loose_parts": loose,
-            "vehicles": vehicles, "orders": orders, "orders_total": orders_total, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox,
+            "vehicles": vehicles, "orders": orders, "orders_total": orders_total, "trade_offers": offers, "contracts": contracts, "bounties": bounties, "messages": inbox, "messages_direct": direct,
             "nearby_deposits": nearby, "altitude": altitude, "atmosphere_top": 100, "in_space": in_space,
             "hp": hp, "hp_max": hp_max, "downed_until": downed_until,
             "nearby_agents": nearby_agents, "weapons": weapons, "ammo": ammo,
