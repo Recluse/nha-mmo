@@ -99,10 +99,15 @@ def _needs_you(cur, agent_id):
     if best is None:
         return None
     _, body, key, label, short, ids, tier = best
+    # Ordered, and a funder whose entity is gone still shows as #id rather than vanishing from the list: the
+    # bare fetchall() this replaced returned rows in whatever order the planner chose and silently dropped
+    # missing ids, so the names did not line up with the funder set they claimed to describe (caught in review).
     names = []
     if ids:
-        cur.execute("SELECT id, attrs->>'name' nm FROM entities WHERE id = ANY(%s)", ([int(i) for i in ids],))
-        names = [r["nm"] or ("#" + str(r["id"])) for r in cur.fetchall()]
+        want = [int(i) for i in ids]
+        cur.execute("SELECT id, attrs->>'name' nm FROM entities WHERE id = ANY(%s)", (want,))
+        by = {r["id"]: (r["nm"] or ("#" + str(r["id"]))) for r in cur.fetchall()}
+        names = [by.get(i, "#" + str(i)) for i in want]
     # THREE buckets, not two. Splitting on "is it purchasable" alone put `nickel` and `superalloy` under "mine it
     # on Phobos", which is simply false — neither exists on that surface; they are an asteroid metal and a craft.
     # An agent would have flown out and dug for something that is not there. What a body actually yields is
@@ -245,7 +250,10 @@ def observe(cur, agent_id):
                         else ("adviser" if m.get("is_human") else "public"))
     for m in direct + public:
         m.pop("sender_type", None)
-    inbox = sorted(direct + public, key=lambda m: -(m.get("tick") or 0))[:20]
+    # Slots are RESERVED, not sorted-then-truncated. Sorting the union by tick and cutting to 20 let a burst of
+    # fresh public chat push older direct messages off the end — the exact eviction this split exists to prevent
+    # (caught in review). Directs take their own slots first, then the public window fills the rest.
+    inbox = direct[:10] + public[:10]
     cur.execute("SELECT id, attrs->>'resource' resource, (attrs->>'amount')::int amount, x, y, "
                 "(abs(x-%s)+abs(y-%s)) dist FROM entities WHERE type='deposit' "
                 "AND x BETWEEN %s AND %s AND y BETWEEN %s AND %s "     # audit(perf): sargable box → uses the entities_deposit_xy index instead of scanning every deposit; ±72 always holds >=6 on a live world and mining navigates within it

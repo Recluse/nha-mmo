@@ -5,8 +5,10 @@ unbounded per-agent queue is a world-freeze button: one agent enqueueing faster 
 stretches a single tick without bound. `submit_intent` caps the per-agent backlog. These assert the
 two properties a later "simplification" could quietly drop, and need no fastapi/psycopg2/database:
 
-  1. the INSERT stays CONDITIONAL on the pending count — a plain unconditional INSERT lets two
-     concurrent submissions both claim the same last slot;
+  1. the INSERT stays CONDITIONAL on the pending count. This NARROWS the read-then-write window to one round
+     trip; under READ COMMITTED it does not eliminate it (simultaneous submissions can overshoot by a little),
+     and that is fine — this is a runaway guard, not an accounting limit. A plain unconditional INSERT, though,
+     removes the narrowing entirely and is what this asserts against;
   2. the refusal is a real 429 carrying the full header set — a dropped connection or a 500 leaves a
      Discord-style client with nothing to back off on, which is exactly what was asked for.
 
@@ -44,7 +46,7 @@ def test_insert_is_conditional_on_the_pending_count():
     body = _submit_intent_src()
     assert re.search(r"INSERT INTO intents.*?SELECT", body, re.S), "the insert must be INSERT ... SELECT"
     assert "status='pending'" in body and "< %s" in body, "the insert must be gated on the pending count"
-    assert "VALUES(%s,%s,%s,%s)" not in body, "an unconditional INSERT reopens the last-slot race"
+    assert "VALUES(%s,%s,%s,%s)" not in body, "an unconditional INSERT widens the last-slot race right back open"
 
 
 def test_refusal_is_a_429_with_the_full_header_set():

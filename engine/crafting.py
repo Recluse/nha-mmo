@@ -145,7 +145,7 @@ RULE_NOTE = {
     "ion_thruster": "a fusion fuel (helium3/iridium) + a motor (power) + a semiconductor — orbital drive",
     "heat_shield": "a superalloy (heat-proof) + a composite (shaped, hard) — an ablative re-entry shield for Mars/Venus arrival",
     "acid_skin": "acid + rubber — an H₂SO₄-proof hull coat for the Venus cloud deck",
-    "warp_container": "a superalloy (heat-proof) + a chip (logic) + a crystal (insulator) — a single-use stasis crate; the only way exotic body cargo crosses a warp gate",
+    "warp_container": "a superalloy (heat-proof) + a chip (logic) + an acid_skin (acid-proof seal) — a single-use stasis crate; the only way exotic body cargo crosses a warp gate",
     "graphite": "co2 (mined at Mars/Venus) reduced with a fuel (heat) — structural carbon from thin air; feeds composite + colony builds",
     "o2": "perchlorate (Mars) scrubbed with water or heat — breathable oxygen for terraforming",
     "mars_brick": "mars_regolith sintered with a fuel (heat) — dome shell + radiation shield",
@@ -204,9 +204,11 @@ RULES = [
     ("ion_thruster",  lambda a: a["has"]("fusion") and a["has"]("power") and a["has"]("semiconductor")),  # fusion fuel + motor + chip/silicon
     # --- EXPANSION ERA re-entry gear (unique heat_proof/grip+elastic pins keep them off every existing mix; ABOVE
     #     composite/acid/rubber so a finished-superalloy or acid+rubber mix resolves here, not to those primitives) ---
-    # SEASON 6b — the warp crate. ABOVE heat_shield on purpose: both start from a superalloy, and `logic` (a chip)
-    # is what separates them, so a superalloy+composite mix still resolves to a heat_shield exactly as before.
-    ("warp_container", lambda a: a["has"]("heat_proof") and a["has"]("logic") and a["has"]("insulator")),  # superalloy + chip + crystal → a stasis crate for gate cargo
+    # SEASON 6b — the warp crate. Pinned on `acid_proof`, which ONLY acid_skin carries. The first cut keyed on
+    # `insulator` and was far too broad: eight items carry it, and the audit caught that {superalloy, chip,
+    # crystal} (a lens) and {superalloy, chip, plastic} (a casing) had both been silently retargeted to this
+    # crate. ABOVE heat_shield is still right — both start from a superalloy and `logic` separates them.
+    ("warp_container", lambda a: a["has"]("heat_proof") and a["has"]("logic") and a["has"]("acid_proof")),  # superalloy + chip + acid_skin → a sealed stasis crate for gate cargo
     ("heat_shield",   lambda a: a["has"]("heat_proof") and a["has"]("shaped") and a["mx"]("hardness") >= 8),  # superalloy(heat_proof) + composite(shaped,hard) → an ablative EDL shield (Mars/Venus entry)
     ("acid_skin",     lambda a: a["has"]("acid_former") and a["has"]("grip") and a["has"]("elastic")),  # acid + rubber(grip/elastic) → an H2SO4-proof hull coat (Venus cloud deck)
     ("graphite",      lambda a: a["has"]("carbon_ox") and a["heat"] and a["n_metals"] == 0),  # co2 (carbon_ox) reduced with a fuel → structural carbon (Venus/Mars build material)

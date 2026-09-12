@@ -1076,7 +1076,7 @@ def observe_ep(agent_id: int):
         if not cur.fetchone():
             raise HTTPException(404, "no such agent")
         obs = observe(cur, agent_id)
-        cur.execute("SELECT notices FROM world WHERE id=1")   # official announcements — world.notices, which the tick never overwrites
+        cur.execute("SELECT notices, to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # official announcements — world.notices, which the tick never overwrites
         nrow = cur.fetchone()
         # Each notice gets a STABLE content-hash `id` (derived from text+tick) so a client can key/cache/dedupe
         # them in a repository — world.notices is returned in full every observe, so the same decree repeats.
@@ -1087,7 +1087,10 @@ def observe_ep(agent_id: int):
         # spent on a dead goal. A 2026-09-12 playtest found the world still ordering agents to BUILD THE ORBITAL
         # STATION, finished ~2 million ticks earlier. A notice may now carry "era": one or a comma-list; it is
         # shown only in those eras. Untagged notices behave exactly as before.
-        _era_now = ((obs.get("expansion") or {}).get("era") or "").strip()
+        # Straight from `world`, NOT from obs["expansion"] — that block is itself null outside space/expansion/
+        # accord, so reading the era through it made every architect-era notice invisible during the architect
+        # era, which is precisely when it is wanted (caught in review).
+        _era_now = ((nrow["era"] if nrow else "") or "").strip()
         _nraw = [n for n in _nraw
                  if not (isinstance(n, dict) and n.get("era"))
                  or _era_now in [e.strip() for e in str(n.get("era")).split(",")]]
@@ -1377,8 +1380,12 @@ def submit_intent(it: IntentIn, response: Response):
         pending = int(cur.fetchone()[0])
         if pending >= INTENT_PENDING_CAP:
             raise too_many
-        # The insert is CONDITIONAL on the count in the SAME statement, so two submissions racing for this
-        # agent's last slot cannot both read "39 pending" and both get in. No row back = the other one won.
+        # The insert is CONDITIONAL on the count in the SAME statement, which NARROWS the read-then-write window
+        # to a single round trip — it does not close it. Under READ COMMITTED the subquery cannot see another
+        # transaction's uncommitted insert, so N truly simultaneous submissions for one agent can each see 39 and
+        # each get a row, overshooting the cap by up to N-1 (noted in review). That is acceptable here: this is a
+        # runaway guard, not an accounting limit, and the tick drains the queue every ~2s. An exact cap would
+        # need SELECT ... FOR UPDATE on the agent row, i.e. a lock on the hottest write path in the game.
         cur.execute("INSERT INTO intents(agent, verb, args, created) "
                     "SELECT %s,%s,%s,%s WHERE (SELECT count(*) FROM intents "
                     "WHERE agent=%s AND status='pending') < %s RETURNING id",

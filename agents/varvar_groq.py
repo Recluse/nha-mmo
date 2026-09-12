@@ -210,14 +210,21 @@ def main():
                 sig = (verb, json.dumps(args, sort_keys=True, ensure_ascii=False))
                 tag += "(varied) "
 
+            _muzzled_say = False
             if verb == "say":                          # THE MUZZLE — one taunt per SAY_COOLDOWN ticks, whatever produced it
                 _now = int((obs or {}).get("tick") or 0)
                 if _now - last_say < SAY_COOLDOWN:
                     verb, args = "move", {"dx": random.randint(-3, 3) or 1, "dy": random.randint(-3, 3) or -1}
                     tag += "(muzzled) "
+                    # RECOMPUTE the loop-guard signature: it was built from the taunt we are no longer sending,
+                    # so leaving it stale let two identical muzzled moves go out back to back — the very repeat
+                    # the guard exists to prevent (caught in review).
+                    sig = (verb, json.dumps(args, sort_keys=True, ensure_ascii=False))
                 else:
-                    last_say = _now
+                    _muzzled_say = True                # ...and only start the cooldown once the POST has landed
             r = runner.api("/intent", "POST", {"agent": aid, "verb": verb, "args": args, "token": tok})
+            if _muzzled_say:                           # a failed POST (or a 429 from the intent cap) must not
+                last_say = int((obs or {}).get("tick") or 0)   # burn the full cooldown on a taunt nobody heard
             last_sig = sig
             print(f"[{NAME} #{aid}] {tag}{verb} {json.dumps(args, ensure_ascii=False)} -> {(r or {}).get('queued_intent', 'queued')}", flush=True)
         except urllib.error.HTTPError as e:

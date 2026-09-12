@@ -1633,8 +1633,8 @@ def apply_intent(it, ents, cur, t, events):
         return "applied", msg
     if verb == "construct":                              # place a structure from a geometric primitive (costs materials → economy)
         shape = str(args.get("shape", "box")).lower()
-        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city", "colony", "terraform", "extractor"):
-            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city/colony/terraform/extractor"
+        if shape not in ("box", "cylinder", "sphere", "cone", "pyramid", "elevator", "station", "ziggurat", "monument", "road", "city", "colony", "terraform", "extractor", "warpgate"):
+            return "rejected", "shape must be box/cylinder/sphere/cone/pyramid/elevator/station/ziggurat/monument/road/city/colony/terraform/extractor/warpgate"
         if shape == "elevator":                          # collaborative megastructure: stack segments on one cell to reach space
             cost = {"metal": 15, "composite": 8}; seg = 20
             if any(get(a, r) < q for r, q in cost.items()):
@@ -2790,7 +2790,11 @@ def resolve_proposals(ents, cur, t, events):
                                {"name": p["item_name"], "item": p["item_key"], "points": pts, "guild": True}))
             elif a:                                       # raced — recipe already exists; just hand over the item
                 addb(a, existing["item_key"], 1)
-            if a:                                     # the Guild said yes → the filing fee comes back out of the purse
+            # The Guild said yes → the filing fee comes back OUT OF THE PURSE, and only if the purse can pay it.
+            # Proposals filed before the fee existed never escrowed anything, so refunding them unconditionally
+            # would mint credits from an empty treasury and drive it negative.
+            uni = _treasury(ents)
+            if a and uni is not None and int(get(uni, "credits")) >= GUILD_FEE:
                 addb(a, "credits", GUILD_FEE)
                 _treasury_add(ents, -GUILD_FEE)
             cur.execute("UPDATE proposals SET status='granted' WHERE id=%s", (p["id"],))

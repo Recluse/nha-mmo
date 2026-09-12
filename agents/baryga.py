@@ -58,7 +58,11 @@ SELLABLE = ("metal", "iron", "copper", "aluminum", "carbon", "silicon", "crystal
 BID = {"steel": (400, 12), "electrolyte": (200, 12), "engine": (40, 45), "plastic": (100, 10),
        "wire": (60, 8), "alloy": (50, 14), "composite": (40, 16), "motor": (30, 40),
        "magnet": (40, 18), "chip": (40, 26), "glass": (40, 8), "battery": (20, 30),
-       "insulated_wire": (30, 20), "frame": (10, 20)}
+       "insulated_wire": (30, 20)}
+# NB every key above must be a real BUFFER resource. `frame` was in this list and is a vehicle PART — a separate
+# entity made by `build`, never a buffer — so nobody could ever sell into the bid. `order` does not validate the
+# resource name, market orders never expire, and the escrow is taken up front: it was 200 credits locked forever
+# plus one more permanent row in the very backlog this file is trying to drain (caught in review).
 PATRON_FLOOR = 200_000     # keep this much working capital before playing patron
 OPEN_ORDER_CAP = 40        # ...and never sit on more open orders than this — see the housekeeping branch below
 
