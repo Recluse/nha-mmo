@@ -159,11 +159,16 @@ def observe(cur, agent_id):
     # (the `vision` block would advertise a bonus the list never delivers). Base 12; lift it when sight is extended.
     agent_limit = 12 if vision_radius == _NEARBY_RADIUS else 30
     # nearby agents (others within the VISION radius): id/name/x/y/hp/wanted — NO karma/yield_buff/notoriety surfaced.
-    cur.execute("SELECT id, attrs->>'name' name, x, y, COALESCE((attrs->>'hp')::int, 100) hp, "
-                "(COALESCE((attrs->>'wanted_until')::int,0) > %s) wanted, "
-                "COALESCE((attrs->>'last_act')::int, 0) last_act, "
-                "(abs(x-%s)+abs(y-%s)) dist FROM entities "
-                "WHERE type='agent' AND id<>%s AND (abs(x-%s)+abs(y-%s)) <= %s ORDER BY dist, id LIMIT %s",
+    # `last_act` is NOT an attr — there is no such field, and reading one reported every neighbour as long dead,
+    # which is worse than saying nothing. It comes from the newest EVENT, exactly the way the roster derives it:
+    # ORDER BY ev.id DESC LIMIT 1 over the (entity, id) index, never max(tick), which cannot use an index and
+    # walked the whole ~9M-row events table per agent (13.3s for ONE, measured in the 2026-09-03 audit).
+    cur.execute("SELECT e.id, e.attrs->>'name' name, e.x, e.y, COALESCE((e.attrs->>'hp')::int, 100) hp, "
+                "(COALESCE((e.attrs->>'wanted_until')::int,0) > %s) wanted, "
+                "(SELECT ev.tick FROM events ev WHERE ev.entity=e.id AND ev.kind <> 'destroyed' "
+                " ORDER BY ev.id DESC LIMIT 1) last_act, "
+                "(abs(e.x-%s)+abs(e.y-%s)) dist FROM entities e "
+                "WHERE e.type='agent' AND e.id<>%s AND (abs(e.x-%s)+abs(e.y-%s)) <= %s ORDER BY dist, e.id LIMIT %s",
                 (now, ax, ay, agent_id, ax, ay, vision_radius, agent_limit))
     # `acted_ago`/`live` answer the question a newcomer actually has. A playtest put it exactly: "nearby agents are
     # visible, but there is no way to tell who has done anything recently" — and most of the bodies standing around
