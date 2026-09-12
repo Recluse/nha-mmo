@@ -1596,7 +1596,7 @@ def human_say(s: HumanSay, request: Request):
     return {"ok": True}
 
 
-def _server_log(limit, kind, before=0, after=0, before_id=0):
+def _server_log(limit, kind, before=0, after=0, before_id=0, agent=0):
     """Full server log — every world event + agent action, newest first. Optional ?kind=escape,invent
     (comma-separated) to filter kinds; ?before=<tick> scrubs back through history; ?after=<tick> returns only
     what happened since a tick (the 'since your last visit' digest). before/after work now that events are kept."""
@@ -1615,6 +1615,12 @@ def _server_log(limit, kind, before=0, after=0, before_id=0):
         # (audit 2026-09-03, F19). `before_id` is exclusive and strictly decreasing, so paging always advances.
         if before_id > 0:
             where.append("e.id < %s"); params.append(before_id)
+        # ?agent=<id> — one agent's own event stream. Asked for by the DiscordPHP-NHA author, who was polling the
+        # whole of /agent/{id} every tick and diffing it client-side just to notice his bot had got stuck in a
+        # loop. Paired with ?after=<tick> this is the cheap form of that question: a handful of rows instead of
+        # the agent's entire state. Served by events_entity_id_idx (entity, id) as a bounded backward index scan.
+        if agent > 0:
+            where.append("e.entity = %s"); params.append(agent)
         wsql = (" WHERE " + " AND ".join(where)) if where else ""
         params.append(limit + 1)                          # fetch one extra to detect "there is more" exactly
         cur.execute("SELECT e.id, e.tick, e.entity, COALESCE(a.attrs->>'name','#'||e.entity) name, e.kind, e.data "
@@ -1629,7 +1635,8 @@ def _server_log(limit, kind, before=0, after=0, before_id=0):
 @app.get("/log", response_model=LogOut, tags=["history"])
 def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "",
                before: int = Query(0, ge=0), after: int = Query(0, ge=0),
-               before_id: int = Query(0, ge=0, description="cursor: pass the previous response's next_before_id to get the NEXT older page (paging by `before` alone cannot terminate)")):
+               before_id: int = Query(0, ge=0, description="cursor: pass the previous response's next_before_id to get the NEXT older page (paging by `before` alone cannot terminate)"),
+               agent: int = Query(0, ge=0, description="only this agent's events. Pair with ?after=<tick> for a cheap 'what has my agent done since' feed — the intended way to watch your own bot without re-fetching its whole state every tick")):
     limit = _clamp_limit(limit)
     kind = re.sub(r"[^a-z_,]", "", (kind or "").lower())[:64]   # free-form `kind` was an unbounded cache-key domain
     # `before`/`after` are tick numbers: clamp to the live tick so a huge value can't request a scan of the whole
@@ -1639,8 +1646,11 @@ def server_log(limit: int = Query(60, ge=LIMIT_MIN, le=LIMIT_MAX), kind: str = "
     after = min(after, t_now)
     # before/after are visitor-unique history queries (each returning visitor mints a distinct 'after=<their last-seen tick>').
     # Routing those through the tick-keyed _cache would leak an entry per distinct tick that can never serve again. Skip the cache.
-    if before or after or before_id:
-        return _server_log(limit, kind, before, after, before_id)
+    # `agent` joins before/after/before_id in SKIPPING the tick cache on purpose: its key domain is agent ids,
+    # which are caller-supplied, and one cache entry per id that can never serve again is the exact leak the
+    # history params already avoid. The query is index-bounded, so it does not need the cache.
+    if before or after or before_id or agent:
+        return _server_log(limit, kind, before, after, before_id, agent)
     return _cached(("log", limit, kind), lambda: _server_log(limit, kind))
 
 
