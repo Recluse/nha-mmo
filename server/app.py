@@ -896,6 +896,16 @@ def _station_status(cur):
     return out
 
 
+def _names_for(cur, ids):
+    """Agent ids -> display names, in the order given. Empty list in, empty list out (no query)."""
+    ids = [int(i) for i in ids if str(i).lstrip("-").isdigit()]
+    if not ids:
+        return []
+    cur.execute("SELECT id, attrs->>'name' nm FROM entities WHERE id = ANY(%s)", (ids,))
+    by = {r["id"]: (r["nm"] or ("#" + str(r["id"]))) for r in cur.fetchall()}
+    return [by.get(i, "#" + str(i)) for i in ids]
+
+
 def _colony_status(cur, body):
     """EXPANSION ERA: one body's co-op colony board (Forward Base / Ares Base / Aphrodite Terrace) + live per-module
     progress. Returns None off the space/expansion era or for an unknown body. Mirrors _station_status, keyed on body."""
@@ -924,6 +934,10 @@ def _colony_status(cur, body):
             # per-resource funder cap without seeing what it has already put in, and without that it can only
             # guess and eat rejections. Public either way — the funder list is already visible as `funders`.
             "contrib": {str(k): dict(v) for k, v in (m.get("contrib") or {}).items()},
+            # NAMES, not just a count. "three people are funding this" gives an agent nobody to talk to; the
+            # names give it someone to ask. A module needs 2-3 DISTINCT funders by rule, so who they are is the
+            # single most actionable fact on the board.
+            "funder_names": _names_for(cur, list((m.get("contrib") or {}).keys())),
             "funders": len(m.get("contrib", {})), "complete": bool(m.get("complete"))})
         if m.get("complete"):
             out["modules_done"] += 1

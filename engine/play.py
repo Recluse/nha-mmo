@@ -13,7 +13,7 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
                     location,   # canonical location reader (Phase 6) — the single authority for "where is this agent"
                     WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
                     WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP,
-                    GUILD_FEE)
+                    GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_LABEL)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
 # import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
@@ -57,6 +57,51 @@ def _collapse_repeats(msgs, keep=15):
             continue
         out.append(m)
     return out[:keep]
+
+
+
+def _needs_you(cur, agent_id):
+    """The one co-op module where THIS agent would be the funder that unblocks it — with the names of the people
+    already in it.
+
+    A module needs 2-3 DISTINCT funders by rule, so the scarce thing in this world is not ore but a partner, and
+    until now a board showed a COUNT of funders and no names: you could see that three people were building
+    something and still have nobody to address. Naming them turns "it needs 48 regolith" into "Miner and Trader
+    need one more person here", which is a sentence an agent can act on — and a reason to send the first direct
+    message this world has seen in a while.
+    """
+    cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='colony'")
+    best = None
+    for row in cur.fetchall():
+        at = row["attrs"] or {}
+        body = at.get("body")
+        if not body or body not in COLONY_MODULES or at.get("complete"):
+            continue
+        for key, spec in COLONY_MODULES[body].items():
+            mod = (at.get("modules") or {}).get(key) or {}
+            if mod.get("complete"):
+                continue
+            contrib = mod.get("contrib") or {}
+            if str(agent_id) in contrib or len(contrib) >= COLONY_MIN[body]:
+                continue                       # already mine, or it does not need another body
+            have = mod.get("have") or {}
+            short = {r: spec["need"][r] - int(have.get(r, 0))
+                     for r in sorted(spec["need"]) if int(have.get(r, 0)) < spec["need"][r]}
+            gap = sum(short.values())
+            if best is None or gap < best[0]:
+                best = (gap, body, key, spec["label"], short, sorted(contrib))
+    if best is None:
+        return None
+    _, body, key, label, short, ids = best
+    names = []
+    if ids:
+        cur.execute("SELECT id, attrs->>'name' nm FROM entities WHERE id = ANY(%s)", ([int(i) for i in ids],))
+        names = [r["nm"] or ("#" + str(r["id"])) for r in cur.fetchall()]
+    return {"body": body, "module": key, "label": label, "colony": COLONY_LABEL[body],
+            "still_needs": short, "funders": names, "funders_required": COLONY_MIN[body],
+            "how": (f"fund it on the surface with construct{{shape:'colony',body:'{body}',module:'{key}'}}, or pay "
+                    f"from anywhere with invest{{body:'{body}',module:'{key}',credits:N}}. "
+                    + (f"Say so to {', '.join(names)} — they are already in it." if names else ""))}
 
 
 def _warp_block(cur, here):
@@ -345,6 +390,7 @@ def observe(cur, agent_id):
             "windows": windows,
             "return_dv": (DV_RETURN.get(at_orbit or at_body) if (at_orbit or at_body) else None),
             "gates": _warp_block(cur, at_orbit or at_body or "earth"),
+            "needs_you": _needs_you(cur, agent_id),   # the board where YOU would be the unblocking funder, and who to talk to
             "producers": producers,
             "how": ("depart{dest} from Earth orbit (altitude 300-600) to a body; carry an ion_thruster ship, fuel (cryo_fuel/helium3) "
                     "and — for Mars/Venus — a heat_shield (+acid_skin for Venus). land_body on arrival. On a body, `mine` yields its "

@@ -464,6 +464,7 @@ def _invest_colony(a, body, args, ents, cur, t):
     want_res = str(args.get("resource", "")).lower() or None       # optional: focus one resource line
     need = mods_def[module]["need"]
     have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {})
+    _was_member = str(a["id"]) in contrib     # captured BEFORE funding — see _colony_award's new-funder notice
     st["attrs"].setdefault("ctotal", {})
     ct = st["attrs"]["ctotal"]
     cap_frac = COLONY_CAP[body]
@@ -494,10 +495,11 @@ def _invest_colony(a, body, args, ents, cur, t):
                             f"mined on {BODY_LABEL[body]}.")
     addb(a, "credits", -spent)                                      # THE SINK: credits are gone, converted to materials
     msg = f"invested {spent} credits → funded {moved} to {COLONY_LABEL[body]} · {mods_def[module]['label']}"
-    return "applied", msg + _colony_award(a, st, body, module, moved, mod, ents, cur, t)
+    return "applied", msg + _colony_award(a, st, body, module, moved, mod, ents, cur, t,
+                                          new_funder=not _was_member)
 
 
-def _colony_award(a, st, body, module, moved, mod, ents, cur, t):
+def _colony_award(a, st, body, module, moved, mod, ents, cur, t, new_funder=False):
     """Immediate points + the module/colony completion cascade, after `moved` units have landed in a colony module.
 
     Shared by BOTH funding routes — `construct{shape:'colony'}` (materials, on site) and `invest{body,module}`
@@ -509,6 +511,22 @@ def _colony_award(a, st, body, module, moved, mod, ents, cur, t):
     have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {})
     ct = st["attrs"].setdefault("ctotal", {})
     msg = ""
+    # SOMEBODY JOINED YOUR BUILD. Sent ONLY when a NEW funder appears on a module, never on a top-up, so the
+    # volume stays at the rate real social events happen. A module needs 2-3 DISTINCT funders BY RULE, so the
+    # people who need to find each other are exactly these — and until now they could not: the board showed a
+    # COUNT of funders and no names, so there was nobody to address. Across this world's entire history only 37
+    # direct messages have ever been sent; this gives agents a reason to write one, about a concrete shared job.
+    if new_funder:
+        short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
+        who = a["attrs"].get("name") or ("#" + str(a["id"]))
+        note = (f"{who} just joined {COLONY_LABEL[body]} · {mods_def[module]['label']} "
+                f"(funded {moved}). Still needs {short or 'nothing — it is ready'}. "
+                f"Funders now: {len(contrib)}/{COLONY_MIN[body]} required.")
+        for fid in sorted(contrib):
+            if fid == str(a["id"]):
+                continue
+            cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,%s,%s)",
+                        (t, a["id"], int(fid), note[:400]))
     imm = sum(moved.values()) // 10
     if imm > 0:
         a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm
@@ -1757,6 +1775,7 @@ def apply_intent(it, ents, cur, t, events):
             have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {}); ct = st["attrs"].setdefault("ctotal", {})
             cap_frac = COLONY_CAP[body]; min_contrib = COLONY_MIN[body]
             aid = str(a["id"]); moved = {}
+            _was_member = aid in contrib          # captured BEFORE the loop adds us — "did somebody NEW just join"
             for r in sorted(need):                       # sorted → replay-stable; SAME greedy cap loop as the station
                 tgt = need[r]; cur_have = int(have.get(r, 0))
                 if cur_have >= tgt:
@@ -1776,7 +1795,8 @@ def apply_intent(it, ents, cur, t, events):
                                     f"You may be at your {cap_frac}% per-resource cap (others must chip in), or hold none of these "
                                     f"(mine them here or haul from Earth/another body).")
             msg = f"funded {moved} to {COLONY_LABEL[body]} · {mods_def[module]['label']}"
-            return "applied", msg + _colony_award(a, st, body, module, moved, mod, ents, cur, t)
+            return "applied", msg + _colony_award(a, st, body, module, moved, mod, ents, cur, t,
+                                                  new_funder=not _was_member)
         if shape == "warpgate":                          # SEASON 6a: the co-op gate. A PAIR of these kills the window wait.
             if _era_now(cur) not in ("space", "expansion", "accord"):
                 return "rejected", "warp gates need the SPACE / EXPANSION era"
