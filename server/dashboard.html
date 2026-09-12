@@ -1175,7 +1175,7 @@ function initBodyScene(hostId,cfg){
   const host=$(hostId); if(!host||host.clientWidth<10)return;
   let S=_bodyScene.cur;
   if(S&&S.body===cfg.body){ S.ren.setSize(host.clientWidth,host.clientHeight); S.cam.aspect=host.clientWidth/host.clientHeight; S.cam.updateProjectionMatrix(); return; }
-  if(S){ try{ host.removeChild(S.ren.domElement); }catch(e){} try{ S.ren.dispose(); }catch(e){} try{ clearInterval(S.poll); }catch(e){} }   // swap out the old body's canvas + stop its structure poll
+  if(S){ try{ S.off&&S.off(); }catch(e){} try{ host.removeChild(S.ren.domElement); }catch(e){} try{ S.ren.dispose(); }catch(e){} try{ clearInterval(S.poll); }catch(e){} }   // swap out the old body's canvas + stop its structure poll
   const ren=new T.WebGLRenderer({antialias:true}); ren.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); ren.setSize(host.clientWidth,host.clientHeight); host.appendChild(ren.domElement);
   const sc=new T.Scene(); sc.background=new T.Color(0x04060e);
   {const N=2200,P=new Float32Array(N*3),C=new Float32Array(N*3);
@@ -1192,18 +1192,49 @@ function initBodyScene(hostId,cfg){
   const moons=(cfg.moons||[]).map(function(m){const mm=new T.MeshLambertMaterial({color:m.tint,emissive:0x060608});
     if(m.tex)new T.TextureLoader().load(m.tex,function(tx){mm.map=tx;mm.color.setHex(0xffffff);mm.needsUpdate=true;},undefined,function(){});
     const mesh=new T.Mesh(new T.SphereGeometry(m.radius,32,24),mm); sc.add(mesh); return {mesh:mesh,dist:m.dist,speed:m.speed,phase:Math.random()*6.28,body:m.body,radius:m.radius};});
-  let yaw=0.7,pitch=0.22,dist=R*3.0,drag=null;
-  function place(){cam.position.set(dist*Math.cos(pitch)*Math.sin(yaw),dist*Math.sin(pitch),dist*Math.cos(pitch)*Math.cos(yaw));cam.lookAt(0,0,0);}
+  // CAMERA — the same controls the Earth view has: drag orbits, ctrl/shift/right/middle-drag PANS, wheel zooms,
+  // one finger orbits and two fingers pinch-zoom + pan. Until now a body view could only orbit a FIXED centre,
+  // so a colony sitting on the far limb could never be brought into the middle of the screen. `dist`/`pitch`/
+  // the pan target are NaN-guarded for the same reason the Earth view guards them: one non-finite value used to
+  // blank the whole canvas and only a reload brought it back.
+  const bfin=(v,d)=>(Number.isFinite(v)?v:d);
+  let yaw=0.7,pitch=0.22,dist=R*3.0,drag=null,panM=false,tx=0,ty=0,tz=0,pd=0,pmx=0,pmy=0;
+  const PANLIM=R*2.5;
+  function clampB(){yaw=bfin(yaw,0.7);pitch=Math.max(-1.35,Math.min(1.35,bfin(pitch,0.22)));
+   dist=Math.max(R*1.2,Math.min(R*9,bfin(dist,R*3)));
+   tx=Math.max(-PANLIM,Math.min(PANLIM,bfin(tx,0)));ty=Math.max(-PANLIM,Math.min(PANLIM,bfin(ty,0)));tz=Math.max(-PANLIM,Math.min(PANLIM,bfin(tz,0)));}
+  function place(){clampB();cam.position.set(tx+dist*Math.cos(pitch)*Math.sin(yaw),ty+dist*Math.sin(pitch),tz+dist*Math.cos(pitch)*Math.cos(yaw));cam.lookAt(tx,ty,tz);}
+  function panB(dx,dy){const sy=Math.sin(yaw),cy=Math.cos(yaw),sp=Math.sin(pitch),cp=Math.cos(pitch),k=dist*0.0016;
+   const rx=cy,rz=-sy,ux=-sy*sp,uy=cp,uz=-cy*sp;                       // camera right + up, same basis as the Earth pan
+   tx+=(-rx*dx+ux*dy)*k;ty+=uy*dy*k;tz+=(-rz*dx+uz*dy)*k;clampB();}
   place();
   const cv=ren.domElement; cv.style.cursor='grab';
-  cv.addEventListener('mousedown',function(e){drag={x:e.clientX,y:e.clientY};});
-  window.addEventListener('mousemove',function(e){if(!drag)return;yaw-=(e.clientX-drag.x)*0.006;pitch=Math.max(-1.35,Math.min(1.35,pitch+(e.clientY-drag.y)*0.006));drag={x:e.clientX,y:e.clientY};place();});
-  window.addEventListener('mouseup',function(){drag=null;});
-  cv.addEventListener('wheel',function(e){e.preventDefault();dist=Math.max(R*1.5,Math.min(R*7,dist*(e.deltaY<0?0.9:1.1)));place();},{passive:false});
-  cv.addEventListener('touchstart',function(e){if(e.touches.length===1)drag={x:e.touches[0].clientX,y:e.touches[0].clientY};},{passive:true});
-  cv.addEventListener('touchmove',function(e){if(e.touches.length===1&&drag){yaw-=(e.touches[0].clientX-drag.x)*0.007;pitch=Math.max(-1.35,Math.min(1.35,pitch+(e.touches[0].clientY-drag.y)*0.007));drag={x:e.touches[0].clientX,y:e.touches[0].clientY};place();}},{passive:true});
-  cv.addEventListener('touchend',function(){drag=null;},{passive:true});
-  S=_bodyScene.cur={body:cfg.body,ren:ren,cam:cam,sc:sc,R:R,bstruct:bstruct,moons:moons,poll:null};
+  cv.addEventListener('mousedown',function(e){drag={x:e.clientX,y:e.clientY};panM=e.ctrlKey||e.shiftKey||e.button===1||e.button===2;});
+  cv.addEventListener('contextmenu',function(e){e.preventDefault();});   // let right-drag pan without popping the menu
+  const onMove=function(e){if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
+   if(panM)panB(dx,dy);else{yaw-=dx*0.006;pitch=Math.max(-1.35,Math.min(1.35,pitch+dy*0.006));}
+   drag={x:e.clientX,y:e.clientY};place();};
+  const onUp=function(){drag=null;panM=false;};
+  window.addEventListener('mousemove',onMove); window.addEventListener('mouseup',onUp);
+  cv.addEventListener('wheel',function(e){try{e.preventDefault();dist=dist*(bfin(e.deltaY,0)<0?0.9:1.1);place();}catch(err){clampB();place();}},{passive:false});
+  cv.addEventListener('touchstart',function(e){
+   if(e.touches.length===1){drag={x:e.touches[0].clientX,y:e.touches[0].clientY};panM=false;}
+   else if(e.touches.length===2){drag=null;pd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    pmx=(e.touches[0].clientX+e.touches[1].clientX)/2;pmy=(e.touches[0].clientY+e.touches[1].clientY)/2;}
+   e.preventDefault();},{passive:false});
+  cv.addEventListener('touchmove',function(e){
+   if(e.touches.length===1&&drag){yaw-=(e.touches[0].clientX-drag.x)*0.007;pitch=Math.max(-1.35,Math.min(1.35,pitch+(e.touches[0].clientY-drag.y)*0.007));drag={x:e.touches[0].clientX,y:e.touches[0].clientY};}
+   else if(e.touches.length===2){const nd=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    dist=dist+(pd-nd)*R*0.01;pd=nd;
+    const nmx=(e.touches[0].clientX+e.touches[1].clientX)/2,nmy=(e.touches[0].clientY+e.touches[1].clientY)/2;panB(nmx-pmx,nmy-pmy);pmx=nmx;pmy=nmy;}
+   place();e.preventDefault();},{passive:false});
+  cv.addEventListener('touchend',function(){drag=null;panM=false;},{passive:true});
+  // Swapping bodies used to leave the previous scene's window listeners attached forever, so every switch added
+  // another pair still driving a discarded camera. They are removable now and torn down on swap (see `off`).
+  const onResize=function(){const w=host.clientWidth,h=host.clientHeight;if(w>10&&h>10){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();}};
+  window.addEventListener('resize',onResize);
+  S=_bodyScene.cur={body:cfg.body,ren:ren,cam:cam,sc:sc,R:R,bstruct:bstruct,moons:moons,poll:null,
+    off:function(){window.removeEventListener('mousemove',onMove);window.removeEventListener('mouseup',onUp);window.removeEventListener('resize',onResize);}};
   fetchBodyStructures(cfg.body);   // draw the colony/rigs/terraform that exist on this body now…
   S.poll=setInterval(function(){ if(_bodyScene.cur!==S){clearInterval(S.poll);return;} if(active==='World'&&_world3dBody===cfg.body)fetchBodyStructures(cfg.body); },6000);   // …and keep them fresh as agents build
   (function loop(){ if(_bodyScene.cur!==S)return; requestAnimationFrame(loop);
