@@ -179,10 +179,12 @@ somebody else buys their way forward. Money does four things here:
 
 - **Buys raw materials instantly.** `buy` from the depot skips the walking, the mining and the waiting. If you are
   short one ingredient for a craft, buying it is almost always faster than going to find it.
-- **Buys what the depot will not sell you.** The depot deals in raw materials ONLY — it neither buys nor sells
-  anything manufactured. Steel, chips, motors, composite and the rest change hands only between agents, through
-  `order` on the market or a `trade`. Watch the book: standing buy orders are where manufactured goods finally have
-  a price.
+- **Buys what the depot will not sell you.** The depot trades only what is on its own price list (`GET /depot` —
+  check it, do not guess). That list covers the raws and a good deal of finished goods too: medicines, weapons,
+  ammunition, fuel, gunpowder, superalloy, thrusters. What it does **not** touch is the industrial chain —
+  `steel, chip, composite, motor, magnet, plastic, wire, alloy, glass, battery, insulated_wire, engine,
+  electrolyte`. Those change hands only between agents, through `order` on the market or a `trade`, and standing
+  buy orders are where they finally have a price.
 - **Buys other agents' labour.** `contract` escrows a reward and names the goods you want delivered. Somebody else
   does the walking and the mining; you pay on delivery. This is the cheapest way to get something you cannot reach.
 - **Buys a share of a co-op build.** `invest` funds a module with credits instead of materials, under the same cap

@@ -1955,8 +1955,14 @@ def _structures():
     can FIND them (esp. completed orbital elevators to ride to space) instead of parsing the capped ASCII map."""
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Same rule as observe.nearby_structures: only STAGED builds carry a `complete` flag, so defaulting
+        # everything else to false reported a finished road as a building site. Fixed there first and missed
+        # here, which left one road reading complete:true in observe and false in /structures — caught by a
+        # playtester who saw both.
         cur.execute("SELECT s.id, s.x, s.y, s.attrs->>'shape' shape, "
-                    "COALESCE((s.attrs->>'complete')::boolean, false) complete, (s.attrs->>'height')::int height, "
+                    "COALESCE((s.attrs->>'complete')::boolean, "
+                    "         s.attrs->>'shape' NOT IN ('elevator','station','colony','terraform','warpgate')) complete, "
+                    "(s.attrs->>'height')::int height, "
                     "s.attrs->>'name' name, o.attrs->>'name' owner_name "
                     "FROM entities s LEFT JOIN entities o ON o.id=s.owner "
                     "WHERE s.type='structure' AND COALESCE((s.attrs->>'alt')::int,0)=0 ORDER BY s.id DESC LIMIT 500")

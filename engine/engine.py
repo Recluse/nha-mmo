@@ -47,6 +47,7 @@ ARMOR_VEHICLE_DIV = 40        # vehicle armor = mass // 40
 MIN_EFF_DMG = 1
 RESPAWN_AGENT_TICKS = 30
 RESPAWN_GRACE = 8             # post-respawn ticks an agent cannot be targeted
+RESPAWN_ANTI_CAMP_R = 12      # respawn never picks an elevator this close to where you fell (anti-spawn-camp)
 # --- death / loot / drop ---
 DEATH_COOLDOWN = RESPAWN_AGENT_TICKS
 LOOT_TTL = 120
@@ -3081,10 +3082,23 @@ def respawn_agents(by_type, cur, t, events):
             mx = int(a["attrs"].get("hp_max", HP_MAX))
             a["attrs"]["hp"] = mx
             a["attrs"]["downed_until"] = 0
-            # Land anywhere on the map, derived only from tick:id → far from the killer's chosen cell,
-            # deterministic for the replay/hash chain. No proximity to death_x/death_y → no spawn-camp.
-            a["x"] = _h(t, a["id"], "rx") % w
-            a["y"] = _h(t, a["id"], "ry") % h
+            # WAKE AT A SPIRE, not in the wilderness. This used to land the agent on a hash-derived cell anywhere
+            # on the 220x220 map. It defeated spawn-camping, and it also exiled you: a playtester died at (30,125),
+            # woke at (163,182) and found the nearest elevator 198 cells away — about 66 moves on foot — which is
+            # where a newcomer's run simply ends. Respawn now picks a COMPLETED ELEVATOR, the same infrastructure
+            # agents spawn beside at registration, skipping any within ANTI_CAMP_R of where you fell so the
+            # anti-camp property survives. Deterministic (id-sorted pool, hash-indexed) → replay-safe. If no
+            # elevator stands yet, fall back to the old scatter.
+            elevs = sorted((e for e in by_type.get("structure", ())
+                            if e["attrs"].get("shape") == "elevator" and e["attrs"].get("complete")),
+                           key=lambda e: e["id"])
+            pool = [e for e in elevs if abs(e["x"] - a["x"]) + abs(e["y"] - a["y"]) > RESPAWN_ANTI_CAMP_R] or elevs
+            if pool:
+                spire = pool[_h(t, a["id"], "rx") % len(pool)]
+                a["x"], a["y"] = spire["x"], spire["y"]
+            else:
+                a["x"] = _h(t, a["id"], "rx") % w
+                a["y"] = _h(t, a["id"], "ry") % h
             a["attrs"]["respawned_at"] = t                # RESPAWN_GRACE untargetability
             att = a["attrs"]
             if (att.get("in_space") or att.get("at_body") or att.get("at_body_orbit") or att.get("transit_to")
