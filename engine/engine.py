@@ -500,6 +500,29 @@ def _invest_colony(a, body, args, ents, cur, t):
                                           new_funder=not _was_member)
 
 
+def award_title(e, name, crown=False):
+    """Grant a title. Titles ACCUMULATE in `attrs.titles`; `attrs.title` stays the one thing clients display.
+
+    They used to be a single slot guarded by `if not attrs.get("title")`, which quietly made one of them
+    unreachable: the warp-gate blueprint is earned by FINISHING a colony, and finishing a colony grants a colony
+    title — so every possible gate builder was already titled and `Gatekeeper` was never awarded to anybody, as
+    the world proved on 2026-09-17 with three gates standing and zero Gatekeepers.
+
+    `crown=True` marks an era-defining award (Solar Architect, a terraform crown) which also takes the display
+    slot; everything else fills the display slot only when it is empty, so nobody's first title is ever taken
+    away from them. The full set is always in `titles`, in the order it was earned.
+    """
+    at = e["attrs"]
+    titles = at.get("titles")
+    if not isinstance(titles, list):                  # migrate the single slot on first touch — no backfill pass
+        titles = [at["title"]] if at.get("title") else []
+    if name not in titles:
+        titles.append(name)
+    at["titles"] = titles
+    if crown or not at.get("title"):
+        at["title"] = name
+
+
 def _colony_award(a, st, body, module, moved, mod, ents, cur, t, new_funder=False):
     """Immediate points + the module/colony completion cascade, after `moved` units have landed in a colony module.
 
@@ -553,8 +576,7 @@ def _colony_award(a, st, body, module, moved, mod, ents, cur, t, new_funder=Fals
                 fe = ents.get(int(fid)); pts = COLONY_FINISH_REWARD * ct[fid] // grand
                 if fe and pts > 0:
                     fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
-                    if not fe["attrs"].get("title"):
-                        fe["attrs"]["title"] = COLONY_TITLE[body]
+                    award_title(fe, COLONY_TITLE[body])
             cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                         (t, a["id"], Json({"colony": body, "complete": True, "architect": order[0] if order else None})))
             extra = " Mars & Venus routes are now cheaper for EVERYONE (−5 Δv per moon base)." if body in ("phobos", "deimos") else ""
@@ -589,7 +611,7 @@ def _check_solar_accord(a, ents, cur, t):
             fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
     arch = ents.get(int(order[0])) if order else None
     if arch:
-        arch["attrs"]["title"] = "Solar Architect"            # the era-defining crown — overrides any prior title
+        award_title(arch, "Solar Architect", crown=True)     # the era-defining crown — takes the display slot
     cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'accord',%s)",
                 (t, a["id"], Json({"solar_accord": True, "architect": order[0] if order else None, "funders": len(tally)})))
     cur.execute("UPDATE world SET era='accord' WHERE id=1")    # CEREMONIAL era flip — expansion verbs stay open (re-gated for 'accord'); world.era is not in state_hash, so replay-safe
@@ -1623,11 +1645,10 @@ def apply_intent(it, ents, cur, t, events):
                     fe = ents.get(int(fid)); pts = STATION_FINISH_REWARD * ct[fid] // grand
                     if fe and pts > 0:
                         fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
-                        if not fe["attrs"].get("title"):
-                            fe["attrs"]["title"] = "Cosmonaut"
+                        award_title(fe, "Cosmonaut")
                 arch = ents.get(int(order[0])) if order else None
-                if arch and not arch["attrs"].get("title"):
-                    arch["attrs"]["title"] = "Station Architect"
+                if arch:
+                    award_title(arch, "Station Architect")
                 cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                             (t, a["id"], Json({"station": True, "complete": True, "architect": order[0] if order else None})))
                 msg += " — 🛰 THE ORBITAL STATION IS COMPLETE!"
@@ -1727,11 +1748,10 @@ def apply_intent(it, ents, cur, t, events):
                         fe = ents.get(int(fid)); pts = STATION_FINISH_REWARD * ct[fid] // grand
                         if fe and pts > 0:
                             fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
-                            if not fe["attrs"].get("title"):
-                                fe["attrs"]["title"] = "Cosmonaut"
+                            award_title(fe, "Cosmonaut")
                     arch = ents.get(int(order[0])) if order else None
-                    if arch and not arch["attrs"].get("title"):
-                        arch["attrs"]["title"] = "Station Architect"    # top funder; preserves any rarer earned title (e.g. a Wonder)
+                    if arch:
+                        award_title(arch, "Station Architect")         # kept in `titles`; the display slot is only filled if empty
                     cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                                 (t, a["id"], Json({"station": True, "complete": True, "architect": order[0] if order else None})))
                     msg += " — 🛰 THE ORBITAL STATION IS COMPLETE! You live among the stars now."
@@ -1863,8 +1883,8 @@ def apply_intent(it, ents, cur, t, events):
                     if fe and pts > 0:
                         fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
                 lead = ents.get(int(order[0])) if order else None
-                if lead and not lead["attrs"].get("title"):
-                    lead["attrs"]["title"] = "Gatekeeper"
+                if lead:
+                    award_title(lead, "Gatekeeper")                    # now actually lands — see award_title
                 cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                             (t, a["id"], Json({"warpgate": place, "complete": True, "funders": len(contrib)})))
                 msg += f" — 🌀 THE {BODY_LABEL[place].upper()} GATE IS OPEN ({len(contrib)} funders)"
@@ -1973,7 +1993,7 @@ def apply_intent(it, ents, cur, t, events):
                         fe = ents.get(int(fid)); pts = TERRAFORM_WIN_REWARD[body] * ct[fid] // grand
                         if fe and pts > 0:
                             fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
-                            fe["attrs"]["title"] = TERRAFORM_TITLE[body]    # the terraform crown overrides a lesser title
+                            award_title(fe, TERRAFORM_TITLE[body], crown=True)   # a terraform crown takes the display slot
                     cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                                 (t, a["id"], Json({"terraform": body, "complete": True, "architect": order[0] if order else None})))
                     msg += f" — 🌍 {BODY_LABEL[body].upper()} IS TERRAFORMED! ({TERRAFORM_TITLE[body]})"
@@ -2087,7 +2107,7 @@ def apply_intent(it, ents, cur, t, events):
             a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + pts
             if first:
                 title = TITLES[kind]
-                a["attrs"]["title"] = title
+                award_title(a, title)
                 cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                             (t, a["id"], Json({"monument": kind, "first": True, "title": title, "points": pts,
                                                "builder_name": a["attrs"].get("name")})))

@@ -1466,7 +1466,7 @@ def _list_agents():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
         cur.execute("""
-            SELECT e.id, e.attrs->>'name' name, e.attrs->>'title' title, e.buffers,
+            SELECT e.id, e.attrs->>'name' name, e.attrs->>'title' title, COALESCE(e.attrs->'titles','[]'::jsonb) titles, e.buffers,
               (e.attrs->>'altitude')::int altitude, (e.attrs->>'in_space')::boolean in_space,
               (e.attrs->>'hp')::int hp, (e.attrs->>'hp_max')::int hp_max,
               (e.attrs->>'kills')::int kills, (e.attrs->>'deaths')::int deaths,
@@ -1842,7 +1842,7 @@ def _roster():
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT tick FROM world WHERE id=1"); t = cur.fetchone()["tick"]
-        cur.execute("""SELECT e.id, e.attrs->>'name' name, e.attrs->>'title' title, (e.attrs->>'inventor_points')::int pts,
+        cur.execute("""SELECT e.id, e.attrs->>'name' name, e.attrs->>'title' title, COALESCE(e.attrs->'titles','[]'::jsonb) titles, (e.attrs->>'inventor_points')::int pts,
                          (e.attrs->>'in_space')::boolean in_space,
                          (EXISTS (SELECT 1 FROM events ev WHERE ev.entity=e.id AND ev.kind <> 'destroyed' AND ev.tick >= %s)
                               OR COALESCE((e.attrs->>'born')::int,-1) >= %s) online
