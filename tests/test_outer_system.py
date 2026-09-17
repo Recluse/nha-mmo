@@ -15,6 +15,7 @@ asserts on the ENGINE'S OWN reply string for each, so a typo in a body key, a mo
 Same isolated-DB infra as the other integration tests; SKIPS when Postgres is unreachable.
 """
 import atexit
+import json
 import os
 import sys
 
@@ -385,3 +386,51 @@ def test_the_seal_never_leaves_the_engine(world):
     assert all(json.dumps(seal[i:i + 2])[1:-1] not in blob for i in range(len(seal) - 1)), "an adjacent PAIR of the seal leaked"
     assert body["your_fragments"] == {}, "a block built for an agent with no fragments handed out symbols"
     assert body["missing_positions"] == list(range(1, eng.VAULT_LEN + 1))
+
+
+@pytest.mark.integration
+def test_a_fragment_is_never_published_to_the_public_event_firehose(world):
+    """/log?agent=<anyone> returns events with their data intact. The first cut of this event carried the symbol
+    AND named it in its text, which published four of the six symbols to the whole world inside a minute of
+    deploying — to agents that had never left Earth. The event may say a stone lit up; it may not say which."""
+    world.ticks(1)
+    idx = world.engine.OBELISK_PLACES.index("mars")
+    aid = world.agent("pilgrim", body="mars")
+    world.ticks(2)
+    world.cur.execute("SELECT attrs->'seal' FROM entities WHERE type='structure' AND attrs->>'shape'='vault'")
+    seal = world.cur.fetchone()[0]
+    world.cur.execute("SELECT data FROM events WHERE entity=%s AND kind='obelisk' ORDER BY id DESC LIMIT 1", (aid,))
+    row = world.cur.fetchone()
+    assert row, "no obelisk event was recorded at all"
+    data = row[0]
+    assert "symbol" not in data, f"the event hands out the symbol: {data}"
+    blob = json.dumps(data)
+    assert seal[idx] not in blob, f"the event text names the symbol: {blob}"
+    assert str(idx + 1) in blob, "the event should still say WHICH position was read"
+
+
+@pytest.mark.integration
+def test_observe_hands_out_fragments_only_to_a_caller_that_proved_it_is_the_agent(world):
+    """/observe/{id} is open by design — spectators read it. That must not make an agent's own symbols public."""
+    import sys
+    import os
+    from psycopg2.extras import RealDictCursor
+    world.ticks(1)
+    aid = world.agent("holder", body="venus")
+    world.ticks(2)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
+    import play
+    rc = world.conn.cursor(cursor_factory=RealDictCursor)
+    rc.execute("SELECT attrs->'vault_frags' f FROM entities WHERE id=%s", (aid,))
+    frags = rc.fetchone()["f"]
+    assert frags, "the fixture agent never got a fragment"
+    me = {"vault_frags": frags, "vault_cd": 0, "_now": 0}
+    mine = play._vault_block(rc, aid, me, True)
+    theirs = play._vault_block(rc, aid, me, False)
+    assert mine["your_fragments"] == {str(int(k) + 1): v for k, v in frags.items()}
+    assert isinstance(theirs["your_fragments"], str), theirs["your_fragments"]
+    # the ALPHABET is public and lists every symbol — what must never appear is a symbol bound to a POSITION
+    without_alphabet = dict(theirs)
+    without_alphabet.pop("alphabet", None)
+    assert not any(v in json.dumps(without_alphabet) for v in frags.values()),         f"the unproven view still ties a symbol to a position: {without_alphabet}"
+    assert theirs["fragments_you_hold"] == len(frags), "hiding the symbols should not hide that they exist"

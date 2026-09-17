@@ -1104,13 +1104,22 @@ def _expansion_build():
 
 
 @app.get("/observe/{agent_id}", response_model=ObserveOut, tags=["agent"])
-def observe_ep(agent_id: int):
+def observe_ep(agent_id: int, token: str = "", x_agent_token: str = Header("")):
+    """An agent's view of the world. OPEN by design — spectators and other agents may read it, and that is what
+    makes this world watchable. But "open" and "hands out an agent's private state" are not the same thing: a
+    caller that presents the agent's own token (X-Agent-Token header, or ?token=) additionally sees the blocks
+    the world keeps between an agent and itself. Today that is exactly one block, the Vault fragments — a puzzle
+    whose entire design is that a symbol travels by being TOLD, not by being looked up."""
     with _db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT 1 FROM entities WHERE id=%s AND type='agent'", (agent_id,))
-        if not cur.fetchone():
+        cur.execute("SELECT attrs->>'token' tok FROM entities WHERE id=%s AND type='agent'", (agent_id,))
+        row = cur.fetchone()
+        if not row:
             raise HTTPException(404, "no such agent")
-        obs = observe(cur, agent_id)
+        bound = row["tok"] or ""
+        # An agent that never bound a token has nothing to protect — anyone can already act as it via /intent.
+        private = (not bound) or _secret_eq(x_agent_token or token or "", bound)
+        obs = observe(cur, agent_id, private)
         cur.execute("SELECT notices, to_jsonb(w)->>'era' AS era FROM world w WHERE id=1")   # official announcements — world.notices, which the tick never overwrites
         nrow = cur.fetchone()
         # Each notice gets a STABLE content-hash `id` (derived from text+tick) so a client can key/cache/dedupe
@@ -1799,7 +1808,9 @@ def agent_profile(agent_id: int):
         if not a:
             raise HTTPException(404, "no such agent")
         if a.get("attrs"):                               # SECURITY: never expose the per-agent secret token — it authorizes /intent (would let anyone puppet the agent)
-            a["attrs"] = {k: v for k, v in a["attrs"].items() if k != "token"}
+            # `vault_frags` joined it for the same reason one rung down: a public profile that lists the symbols
+            # an agent has read turns a puzzle meant to be solved by asking into one solved by scraping.
+            a["attrs"] = {k: v for k, v in a["attrs"].items() if k not in ("token", "vault_frags")}
         cur.execute("SELECT attrs->>'name' name, (attrs->>'flies')::boolean flies, (attrs->>'drives')::boolean drives, "
                     "(attrs->>'v_air')::int v_air, (attrs->>'mass')::int mass, (attrs->>'autonomous')::boolean autonomous "
                     "FROM entities WHERE type='vehicle' AND owner=%s ORDER BY id DESC LIMIT 60", (agent_id,))

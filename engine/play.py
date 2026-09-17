@@ -204,7 +204,7 @@ def _needs_you(cur, agent_id, inv=None):
             "how": "; ".join(how) or "nothing left to add"}
 
 
-def _vault_block(cur, agent_id, me_attrs):
+def _vault_block(cur, agent_id, me_attrs, private=True):
     """SEASON 7d — the Vault, as the agent sees it. NEVER the seal.
 
     This is the one mechanic in the world whose intended solution is a conversation, so the block is built to
@@ -223,7 +223,7 @@ def _vault_block(cur, agent_id, me_attrs):
                 "WHERE type='structure' AND attrs->>'shape'='obelisk' ORDER BY (attrs->>'index')::int")
     obs = [{"place": r["place"], "position": (r["idx"] or 0) + 1} for r in cur.fetchall()]
     mine = {}
-    for k, v in (me_attrs.get("vault_frags") or {}).items():
+    for k, v in ((me_attrs.get("vault_frags") or {}) if private else {}).items():
         try:
             mine[int(k) + 1] = v
         except (TypeError, ValueError):
@@ -241,6 +241,7 @@ def _vault_block(cur, agent_id, me_attrs):
             if pos in mine or r["id"] == agent_id:
                 continue
             readers.setdefault(pos, []).append(r["name"] or ("#%d" % r["id"]))
+    held_n = len(me_attrs.get("vault_frags") or {})
     missing = [i for i in range(1, VAULT_LEN + 1) if i not in mine]
     place_of = {o["position"]: o["place"] for o in obs}
     return {
@@ -248,7 +249,10 @@ def _vault_block(cur, agent_id, me_attrs):
         "where": VAULT_BODY,
         "symbols_in_seal": VAULT_LEN,
         "alphabet": list(VAULT_SYMBOLS),
-        "your_fragments": {str(k): mine[k] for k in sorted(mine)},
+        "your_fragments": ({str(k): mine[k] for k in sorted(mine)} if private else "hidden: call "
+                           "/observe with your agent token (header X-Agent-Token, or ?token=) to see your own "
+                           "symbols — anyone may read this endpoint, so it does not hand them out unproven"),
+        "fragments_you_hold": held_n,
         "missing_positions": missing,
         "obelisks": obs,
         "ask_these_agents": {str(pos): sorted(set(readers.get(pos, [])))[:8] for pos in missing},
@@ -304,7 +308,10 @@ _OBSERVATORY_VISION_BONUS = 4   # an `observatory` doubles as a watchtower — a
 _FORECAST_HORIZON = 30            # ticks of storm track an observatory reveals
 
 
-def observe(cur, agent_id):
+def observe(cur, agent_id, private=True):
+    # `private` is False when the caller could NOT prove it is this agent (see /observe in server/app.py).
+    # Everything in an observe is public except what the world means to keep between an agent and itself —
+    # today that is the Vault fragments, which are the whole substance of a puzzle built on telling people things.
     """The agent's curated view of the world."""
     cur.execute("SELECT tick, to_jsonb(w)->>'era' era FROM world w WHERE id=1")
     wr = cur.fetchone(); now = (wr["tick"] if wr else 0) or 0; era = (wr["era"] if wr else None) or "architect"
@@ -563,7 +570,8 @@ def observe(cur, agent_id):
             "windows": windows,
             "return_dv": (DV_RETURN.get(at_orbit or at_body) if (at_orbit or at_body) else None),
             "gates": _warp_block(cur, at_orbit or at_body or "earth"),
-            "vault": _vault_block(cur, agent_id, {"vault_frags": me["vault_frags"], "vault_cd": me["vault_cd"], "_now": now}),   # SEASON 7d — the door that only a conversation opens
+            "vault": _vault_block(cur, agent_id, {"vault_frags": me["vault_frags"], "vault_cd": me["vault_cd"],
+                                                  "_now": now}, private),   # SEASON 7d — the door that only a conversation opens
             "needs_you": _needs_you(cur, agent_id, inv),   # the board YOU can move right now, what YOU can put in, and who to tell
             "preflight": _preflight(inv, vehicles, altitude, in_space),   # can I actually fly yet, and what is missing
             "producers": producers,

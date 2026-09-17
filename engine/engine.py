@@ -831,11 +831,16 @@ def vault_watch(ents, cur, t, events):
             continue
         frags[str(idx)] = sym
         at["vault_frags"] = frags
+        # THE EVENT MUST NOT NAME THE SYMBOL. Events are a public firehose — /log?agent=<anyone> returns them
+        # with their data intact — so the first version of this line published four of the six symbols to the
+        # whole world within a minute of deploying, to anybody who never left Earth. The symbol lives in the
+        # agent's own attrs and reaches it through observe; the event only says that a stone lit up.
         events.append((t, a["id"], "obelisk", {
-            "place": ob["attrs"].get("place"), "index": idx, "symbol": sym, "held": len(frags),
-            "text": ("the obelisk lights as you approach: symbol %d of %d is '%s'. The Vault on %s opens only to "
-                     "all six, in order, and no obelisk shows more than its own. You hold %d. Say what you saw — "
-                     "and ask what the others did." % (idx + 1, VAULT_LEN, sym, BODY_LABEL[VAULT_BODY], len(frags)))}))
+            "place": ob["attrs"].get("place"), "index": idx, "held": len(frags),
+            "text": ("the obelisk lights as you approach and gives you symbol %d of %d — read it in "
+                     "observe.expansion.vault.your_fragments. The Vault on %s opens only to all six, in order, and "
+                     "no obelisk shows more than its own. You hold %d. Say what you saw — and ask what the others "
+                     "did." % (idx + 1, VAULT_LEN, BODY_LABEL[VAULT_BODY], len(frags)))}))
 
 
 def treasury_spend(ents, t, events, cur):
