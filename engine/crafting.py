@@ -47,6 +47,16 @@ PROPS = {
     "perchlorate":    {"oxidizer": 8, "corrosive": 1, "oxygen_store": 1},        # Mars perchlorate — O2 store / solid-booster oxidiser (NB: no 'toxic' tag — that feeds the antidote medicine recipe; 'corrosive' is inert to every recipe)
     "nanohematite":   {"warming": 1, "iron_ox": 1, "dusty": 1},                 # Mars 'rustfall' — terraform warming agent (dust-storm harvest only)
     "cloud_acid":     {"acid_former": 9, "reactive": 7, "solvent": 3},          # Venus H2SO4 droplets — water + acid_skin feedstock
+    # --- SEASON 8: the outer system's raws ---------------------------------------------------------------
+    "methane":        {"flammable": 9, "energy": 8, "gas": 1, "carbon": 4},     # Titan's lakes — the methalox feedstock, and the reason to go
+    "tholin":         {"tarry": 9, "reactive": 5, "carbon": 6},                 # Titan's orange haze. NOT tagged `organic`: the
+    # season-3 invariant test caught that doing so let tholin + any solvent resolve to `extract`, quietly making
+    # Titan haze a shortcut into the whole medicine chain and devaluing the herb branch it was meant to extend.
+    # If tholin should feed medicine it wants a DESIGNED tier of its own, not an accidental one.
+    "cryo_brine":     {"coolant": 9, "solvent": 6, "frozen": 1, "salty": 4},    # Enceladus geysers — life support + coolant
+    "clean_ice":      {"coolant": 8, "solvent": 9, "frozen": 1},                # Enceladus — purer than anything on Mars
+    "nitrogen_ice":   {"coolant": 9, "frozen": 1, "inert": 8, "gas": 1},        # Triton — frozen atmosphere
+    "neon":           {"inert": 9, "gas": 1, "light": 7, "refraction": 6},      # Triton — rare industrial noble gas
     "nitrogen":       {"gas": 1, "buffer": 1, "inert": 1},                      # Venus buffer gas / fertiliser
     "co2":            {"carbon_ox": 5, "gas": 1},                               # Mars/Venus atmosphere — graphite / o2 feedstock
 }
@@ -89,6 +99,7 @@ ITEM_PROPS = {
     "heat_shield":   {"ablative": 1, "hardness": 9, "shaped": 1, "sheds_heat": 1},    # EXPANSION EDL — ablative re-entry shield (consumed at Mars/Venus arrival)
     "acid_skin":     {"acid_proof": 1, "insulator": 6, "shielding": 1},               # EXPANSION — H2SO4-proof hull coat (consumed at Venus arrival)
     "warp_container": {"stasis": 1, "shielding": 1, "hollow": 1, "hardness": 9},      # SEASON 6b — single-use crate: the ONLY way exotic body cargo crosses a warp gate (consumed on transit)
+    "thermal_core":   {"insulator": 9, "power": 1, "shielding": 1, "warm": 1},        # SEASON 8 — keeps an agent alive at outer-system temperatures (required in hold for Enceladus/Titan/Triton)
     "graphite":      {"carbon": 9, "hardness": 4, "conductivity": 4, "shaped": 1},    # EXPANSION — co2 reduced with heat → structural carbon "from thin air" (feeds composite; Venus/Mars colony material)
     "o2":            {"breathable": 1, "oxygen": 1, "gas": 1},                         # EXPANSION P3 — perchlorate scrubbed / co2 split → breathable oxygen (terraform biosphere)
     "mars_brick":    {"hardness": 6, "shaped": 1, "shield": 1, "sintered": 1},         # EXPANSION P3 — sintered Mars regolith → dome shell + radiation shield
@@ -146,6 +157,7 @@ RULE_NOTE = {
     "heat_shield": "a superalloy (heat-proof) + a composite (shaped, hard) — an ablative re-entry shield for Mars/Venus arrival",
     "acid_skin": "acid + rubber — an H₂SO₄-proof hull coat for the Venus cloud deck",
     "warp_container": "a superalloy (heat-proof) + a chip (logic) + an acid_skin (acid-proof seal) — a single-use stasis crate; the only way exotic body cargo crosses a warp gate",
+    "thermal_core": "a battery + mars_ice + a NON-magnetic metal (titanium/aluminum/copper — iron resolves to a motor first) — survives the outer-system cold; required in hold for Enceladus, Titan and Triton",
     "graphite": "co2 (mined at Mars/Venus) reduced with a fuel (heat) — structural carbon from thin air; feeds composite + colony builds",
     "o2": "perchlorate (Mars) scrubbed with water or heat — breathable oxygen for terraforming",
     "mars_brick": "mars_regolith sintered with a fuel (heat) — dome shell + radiation shield",
@@ -208,6 +220,18 @@ RULES = [
     # `insulator` and was far too broad: eight items carry it, and the audit caught that {superalloy, chip,
     # crystal} (a lens) and {superalloy, chip, plastic} (a casing) had both been silently retargeted to this
     # crate. ABOVE heat_shield is still right — both start from a superalloy and `logic` separates them.
+    # SEASON 8 — the outer cold. Pinned on `deuteric` (ONLY mars_ice has it) AND on carrying a metal, which makes
+    # it DISJOINT from `hydrogen` rather than merely higher in the table: hydrogen requires n_metals == 0, so the
+    # two can never match the same mixture and the ordering stops mattering. Arrived at by diffing all 88,560 two-
+    # and three-item mixes against the previous ruleset: the first cut silently stole 48 recipes and the second 24,
+    # both from `hydrogen`. This one steals 14, and they are accepted ON PURPOSE rather than hidden: every one is
+    # {battery + a metal + mars_ice}, which used to resolve to engine/wire/bearing — all of which an agent can
+    # make more cheaply WITHOUT hauling ice from Mars, so nobody was deliberately using that mixture for them.
+    # A fourth variant adding `insulator` was tried and rejected: it did not reach this rule at all (the mixture
+    # resolved to energy_cell first), i.e. it would have shipped the feature unreachable, which is a worse bug
+    # than a rare retarget. It also sets the progression — the outer system is gated behind a working Mars supply
+    # line, which the world already has.
+    ("thermal_core",  lambda a: a["has"]("stores_power") and a["has"]("deuteric") and a["n_metals"] >= 1),  # battery + mars_ice + a metal → survives 90 K
     ("warp_container", lambda a: a["has"]("heat_proof") and a["has"]("logic") and a["has"]("acid_proof")),  # superalloy + chip + acid_skin → a sealed stasis crate for gate cargo
     ("heat_shield",   lambda a: a["has"]("heat_proof") and a["has"]("shaped") and a["mx"]("hardness") >= 8),  # superalloy(heat_proof) + composite(shaped,hard) → an ablative EDL shield (Mars/Venus entry)
     ("acid_skin",     lambda a: a["has"]("acid_former") and a["has"]("grip") and a["has"]("elastic")),  # acid + rubber(grip/elastic) → an H2SO4-proof hull coat (Venus cloud deck)

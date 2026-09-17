@@ -164,14 +164,19 @@ STATION_MODULES = {                # insertion order is fixed → deterministic 
 # DORMANT unless (a) the world era is 'space'/'expansion' AND (b) an agent actively `depart`s — so it is a
 # byte-for-byte no-op under the Season-3 determinism seed (which never flips the era nor builds a ship).
 # Three non-aligned reach gates: fuel Δv (moons<Mars<Venus), transit TIME, and terminal-maneuver SPEED (TWR).
-EXPANSION_BODIES = ("deimos", "phobos", "mars", "venus")   # ordered cheapest→hardest by Δv
-DV_NEED   = {"deimos": 50, "phobos": 55, "mars": 100, "venus": 130}   # km/s×10 — arrival + egress reserve
-DV_RETURN = {"deimos": 45, "phobos": 50, "mars": 95, "venus": 130, "earth": 0}   # body→Earth (return leg)
+EXPANSION_BODIES = ("deimos", "phobos", "mars", "venus", "enceladus", "titan", "triton")   # ordered cheapest→hardest by Δv
+# SEASON 8 — THE OUTER SYSTEM. Saturn and Neptune have no surface, so the BODIES are their moons and the giant
+# is the sky above them: every existing mechanism (transit, landing, colonies, ISRU, gates) works unchanged on
+# a body that has ground. The distances are a step change, not an increment — a 1400-tick Triton window is what
+# finally makes a warp gate load-bearing instead of a luxury. Titan is the spine: it yields METHANE, methalox is
+# already a top-tier fuel here, so the far frontier returns FUEL and pays for its own expansion.
+DV_NEED   = {"deimos": 50, "phobos": 55, "mars": 100, "venus": 130, "enceladus": 190, "titan": 220, "triton": 320}   # km/s×10 — arrival + egress reserve
+DV_RETURN = {"deimos": 45, "phobos": 50, "mars": 95, "venus": 130, "enceladus": 185, "titan": 210, "triton": 310, "earth": 0}   # body→Earth (return leg)
 # R1 (critic fix): the moons ride the SAME Mars Hohmann transfer, so they must be as FAR IN TIME as Mars — not
 # cheaper on every axis. Original 78/80 Pareto-dominated Mars (cheaper fuel AND faster); ≥90 restores the
 # intended "moons = cheap-fuel / long-haul" identity and is more physically faithful.
-TRANSIT_TICKS = {"deimos": 90, "phobos": 92, "mars": 90, "venus": 40, "earth": 60}   # Venus fastest arrival
-TWR_DEPART = {"deimos": 0.5, "phobos": 0.5, "mars": 0.7, "venus": 0.9, "earth": 0.5}  # terminal-maneuver authority
+TRANSIT_TICKS = {"deimos": 90, "phobos": 92, "mars": 90, "venus": 40, "enceladus": 170, "titan": 180, "triton": 260, "earth": 60}   # Venus fastest arrival
+TWR_DEPART = {"deimos": 0.5, "phobos": 0.5, "mars": 0.7, "venus": 0.9, "enceladus": 0.4, "titan": 0.8, "triton": 0.4, "earth": 0.5}  # terminal-maneuver authority
 FUEL_MASS = 5                                              # each loaded fuel unit adds this to wet mass (the rocket-equation tax, no ln)
 FUEL_VE   = {"helium3": 500, "methalox": 300, "cryo_fuel": 300, "oil": 100, "coal": 100, "wood": 100, "carbon": 100}
 ENGINE_EFF = {"ion": 3, "jet": 2, "prop": 1}              # ion_thruster ship > jet-flyer > plain
@@ -179,12 +184,17 @@ CORRECTION_EVERY = 20                                     # one course-correctio
 ADRIFT_ABORT_TICKS = 60                                   # adrift this long → auto-abort (return to origin + damage)
 ADRIFT_DMG = 25
 RESCUE_DMG = 20                                           # EXPANSION L2 strand-recovery: a `distress` emergency recall costs this much HP (always survivable — floored at 1 HP; a rescue never kills)
-SYNODIC = {"deimos": 780, "phobos": 780, "mars": 780, "venus": 584, "earth": 1}   # launch-window period (earth=always open on return)
+SYNODIC = {"deimos": 780, "phobos": 780, "mars": 780, "venus": 584, "enceladus": 1100, "titan": 1100, "triton": 1400, "earth": 1}   # launch-window period (earth=always open on return)
 WINDOW_OPEN = 120                                         # window is open while (t % SYNODIC[dest]) < WINDOW_OPEN  (~15–20% duty)
 # Protective items HELD in inventory, consumed 1 each at ARRIVAL (moons need only landing-gear on the SHIP, checked
 # at depart, never consumed — gear is reusable). Mars needs a heat_shield (EDL); Venus a heat_shield + acid_skin.
-BODY_ITEMS = {"deimos": (), "phobos": (), "mars": ("heat_shield",), "venus": ("heat_shield", "acid_skin")}
-BODY_LABEL = {"deimos": "Deimos", "phobos": "Phobos", "mars": "Mars", "venus": "Venus", "earth": "Earth"}
+BODY_ITEMS = {"deimos": (), "phobos": (), "mars": ("heat_shield",), "venus": ("heat_shield", "acid_skin"),
+              # The outer cold kills on arrival without a thermal_core. Titan also needs a heat_shield: its
+              # atmosphere is thick enough for a real entry burn, which is exactly why it is the one outer
+              # body you can land a loaded ship on.
+              "enceladus": ("thermal_core",), "titan": ("thermal_core", "heat_shield"), "triton": ("thermal_core",)}
+BODY_LABEL = {"deimos": "Deimos", "phobos": "Phobos", "mars": "Mars", "venus": "Venus", "earth": "Earth",
+              "enceladus": "Enceladus", "titan": "Titan", "triton": "Triton"}
 
 
 def _era_now(cur):
@@ -264,11 +274,17 @@ BODY_MINE = {
     "deimos": [("c_regolith", 2), ("void_pumice", 1)],
     "mars":   [("mars_regolith", 2), ("perchlorate", 1), ("mars_ice", 1)],
     "venus":  [("cloud_acid", 2), ("nitrogen", 1), ("co2", 2)],
+    # SEASON 8. Titan's methane is the point of the whole outer system — it feeds methalox, already a top-tier
+    # fuel, so a Titan supply line makes every other route cheaper instead of just being further away.
+    "enceladus": [("cryo_brine", 2), ("clean_ice", 2)],
+    "titan":     [("methane", 2), ("tholin", 1)],
+    "triton":    [("nitrogen_ice", 2), ("neon", 1)],
 }
 MARS_STORM_PERIOD = 5400          # a planet-encircling dust storm every N ticks…
 MARS_STORM_OPEN = 400             # …lasting this long — the ONLY window nanohematite (terraform warming agent) drops
 EXPANSION_CARGO = ("c_regolith", "stickney_glass", "void_pumice", "mars_regolith", "perchlorate",
-                   "mars_ice", "nanohematite", "cloud_acid")   # exotic body-only haul — jettisoned when an agent triggers a `distress` recall (you bail empty-handed)
+                   "mars_ice", "nanohematite", "cloud_acid",
+                   "cryo_brine", "clean_ice", "methane", "tholin", "nitrogen_ice", "neon")   # exotic body-only haul — jettisoned when an agent triggers a `distress` recall (you bail empty-handed)
 
 # Per-body co-op COLONY boards — the station funding engine (cap-fraction / distinct-funder / split-reward), cloned and
 # keyed on `body`. Moons use the loosest floor (2 funders) as the entry rung; Mars/Venus match the station (40%/3).

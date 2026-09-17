@@ -174,3 +174,42 @@ def test_observe_helpers_run_on_empty_input():
     assert pf["has_interplanetary_ship"] is False
     assert pf["destinations"]["mars"]["ready"] is False
     assert any("ion_thruster" in b for b in pf["destinations"]["mars"]["blockers"])
+
+
+# --- crafting rules are ORDERED: a new one can silently steal an old mixture -----------------------------------
+# The 2026-09-12 audit caught `warp_container` retargeting {superalloy,chip,crystal} (a lens) and
+# {superalloy,chip,plastic} (a casing) — shipped, unnoticed, because nothing compares rulesets. This pins the
+# handful of everyday recipes whose meaning must never move; a new rule that captures one fails here instead of
+# in an agent's inventory. It is not a substitute for diffing a ruleset change against the previous one, which is
+# what actually found the 48-recipe collision in the Season-8 thermal_core.
+def test_everyday_recipes_keep_their_meaning():
+    import sys, os, itertools
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
+    import crafting as C
+
+    def resolve(ings):
+        props = {k: {**C.PROPS.get(k, {}), **C.ITEM_PROPS.get(k, {})} for k in ings}
+        has = lambda t: any(t in p for p in props.values())
+        mx = lambda t: max([p.get(t, 0) for p in props.values()] or [0])
+        a = {"has": has, "mx": mx, "ings": list(ings),
+             "n_metals": sum(1 for p in props.values() if p.get("metal")),
+             "heat": has("energy") or has("flammable"), "electrolyte": has("electrolyte")}
+        for key, pred in C.RULES:
+            try:
+                if pred(a):
+                    return key
+            except Exception:
+                pass
+        return None
+
+    PINNED = {
+        ("silicon", "copper"): "chip",
+        ("herb", "water"): "extract",
+        ("water", "motor"): "hydrogen",
+        ("superalloy", "chip", "crystal"): "lens",
+        ("superalloy", "composite"): "heat_shield",
+        ("superalloy", "chip", "acid_skin"): "warp_container",
+        ("battery", "mars_ice", "titanium"): "thermal_core",
+    }
+    wrong = {mix: (want, resolve(mix)) for mix, want in PINNED.items() if resolve(mix) != want}
+    assert not wrong, f"a crafting rule changed what these mixtures make: {wrong}"
