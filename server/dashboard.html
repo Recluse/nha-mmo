@@ -1350,10 +1350,16 @@ function paintBodyStructures(S,col,tf,moonCols){
       sit(tree,d,1.02,1);
     }
     const flock=Math.max(0,Math.min(12,col.geese|0));
-    for(let i=0;i<flock;i++){                                      // and the geese — the proof the biosphere took
-      const d=dir(11.7+i*2.3), goose=new T.Mesh(new T.SphereGeometry(R*0.016,7,5),
-        new T.MeshLambertMaterial({color:0xf2f2ee,emissive:0x2a2a26}));
-      sit(goose,d,1.035,1);
+    // A GAGGLE, not four white pixels scattered over a hemisphere. They gather near the label (small steps along
+    // the same golden-angle sequence keep them close but not stacked) and each one is a body + a dark head, so at
+    // this zoom you can actually tell a goose from a speck of dust.
+    for(let i=0;i<flock;i++){
+      const d=dir(11.7+i*0.11), goose=new T.Group();
+      const body=new T.Mesh(new T.SphereGeometry(R*0.030,9,7),new T.MeshLambertMaterial({color:0xf4f4f0,emissive:0x2e2e2a}));
+      body.scale.set(1,0.8,1.35); goose.add(body);
+      const head=new T.Mesh(new T.SphereGeometry(R*0.014,7,6),new T.MeshLambertMaterial({color:0x23282c,emissive:0x0b0d0f}));
+      head.position.set(0,R*0.034,R*0.030); goose.add(head);
+      sit(goose,d,1.030,1);
     }
     if(flock){ const gl=_bodyLabel('\u{1F9A2} '+flock+' geese','#eaf7ea'); gl.position.copy(dir(11.7)).multiplyScalar(R+2.2); g.add(gl); }
   } else if(S.planet&&S.baseTint){
