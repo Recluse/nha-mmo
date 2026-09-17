@@ -1220,9 +1220,12 @@ function setWorld3D(body){
 function _buildFocusChips(sys){
   const F=$('bodyfocus'); if(!F)return;
   if(!sys){ F.style.display='none'; F.innerHTML=''; return; }
+  // Re-entering the World tab rebuilt these chips with the giant marked active while initBodyScene kept the scene
+  // (and its focused moon) alive — so the chip bar and the ?focus= permalink both reported the wrong world (audit).
+  const S=_bodyScene.cur, cur=(S&&S.body===sys.body&&S.focusKey)?S.focusKey:'';
   F.style.display='flex';
-  F.innerHTML='<span class="wchip on" data-focus="" onclick="focusBody(\'\')">&#129704; '+sys.label+'</span>'
-    + sys.worlds.map(function(w){return '<span class=wchip data-focus="'+w.body+'" onclick="focusBody(\''+w.body+'\')">&#9898; '+w.label+'</span>';}).join('');
+  F.innerHTML='<span class="wchip'+(cur?'':' on')+'" data-focus="" onclick="focusBody(\'\')">&#129704; '+sys.label+'</span>'
+    + sys.worlds.map(function(w){return '<span class="wchip'+(cur===w.body?' on':'')+'" data-focus="'+w.body+'" onclick="focusBody(\''+w.body+'\')">&#9898; '+w.label+'</span>';}).join('');
 }
 function focusBody(key){
   const S=_bodyScene.cur; if(!S||!S.setFocus)return;
@@ -1246,9 +1249,12 @@ function initBodyScene(hostId,cfg){
   const sun=new T.DirectionalLight(0xfff2d8,cfg.system?0.82:1.15); sun.position.set(70,40,90); sc.add(sun);
   const cam=new T.PerspectiveCamera(50,host.clientWidth/host.clientHeight,0.1,4000);
   const R=cfg.radius, pm=new T.MeshLambertMaterial({color:cfg.tint,emissive:0x0a0a0c});
-  new T.TextureLoader().load(cfg.tex,function(tx){pm.map=tx;pm.color.setHex(0xffffff);pm.needsUpdate=true;},undefined,function(){});
   const planet=new T.Mesh(new T.SphereGeometry(R,64,48),pm); sc.add(planet);
-  const baseTint=pm.color.clone();     // kept so a terraform tint is re-applied from the original and never compounds
+  let baseTint=pm.color.clone();       // kept so a terraform tint is re-applied from the original and never compounds
+  // …and RE-taken when the texture lands. It was snapshotted before the async load, so on a terraformed world the
+  // six-second refresh multiplied the real Mars map by the fallback rust tint instead of by white (audit).
+  new T.TextureLoader().load(cfg.tex,function(tx){pm.map=tx;pm.color.setHex(0xffffff);pm.needsUpdate=true;
+    baseTint=pm.color.clone(); if(_bodyScene.cur&&_bodyScene.cur.planet===planet)_bodyScene.cur.baseTint=baseTint;},undefined,function(){});
   const bstruct=new T.Group(); planet.add(bstruct);   // EXPANSION: colony base + ISRU rigs ride the surface (rotate with the planet); populated by fetchBodyStructures
   const moons=(cfg.moons||[]).map(function(m){const mm=new T.MeshLambertMaterial({color:m.tint,emissive:0x060608});
     if(m.tex)new T.TextureLoader().load(m.tex,function(tx){mm.map=tx;mm.color.setHex(0xffffff);mm.needsUpdate=true;},undefined,function(){});
@@ -1315,7 +1321,9 @@ function initBodyScene(hostId,cfg){
    const c=focus?focus.mesh.position:null, cx=c?c.x:0, cy=c?c.y:0, cz=c?c.z:0;
    cam.position.set(cx+tx+dist*Math.cos(pitch)*Math.sin(yaw),cy+ty+dist*Math.sin(pitch),cz+tz+dist*Math.cos(pitch)*Math.cos(yaw));
    cam.lookAt(cx+tx,cy+ty,cz+tz);}
-  function setFocus(w){focus=w||null;focR=focus?focus.R:R;dist=focus?focR*3.4:WIDE;tx=ty=tz=0;pitch=0.22;place();}
+  function setFocus(w){focus=w||null;focR=focus?focus.R:R;dist=focus?focR*3.4:WIDE;tx=ty=tz=0;pitch=0.22;
+   if(_bodyScene.cur)_bodyScene.cur.focusKey=focus?focus.body:'';   // so the chips and ?focus= survive a tab re-entry
+   place();}
   function panB(dx,dy){const sy=Math.sin(yaw),cy=Math.cos(yaw),sp=Math.sin(pitch),cp=Math.cos(pitch),k=dist*0.0016;
    const rx=cy,rz=-sy,ux=-sy*sp,uy=cp,uz=-cy*sp;                       // camera right + up, same basis as the Earth pan
    tx+=(-rx*dx+ux*dy)*k;ty+=uy*dy*k;tz+=(-rz*dx+uz*dy)*k;clampB();}
@@ -1507,6 +1515,14 @@ function _colonyModel(done,md){   // the base: a central hab tower ringed by pre
 }
 function paintBodyStructures(S,col,tf,moonCols,vault){
   const T=window.THREE,R=S.R,g=S.bstruct; if(!g)return;
+  // DISPOSE, don't just detach. This group is rebuilt every 6 seconds and now holds a colony, rigs, lakes, trees,
+  // geese, an atmosphere shell, obelisks and the Vault — remove() alone leaks every one of their buffers and
+  // materials to the GPU for as long as the tab is open (audit).
+  (function free(o){ if(!o)return;
+    (o.children||[]).forEach(free);
+    if(o.geometry&&o.geometry.dispose)o.geometry.dispose();
+    const m=o.material; if(m){ (Array.isArray(m)?m:[m]).forEach(function(x){ if(x.map&&x.map.dispose)x.map.dispose(); if(x.dispose)x.dispose(); }); }
+  })(g);
   while(g.children.length)g.remove(g.children[0]);   // rebuild from scratch each refresh
   (S.moons||[]).forEach(function(mn){   // Forward Bases on Phobos/Deimos — a small gold module + beacon on the moon
     if(mn.baseMarker){ mn.mesh.remove(mn.baseMarker); mn.baseMarker=null; }
@@ -1996,8 +2012,11 @@ void main(){
    if(s.shape=='monument'){strG.add(makeMonument(s));return;}          // terrain megastructure spanning a w x h footprint
    if(s.shape=='station'){strG.add(makeStation(s));return;}            // SPACE ERA: the co-op orbital station, high in orbit
    if(s.shape=='warpgate'){strG.add(makeWarpGate(s));return;}          // SEASON 6: the warp gate — a ring you can actually see the far side through
-   if(s.shape=='obelisk'){const o=_obeliskModel(),q=P(s.x,s.y);o.scale.setScalar(2.2);o.position.set(q[0],q[1],q[2]);
-    const ol=label('\u25AE Obelisk',2.4); ol.position.y=4.6; o.add(ol); strG.add(o); return;}   // SEASON 7d: one of the six — stand here and it gives you a symbol
+   // SEASON 7d: only the EARTH obelisk belongs in this scene. /scene does not filter by altitude, so the five
+   // body obelisks (alt 600, parked at the world centre) were all drawn stacked on the terrain at (110,110).
+   if(s.shape=='obelisk'){ if((s.alt||0)>0) return;
+    const o=_obeliskModel(),q=P(s.x,s.y);o.scale.setScalar(2.2);o.position.set(q[0],q[1],q[2]);
+    const ol=label('\u25AE Obelisk',2.4); ol.position.y=4.6; o.add(ol); strG.add(o); return;}
    const p=P(s.x,s.y),sz=Math.max(0.8,(s.size||2)*0.6);let geo,vh;
    if(s.shape=='elevator'){vh=Math.max(1,(s.height||20)/9);geo=new T.CylinderGeometry(0.6,0.95,vh,8);}
    else{vh=Math.max(0.8,Math.min(16,(s.height||3)/4));

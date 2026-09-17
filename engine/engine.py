@@ -292,7 +292,11 @@ EXPANSION_CARGO = ("c_regolith", "stickney_glass", "void_pumice", "mars_regolith
 # Triton window opens every 1400 ticks, so demanding Mars' 3 distinct funders out there would be a board nobody
 # could ever close. Enceladus and Triton take the moons' 2-funder entry rung; Titan, the one that pays (methane
 # into methalox), is worth a real joint effort at 3.
-COLONY_CAP = {"phobos": 60, "deimos": 60, "mars": 40, "venus": 40, "enceladus": 60, "titan": 50, "triton": 60}   # ceil-% one funder may cover per resource line
+# AUDIT 2026-09-17: titan was 50/3 — and 50% x 2 funders fills a line EXACTLY, after which a third can never
+# give anything, `len(contrib)` stops at 2 and the module is fully funded and permanently incomplete. CAP and MIN
+# must be MATCHED (ceil(100/cap) == min) so that MIN funders are both necessary and sufficient, which is what the
+# TERRAFORM_CAP comment already says and what the guard test now checks in both directions.
+COLONY_CAP = {"phobos": 60, "deimos": 60, "mars": 40, "venus": 40, "enceladus": 60, "titan": 40, "triton": 60}   # ceil-% one funder may cover per resource line
 COLONY_MIN = {"phobos": 2, "deimos": 2, "mars": 3, "venus": 3, "enceladus": 2, "titan": 3, "triton": 2}          # distinct funders a module needs before it completes
 COLONY_MODULE_REWARD = 180
 COLONY_FINISH_REWARD = 1600
@@ -727,13 +731,21 @@ def settle_geese(ents, cur, t, events):
     living world is short of geese, the missing ones walk in. Deterministic, no RNG, safe to replay.
     """
     w, h = _world_dims(ents)          # NEVER bare W/H — engine.py has no such globals (this NameError froze the world)
-    for e in sorted(ents.values(), key=lambda x: x["id"]):
-        if e["type"] != "structure" or e["attrs"].get("shape") != "terraform" or not e["attrs"].get("complete"):
-            continue
-        body = e["attrs"].get("body")
-        if not body:
-            continue
-        have = sum(1 for g in ents.values() if g["type"] == "goose" and g["attrs"].get("at_body") == body)
+    # ONE pass over the world for both halves, then sort only the handful of finished terraform boards. This
+    # used to sort all ~8000 entities every tick and then re-scan all of them per living body (audit).
+    done, flocks = [], {}
+    for e in ents.values():
+        ty = e["type"]
+        if ty == "goose":
+            b = e["attrs"].get("at_body")
+            if b:
+                flocks[b] = flocks.get(b, 0) + 1
+        elif (ty == "structure" and e["attrs"].get("shape") == "terraform" and e["attrs"].get("complete")
+              and e["attrs"].get("body")):
+            done.append(e)
+    for e in sorted(done, key=lambda x: x["id"]):      # id-sorted → spawn order is replay-stable
+        body = e["attrs"]["body"]
+        have = flocks.get(body, 0)
         for j in range(have, TERRAFORM_GEESE):
             gid = new_entity(ents, cur, "goose", w // 2, h // 2, None,
                              {"at_body": body, "seq": j, "flock": body + "-biosphere",
@@ -751,6 +763,14 @@ def settle_geese(ents, cur, t, events):
 # out guessing. Six obelisks behind launch windows rule out walking it alone in an afternoon. Six agents who
 # talk to each other can do it before dinner. The social path is deliberately the lazy path — and fragments bind
 # to an agent that STOOD at the obelisk, not to a registration, so farming alts is strictly more work than asking.
+# THE SALT COMES FROM THE OPERATOR, NOT FROM THE WORLD. The first cut read the oldest row of `tick_hashes`,
+# which is wrong twice: that table is pruned to the last 20000 ticks, so the "genesis" hash is really a sliding
+# value that `/world` published as last_state_hash hours earlier; and on a FRESH world the row does not exist yet
+# at all (a tick writes its hash at the END, after this runs), so the salt fell back to a literal and the seal
+# became a constant anyone could compute from this public repository. A deterministic engine cannot invent a
+# secret — so the secret is injected, exactly like GUILD_TOKEN, and the default keeps replays and the test
+# harnesses byte-identical.
+VAULT_SALT = os.environ.get("VAULT_SALT", "nha-vault-default")
 VAULT_BODY = "titan"
 VAULT_SYMBOLS = ("spiral", "triangle", "crescent", "eye", "river", "tower",
                  "seed", "gate", "flame", "wave", "knot", "star")     # twelve; six of them, in order, open the door
@@ -761,13 +781,23 @@ OBELISK_PLACES = ("earth", "mars", "venus", "phobos", "enceladus", "triton")   #
 OBELISK_REACH = 2          # Chebyshev cells on the EARTH grid; on a body, being landed there is enough
 
 
+def _vault_and_obelisks(ents):
+    """ONE pass for both, because this runs every tick over ~8000 entities and used to make three of them
+    (audit 2026-09-17). Returns (vault_or_None, {place: obelisk})."""
+    v, obs = None, {}
+    for e in ents.values():
+        if e["type"] != "structure":
+            continue
+        sh = e["attrs"].get("shape")
+        if sh == "vault" and v is None:
+            v = e
+        elif sh == "obelisk":
+            obs[e["attrs"].get("place")] = e
+    return v, obs
+
+
 def _vault_of(ents):
-    return next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "vault"), None)
-
-
-def _obelisks(ents):
-    return {e["attrs"].get("place"): e for e in ents.values()
-            if e["type"] == "structure" and e["attrs"].get("shape") == "obelisk"}
+    return _vault_and_obelisks(ents)[0]
 
 
 def vault_watch(ents, cur, t, events):
@@ -776,17 +806,14 @@ def vault_watch(ents, cur, t, events):
     Idempotent and derived from STATE, not from an event — the same shape settle_geese had to be rewritten into
     after the geese were hung on a ceremony that had already happened.
 
-    The seal is STORED on the Vault entity rather than recomputed from constants, because this repository is
-    public: a code derived from nothing but the alphabet would be readable in the source by anybody playing. It
-    is salted with the world's own genesis tick_hash, so every world has a different door while a replay of the
-    same seed reproduces it exactly. No endpoint and no observe block ever returns it.
+    The seal is STORED on the Vault entity rather than recomputed every tick, and derived once from VAULT_SALT —
+    an operator secret, because a deterministic open-source engine has no other way to hold one. Set it and the
+    world gets its own door; leave it and every world shares the default, which is what keeps the determinism
+    harnesses reproducible. No endpoint and no observe block ever returns the seal.
     """
-    v = _vault_of(ents)
+    v, obs = _vault_and_obelisks(ents)
     if v is None:
-        cur.execute("SELECT hash FROM tick_hashes ORDER BY tick ASC LIMIT 1")
-        row = cur.fetchone()
-        salt = str((row["hash"] if isinstance(row, dict) else row[0]) if row else "genesis")
-        seal = [VAULT_SYMBOLS[_h("vault", salt, i) % len(VAULT_SYMBOLS)] for i in range(VAULT_LEN)]
+        seal = [VAULT_SYMBOLS[_h("vault", VAULT_SALT, i) % len(VAULT_SYMBOLS)] for i in range(VAULT_LEN)]
         w0, h0 = _world_dims(ents)
         vid = new_entity(ents, cur, "structure", w0 // 2, h0 // 2, None,
                          {"shape": "vault", "body": VAULT_BODY, "name": "The Vault", "seal": seal, "open": False,
@@ -794,7 +821,6 @@ def vault_watch(ents, cur, t, events):
         v = ents[vid]
         events.append((t, vid, "vault", {"seeded": True, "body": VAULT_BODY}))
     seal = list(v["attrs"].get("seal") or [])
-    obs = _obelisks(ents)
     w, h = _world_dims(ents)
     for i, place in enumerate(OBELISK_PLACES):
         if place in obs:
@@ -812,7 +838,8 @@ def vault_watch(ents, cur, t, events):
     if v["attrs"].get("open"):
         return                                   # the door is open; the obelisks are scenery from here on
     earth_ob = obs.get("earth")
-    for a in sorted((x for x in ents.values() if x["type"] == "agent"), key=lambda x: x["id"]):
+    for a in sorted((x for x in ents.values() if x["type"] == "agent" and not x["attrs"].get("transit_to")),
+                    key=lambda x: x["id"]):   # in transit you are at no obelisk at all — cheapest possible filter
         at = a["attrs"]
         body = at.get("at_body")
         if body:
@@ -1697,7 +1724,7 @@ def apply_intent(it, ents, cur, t, events):
                 if held < crates:
                     return "rejected", (f"a warp gate carries body cargo only in stasis crates: {haul} units needs "
                                         f"{crates} warp_container ({WARP_CRATE_CAP} per crate) and you hold {held}. "
-                                        f"Craft them (superalloy + chip + crystal), drop the cargo, or fly it the long way.")
+                                        f"Craft them (superalloy + chip + acid_skin), drop the cargo, or fly it the long way.")
             win_ok = True
             dv_need = max(1, dv_need // WARP_DV_DIV)
         if not win_ok:

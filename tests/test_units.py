@@ -117,10 +117,17 @@ def test_clear_offworld_drops_all_sentinels_but_keeps_earth_tier():
 def test_cap_min_no_deadlock_invariant():
     """The self-caught deadlock: if a per-funder cap lets the bill fill before MIN distinct funders can
     join, a module NEVER completes. Guard: ceil(100/cap) <= min funders on every colony + terraform floor."""
+    # BOTH directions. The <= half alone let titan ship at cap 50 / min 3: two funders fill a line exactly, a
+    # third can then give nothing, len(contrib) stops at 2 and the module is fully funded and never completes.
+    # cap and min must be MATCHED so MIN funders are both necessary and sufficient — audit 2026-09-17.
     for body, cap in engine.COLONY_CAP.items():
-        assert math.ceil(100 / cap) <= engine.COLONY_MIN[body], f"colony {body}: ceil(100/{cap})>{engine.COLONY_MIN[body]}"
-    assert math.ceil(100 / engine.TERRAFORM_CAP) <= engine.TERRAFORM_MIN
-    assert math.ceil(100 / engine.TERRAFORM_FLAG_CAP) <= engine.TERRAFORM_FLAG_MIN
+        need = math.ceil(100 / cap)
+        assert need <= engine.COLONY_MIN[body], f"colony {body}: ceil(100/{cap})>{engine.COLONY_MIN[body]} — unreachable floor"
+        assert need >= engine.COLONY_MIN[body], (f"colony {body}: {need} funders can fill the bill but {engine.COLONY_MIN[body]} "
+                                                 f"are required — the module deadlocks fully funded")
+    assert math.ceil(100 / engine.TERRAFORM_CAP) == engine.TERRAFORM_MIN
+    assert math.ceil(100 / engine.TERRAFORM_FLAG_CAP) == engine.TERRAFORM_FLAG_MIN
+    assert math.ceil(100 / engine.WARP_CAP) == engine.WARP_MIN, "the warp gate board has the same deadlock shape"
 
 
 def test_r1_moons_are_as_far_in_time_as_mars():

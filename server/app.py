@@ -1978,7 +1978,12 @@ def _vault():
                "positions_nobody_has_read": [i for i in range(1, engine.VAULT_LEN + 1) if i not in readers],
                "cooldown_ticks": engine.VAULT_COOLDOWN}
         if v["open"]:
-            out["opened_by"] = _names_for(cur, [v["opened_by"]]).get(str(v["opened_by"])) if v["opened_by"] else None
+            # _names_for returns a LIST in the order given, not a dict — `.get` on it raised AttributeError, and
+            # since _cached has no stale fallback on a raise, /vault would have 500'd for the rest of the world's
+            # life from the moment somebody opened the door. Found by audit; the tests opened the Vault but never
+            # called this endpoint afterwards, which is the same "never ran that path" hole as always.
+            nm = _names_for(cur, [v["opened_by"]]) if v["opened_by"] else []
+            out["opened_by"] = nm[0] if nm else None
             out["opened_tick"] = v["opened_tick"]
         return out
 

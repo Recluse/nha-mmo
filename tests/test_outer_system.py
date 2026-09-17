@@ -434,3 +434,33 @@ def test_observe_hands_out_fragments_only_to_a_caller_that_proved_it_is_the_agen
     without_alphabet.pop("alphabet", None)
     assert not any(v in json.dumps(without_alphabet) for v in frags.values()),         f"the unproven view still ties a symbol to a position: {without_alphabet}"
     assert theirs["fragments_you_hold"] == len(frags), "hiding the symbols should not hide that they exist"
+
+
+@pytest.mark.integration
+def test_the_vault_endpoint_survives_the_vault_being_opened(world):
+    """AUDIT 2026-09-17. `_names_for` returns a LIST in the order given, not a dict, and /vault called `.get` on
+    it — so the endpoint would have raised AttributeError from the moment somebody opened the door, forever
+    (_cached has no stale fallback on a raise). The earlier tests opened the Vault and then never called the
+    endpoint, which is the same "shipped but never run on that path" hole this whole file exists for."""
+    import importlib
+    import sys
+    import os
+    world.ticks(1)
+    world.cur.execute("SELECT attrs->'seal' FROM entities WHERE type='structure' AND attrs->>'shape'='vault'")
+    seal = world.cur.fetchone()[0]
+    aid = world.agent("opener", body="titan")
+    assert world.do(aid, "unlock", {"code": seal})[0] == "applied"
+
+    os.environ["PG_DSN"] = _TEST_DSN
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
+    for m in ("app",):
+        sys.modules.pop(m, None)
+    app = importlib.import_module("app")
+    try:
+        out = app._vault()
+    finally:
+        os.environ.pop("PG_DSN", None)
+        sys.modules.pop("app", None)
+    assert out["exists"] and out["open"] is True, out
+    assert out["opened_by"] == "opener", out.get("opened_by")
+    assert "seal" not in json.dumps(out).replace("symbols_in_seal", ""), "the endpoint leaked the answer once open"

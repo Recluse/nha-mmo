@@ -286,7 +286,7 @@ def _warp_block(cur, here):
                    f"the Earth gate needs you home. Blueprint = having funded any FINISHED colony. A live pair "
                    f"warps in {WARP_TICKS} ticks at 1/{WARP_DV_DIV} the Δv and ignores the window. Exotic body cargo "
                    f"rides ONLY in single-use warp_container crates ({WARP_CRATE_CAP} units each, spent by the "
-                   f"crossing) — craft them from superalloy + chip + crystal."),
+                   f"crossing) — craft them from superalloy + chip + acid_skin."),
            "building": [{"place": a.get("place"), "need": WARP_NEED.get(a.get("place"), {}),
                          "have": {r: int((a.get("have") or {}).get(r, 0)) for r in WARP_NEED.get(a.get("place"), {})},
                          "funders": len(a.get("contrib") or {})}
