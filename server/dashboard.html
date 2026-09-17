@@ -1337,10 +1337,12 @@ function paintBodyStructures(S,col,tf,moonCols){
   if(col&&col.terraformed&&S.planet){
     S.planet.material.color.copy(S.baseTint).lerp(new T.Color(0x6fae72),0.55);   // from the ORIGINAL tint, so refreshes never compound
     S.planet.material.needsUpdate=true;
-    for(let i=0;i<14;i++){                                         // lakes: flat discs bedded into the surface
-      const d=dir(7.3+i*1.7), lake=new T.Mesh(new T.CircleGeometry(R*(0.05+0.05*((i*37%7)/7)),18),
+    for(let i=0;i<14;i++){                                         // lakes: flat discs LYING ON the surface.
+      // CircleGeometry is built in the XY plane (normal +Z), but sit() aligns +Y with the surface normal — so an
+      // unrotated disc ends up standing on edge, sticking out of the planet. rotateX lays it flat first.
+      const d=dir(7.3+i*1.7), lake=new T.Mesh(new T.CircleGeometry(R*(0.05+0.05*((i*37%7)/7)),18).rotateX(-Math.PI/2),
         new T.MeshBasicMaterial({color:0x2f6fb5,transparent:true,opacity:0.85,side:T.DoubleSide}));
-      sit(lake,d,1.002,1);
+      sit(lake,d,1.004,1);
     }
     for(let i=0;i<22;i++){                                         // forest: little cones, because trees
       const d=dir(3.1+i*1.13), tree=new T.Mesh(new T.ConeGeometry(R*0.018,R*0.055,6),
