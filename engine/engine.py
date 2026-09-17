@@ -314,6 +314,13 @@ WARP_CRATE_CAP = 25        # exotic units one single-use `warp_container` carrie
 # call — actual money, spent on blind guessing. The fee is REFUNDED when the Guild grants the recipe, so
 # inventing well is free and guessing is not. What the fee catches stays in the purse.
 GUILD_FEE = 50             # credits escrowed to file a novel mixture with the Inventors' Guild
+# A TERRAFORMED WORLD IS ALIVE. Finishing all four stages used to grant a title and change nothing you could
+# touch: the planet still mined like bare regolith. Now it grows lakes and trees — `mine` there yields water and
+# wood on top of its native rock — and a gaggle of geese arrives, because a biosphere that took is a biosphere
+# with geese in it. They are flavour on the body (no Earth-grid roaming or pecking), and they are the visible
+# proof that the terraform was real.
+TERRAFORM_LIFE = (("water", 2), ("wood", 2))   # added to BODY_MINE on a fully terraformed body
+TERRAFORM_GEESE = 4                            # geese that arrive with the biosphere
 TREASURY_EVERY = 300       # how often the republic looks at what the citizens abandoned (ticks)
 TREASURY_STALL = 3000      # a co-op board untouched this long counts as stalled (~100 min)
 TREASURY_SPEND = 2000      # max credits the purse puts into one board per intervention
@@ -1233,7 +1240,10 @@ def apply_intent(it, ents, cur, t, events):
             storm = body == "mars" and (t % MARS_STORM_PERIOD) < MARS_STORM_OPEN   # a planet-encircling dust storm brownouts the whole colony
             reg = max(1, took // 2) if storm else took        # the regular surface harvest is HALVED in the storm (mirrors the producer brownout on colonies)…
             got = []
-            for res, mult in BODY_MINE[body]:                # deterministic yields (mirrors the on-Moon branch)
+            yields = list(BODY_MINE[body])
+            if _terraform_done(ents, body):                  # a living world gives up lakes and forests too
+                yields = yields + list(TERRAFORM_LIFE)
+            for res, mult in yields:                         # deterministic yields (mirrors the on-Moon branch)
                 addb(a, res, reg * mult); got.append(f"+{reg * mult} {res}")
             if storm:                                        # …but the dust storm is the ONLY window nanohematite (the terraform warming agent) drops
                 addb(a, "nanohematite", took); got.append(f"+{took} nanohematite (DUST-STORM harvest — the terraform warming agent!)")
@@ -2077,6 +2087,12 @@ def apply_intent(it, ents, cur, t, events):
                     cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                                 (t, a["id"], Json({"terraform": body, "complete": True, "architect": order[0] if order else None})))
                     msg += f" — 🌍 {BODY_LABEL[body].upper()} IS TERRAFORMED! ({TERRAFORM_TITLE[body]})"
+                    for j in range(TERRAFORM_GEESE):         # the biosphere took: geese
+                        new_entity(ents, cur, "goose", W // 2, H // 2, None,
+                                   {"at_body": body, "seq": j, "flock": f"{body}-biosphere",
+                                    "hp": HP_BY_TYPE["goose"], "hp_max": HP_BY_TYPE["goose"]})
+                    msg += (f" — lakes and forests spread across it (mine now yields water and wood here), "
+                            f"and {TERRAFORM_GEESE} geese have arrived. The biosphere took.")
                     msg += _check_solar_accord(a, ents, cur, t)
             return "applied", msg
         if shape == "extractor":                         # EXPANSION Phase 4: build an ISRU auto-producer on the body you're on
