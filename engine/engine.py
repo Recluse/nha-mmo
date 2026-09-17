@@ -683,6 +683,7 @@ def settle_geese(ents, cur, t, events):
     Gatekeeper title that could never be awarded. So the flock follows from the STATE and is idempotent — if a
     living world is short of geese, the missing ones walk in. Deterministic, no RNG, safe to replay.
     """
+    w, h = _world_dims(ents)          # NEVER bare W/H — engine.py has no such globals (this NameError froze the world)
     for e in sorted(ents.values(), key=lambda x: x["id"]):
         if e["type"] != "structure" or e["attrs"].get("shape") != "terraform" or not e["attrs"].get("complete"):
             continue
@@ -691,7 +692,7 @@ def settle_geese(ents, cur, t, events):
             continue
         have = sum(1 for g in ents.values() if g["type"] == "goose" and g["attrs"].get("at_body") == body)
         for j in range(have, TERRAFORM_GEESE):
-            gid = new_entity(ents, cur, "goose", W // 2, H // 2, None,
+            gid = new_entity(ents, cur, "goose", w // 2, h // 2, None,
                              {"at_body": body, "seq": j, "flock": body + "-biosphere",
                               "hp": HP_BY_TYPE["goose"], "hp_max": HP_BY_TYPE["goose"]})
             events.append((t, gid, "goose_spawn", {"body": body, "biosphere": True}))
@@ -3321,7 +3322,7 @@ def geese_at(ents, x, y, rng=1):
     Shared by the build-interference guard (a gaggle blocks a site) and the peck/defend system."""
     out = {}
     for g in ents.values():
-        if g["type"] != "goose":
+        if g["type"] != "goose" or g["attrs"].get("at_body"):   # biosphere geese live on a BODY, not on the grid
             continue
         if max(abs(int(g["x"]) - int(x)), abs(int(g["y"]) - int(y))) <= rng:
             out.setdefault(g["attrs"].get("flock"), []).append(g)
@@ -3331,7 +3332,7 @@ def geese_block_footprint(ents, x0, y0, w, h):
     """True if any goose occupies OR is adjacent to a w×h footprint with SW corner (x0,y0) — used to
     reject builds. Cheap: a goose blocks iff it lies in the footprint expanded by one cell on each side."""
     for g in ents.values():
-        if g["type"] != "goose":
+        if g["type"] != "goose" or g["attrs"].get("at_body"):   # ditto — a Martian goose blocks nothing on Earth
             continue
         gx, gy = int(g["x"]), int(g["y"])
         if (x0 - 1) <= gx <= (x0 + w) and (y0 - 1) <= gy <= (y0 + h):
@@ -3350,7 +3351,7 @@ def move_geese(ents, cur, t, events):
     (d) DEFEND/PECK: an agent on/adjacent to >=GOOSE_PECK_MIN_CLUSTER geese of a flock is pecked for a small
         cluster-scaled HP hit (capped GOOSE_PECK_MAX), floored so it can never kill — ambient 'stay away'."""
     w, h = _world_dims(ents)
-    geese = [g for g in ents.values() if g["type"] == "goose"]
+    geese = [g for g in ents.values() if g["type"] == "goose" and not g["attrs"].get("at_body")]
     # (a) one-time deterministic spawn anchored at water deposits
     if not geese:
         waters = sorted((e for e in ents.values() if e["type"] == "deposit"
@@ -3382,7 +3383,7 @@ def move_geese(ents, cur, t, events):
                                      {"flock": fid, "ax": ax, "ay": ay, "seq": j,
                                       "hp": HP_BY_TYPE["goose"], "hp_max": HP_BY_TYPE["goose"]})
                     events.append((t, gid, "goose_spawn", {"flock": fid, "ax": ax, "ay": ay}))
-            geese = [g for g in ents.values() if g["type"] == "goose"]
+            geese = [g for g in ents.values() if g["type"] == "goose" and not g["attrs"].get("at_body")]
     # (b) waddle: closed deterministic wobble around each goose's stored anchor, clamped to bounds
     for g in geese:
         at = g["attrs"]
