@@ -1513,19 +1513,24 @@ function _colonyModel(done,md){   // the base: a central hab tower ringed by pre
   for(let i=0;i<nd;i++){ const a=i/nd*6.2832; const dome=new T.Mesh(new T.SphereGeometry(0.18,14,8,0,6.2832,0,1.5708),M(c,0x141109)); dome.position.set(Math.cos(a)*0.55,0.04,Math.sin(a)*0.55); grp.add(dome); }
   return grp;
 }
+// DISPOSE, don't just detach. The body-surface group is rebuilt every 6 seconds and holds a colony, rigs, lakes,
+// trees, geese, an atmosphere shell, obelisks and the Vault; remove() alone leaks every one of their buffers and
+// materials to the GPU for as long as the tab is open (audit 2026-09-17).
+function _freeTree(o){ if(!o)return;
+  (o.children||[]).forEach(_freeTree);
+  // NOT a Sprite's geometry: three.js r128 builds ONE module-level BufferGeometry and hands that same instance to
+  // every Sprite ever constructed (`let Cs; … this.geometry = Cs`), so disposing it here would throw away the GPU
+  // buffers of every label on the page, the Earth scene's included. The per-label CanvasTexture and SpriteMaterial
+  // are ours, and are freed just below.
+  if(o.geometry&&o.geometry.dispose&&!o.isSprite)o.geometry.dispose();
+  const m=o.material; if(m){ (Array.isArray(m)?m:[m]).forEach(function(x){ if(x.map&&x.map.dispose)x.map.dispose(); if(x.dispose)x.dispose(); }); }
+}
 function paintBodyStructures(S,col,tf,moonCols,vault){
   const T=window.THREE,R=S.R,g=S.bstruct; if(!g)return;
-  // DISPOSE, don't just detach. This group is rebuilt every 6 seconds and now holds a colony, rigs, lakes, trees,
-  // geese, an atmosphere shell, obelisks and the Vault — remove() alone leaks every one of their buffers and
-  // materials to the GPU for as long as the tab is open (audit).
-  (function free(o){ if(!o)return;
-    (o.children||[]).forEach(free);
-    if(o.geometry&&o.geometry.dispose)o.geometry.dispose();
-    const m=o.material; if(m){ (Array.isArray(m)?m:[m]).forEach(function(x){ if(x.map&&x.map.dispose)x.map.dispose(); if(x.dispose)x.dispose(); }); }
-  })(g);
+  _freeTree(g);
   while(g.children.length)g.remove(g.children[0]);   // rebuild from scratch each refresh
   (S.moons||[]).forEach(function(mn){   // Forward Bases on Phobos/Deimos — a small gold module + beacon on the moon
-    if(mn.baseMarker){ mn.mesh.remove(mn.baseMarker); mn.baseMarker=null; }
+    if(mn.baseMarker){ _freeTree(mn.baseMarker); mn.mesh.remove(mn.baseMarker); mn.baseMarker=null; }   // dispose, not just detach
     const mc=moonCols&&moonCols[mn.body];
     if(mc&&mc.colony_exists){
       const done=mc.complete,grp=new T.Group(),rr=mn.radius;
@@ -2014,6 +2019,7 @@ void main(){
    if(s.shape=='warpgate'){strG.add(makeWarpGate(s));return;}          // SEASON 6: the warp gate — a ring you can actually see the far side through
    // SEASON 7d: only the EARTH obelisk belongs in this scene. /scene does not filter by altitude, so the five
    // body obelisks (alt 600, parked at the world centre) were all drawn stacked on the terrain at (110,110).
+   if(s.shape=='vault')return;                                        // the door lives on Titan; /scene ships it with alt 600
    if(s.shape=='obelisk'){ if((s.alt||0)>0) return;
     const o=_obeliskModel(),q=P(s.x,s.y);o.scale.setScalar(2.2);o.position.set(q[0],q[1],q[2]);
     const ol=label('\u25AE Obelisk',2.4); ol.position.y=4.6; o.add(ol); strG.add(o); return;}

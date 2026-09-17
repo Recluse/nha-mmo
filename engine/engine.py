@@ -824,6 +824,15 @@ def vault_watch(ents, cur, t, events):
     w, h = _world_dims(ents)
     for i, place in enumerate(OBELISK_PLACES):
         if place in obs:
+            # AN OBELISK IS A VIEW OF THE DOOR, NOT A COPY OF IT. The seeding loop skipped any place that already
+            # existed, so re-sealing a live world (new seal on the Vault entity) would have left six stones still
+            # showing the OLD symbols — a door that no combination anyone could read would ever open. Re-stamping
+            # every tick costs six dict compares and makes a re-seal a one-line change to one entity.
+            o = obs[place]
+            want = seal[i] if i < len(seal) else VAULT_SYMBOLS[0]
+            if o["attrs"].get("symbol") != want or int(o["attrs"].get("index", -1)) != i:
+                o["attrs"]["symbol"] = want
+                o["attrs"]["index"] = i
             continue
         earth = (place == "earth")
         ox = (_h("obelisk", "x", place) % w) if earth else w // 2
@@ -892,14 +901,21 @@ def treasury_spend(ents, t, events, cur):
         if e["type"] != "structure" or e["attrs"].get("complete"):
             continue
         shape, at = e["attrs"].get("shape"), e["attrs"]
+        # ONLY A BOARD THAT ALREADY HAS ITS PEOPLE. The purse fills `have` without being counted as a funder, so
+        # buying the last unit of a board still short of distinct funders leaves it materially complete and
+        # permanently unfinishable: no agent can contribute afterwards (there is nothing left to give), so
+        # `len(contrib)` can never reach MIN. Below the floor the blocker is hands, not money — and the material
+        # left unbought is exactly what a newcomer would have used to join (audit 2026-09-17).
         if shape == "colony" and at.get("body") in COLONY_MODULES:
             for key, spec in COLONY_MODULES[at["body"]].items():
                 mod = (at.get("modules") or {}).get(key) or {}
-                if not mod.get("complete") and t - int(mod.get("last_funded", 0) or 0) >= TREASURY_STALL:
+                if (not mod.get("complete") and t - int(mod.get("last_funded", 0) or 0) >= TREASURY_STALL
+                        and len(mod.get("contrib") or {}) >= COLONY_MIN[at["body"]]):
                     boards.append((e, key, spec["need"], mod.setdefault("have", {}),
                                    f"{COLONY_LABEL[at['body']]} · {spec['label']}"))
         elif shape == "warpgate" and at.get("place") in WARP_NEED:
-            if t - int(at.get("last_funded", 0) or 0) >= TREASURY_STALL:
+            if (t - int(at.get("last_funded", 0) or 0) >= TREASURY_STALL
+                    and len(at.get("contrib") or {}) >= WARP_MIN):
                 boards.append((e, None, WARP_NEED[at["place"]], at.setdefault("have", {}),
                                f"{BODY_LABEL[at['place']]} warp gate"))
     if not boards:
@@ -2098,6 +2114,13 @@ def apply_intent(it, ents, cur, t, events):
                     contrib.setdefault(aid, {})[r] = already + give
                     ct[aid] = int(ct.get(aid, 0)) + give
                     moved[r] = give
+            if not moved and all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= min_contrib:
+                # SAFETY NET: the bill is met and the funders are there, but nobody moved anything — which happens
+                # when the republic supplied the last unit. Completion is otherwise only ever evaluated after a
+                # non-zero move, so the board would sit finished-but-not-finished forever. Anyone touching it now
+                # releases it (audit 2026-09-17).
+                return "applied", (f"the {mods_def[module]['label']} needed nothing more" +
+                                   _colony_award(a, st, body, module, {}, mod, ents, cur, t, new_funder=False))
             if not moved:
                 short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
                 return "rejected", (f"funded nothing to the {mods_def[module]['label']} — it still needs {short}. "

@@ -46,6 +46,15 @@ spec:
             - {name: WORLD_SEED, value: "42"}
             - {name: PYTHONUNBUFFERED, value: "1"}
             - {name: RUN_TICK, value: "1"}    # <-- only this pod runs the engine
+            # THE VAULT'S SEAL. This pod is the only one that seeds it, and a deterministic open-source engine
+            # cannot invent a secret — so it is injected, exactly as GUILD_TOKEN is on the API pods. Unset, every
+            # world seals with the default literal in engine.py, which anyone can read in the public repo:
+            #   kubectl -n nha-mmo create secret generic nha-vault --from-literal=salt="$(openssl rand -hex 24)"
+            # The seal is computed ONCE, when the Vault entity is first created; changing the salt afterwards
+            # does nothing to a world that already has a door (re-sealing one is a deliberate DB migration).
+            - name: VAULT_SALT
+              valueFrom:
+                secretKeyRef: {name: nha-vault, key: salt, optional: true}
           # no ports / no httpGet probe — dedicated tick process serves no HTTP (a /healthz probe would pin it 0/1).
           # The tick loop self-heals transient DB errors; a hard crash exits PID 1 → k8s restarts the pod.
           volumeMounts:

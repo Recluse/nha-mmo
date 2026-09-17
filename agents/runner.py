@@ -12,7 +12,7 @@ model's API straight from Google (so Gemini isn't geo-blocked the way it is from
 Env: SERVER_URL, AGENT_MODELS ("prov:model,prov:model,..."), AGENT_INTERVAL,
      GROQ_URL/GROQ_API_KEY, GITHUB_URL/GITHUB_TOKEN, GEMINI_URL/GEMINI_API_KEY.
 """
-import os, json, time, random, tempfile, urllib.request, urllib.error
+import os, json, re, time, random, tempfile, urllib.request, urllib.error
 
 SERVER   = os.environ.get("SERVER_URL", "https://nha.recluse.ru")
 INTERVAL = float(os.environ.get("AGENT_INTERVAL", "20"))
@@ -133,8 +133,31 @@ def http(method, url, data=None, headers=None, timeout=30):
         return json.load(r)
 
 
-def api(path, method="GET", data=None):
-    return http(method, SERVER + path, data)
+AGENT_TOKENS = {}            # agent id -> its token, so api() can prove identity when it reads that agent's observe
+
+
+def remember_token(aid, tok):
+    """Record an agent's token so /observe calls for it are made AS it."""
+    try:
+        if aid and tok:
+            AGENT_TOKENS[int(aid)] = tok
+    except (TypeError, ValueError):
+        pass
+
+
+_OBSERVE_PATH = re.compile(r"^/observe/(\d+)")
+
+
+def api(path, method="GET", data=None, token=None):
+    """/observe is open to everyone — that is what makes this world watchable — so it hands out an agent's PRIVATE
+    blocks (today: its Vault fragments) only to a caller that presents that agent's token. Every bot in this repo
+    went blind to its own symbols the moment that gate shipped, because not one of them sent a token. Attaching it
+    here means every client gets it right without remembering to (audit 2026-09-17)."""
+    if token is None and method == "GET":
+        m = _OBSERVE_PATH.match(path)
+        if m:
+            token = AGENT_TOKENS.get(int(m.group(1)))
+    return http(method, SERVER + path, data, headers={"x-agent-token": token} if token else None)
 
 
 import random as _rnd   # for the reactive-chatter helpers below
@@ -586,6 +609,7 @@ def _vehicle_summary(veh):
 
 
 def turn(prov, model, aid, last, tok):
+    remember_token(aid, tok)          # so this and every later /observe for #aid is made AS #aid
     obs = api(f"/observe/{aid}")
     # ?limit=50 — only orders[:8] is ever used below, but this used to fetch the ENTIRE open book (29.5k orders,
     # ~2.2MB, ~9s) on every LLM turn. The ordering is unchanged, so orders[:8] is byte-identical to before.

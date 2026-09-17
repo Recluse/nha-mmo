@@ -464,3 +464,61 @@ def test_the_vault_endpoint_survives_the_vault_being_opened(world):
     assert out["exists"] and out["open"] is True, out
     assert out["opened_by"] == "opener", out.get("opened_by")
     assert "seal" not in json.dumps(out).replace("symbols_in_seal", ""), "the endpoint leaked the answer once open"
+
+
+@pytest.mark.integration
+def test_the_republic_never_strands_a_board_it_pays_for(world):
+    """AUDIT 2026-09-17, second pass. treasury_spend fills `have` uncapped and is deliberately NOT counted as a
+    funder — so buying the last unit of a board still short of distinct funders left it materially complete and
+    permanently unfinishable (nothing left to give, so `len(contrib)` can never reach MIN). Below the floor the
+    blocker is hands, not money. Above it, the purchase must leave the board releasable by anyone who touches it."""
+    eng = world.engine
+    J = world._Json
+    body, module = "titan", "harbour_pad"
+    need = eng.COLONY_MODULES[body][module]["need"]
+    buyable = {r: v for r, v in need.items() if r in eng.EXPANSION_PRICES}
+    assert buyable, "this module has no purchasable line — pick another for the test"
+
+    world.cur.execute("INSERT INTO entities(type,x,y,attrs,buffers) VALUES('universe',0,0,%s,%s)",
+                      (J({"name": "The Republic"}), J({"credits": 10 ** 7})))
+
+    def board(funders):
+        mods = {k: {"have": {}, "contrib": {}, "complete": False} for k in eng.COLONY_MODULES[body]}
+        mods[module]["contrib"] = {str(1000 + i): {"metal": 1} for i in range(funders)}
+        # everything already in place except a handful of units of one purchasable line — the republic spends at
+        # most TREASURY_SPEND credits per intervention, and this test is about the RULE, not about grinding it
+        short_r = sorted(buyable, key=lambda r: eng.EXPANSION_PRICES[r])[0]
+        mods[module]["have"] = {r: need[r] for r in need}
+        mods[module]["have"][short_r] = need[short_r] - 5
+        # far enough in the past that TREASURY_STALL is satisfied at any tick this test reaches — otherwise the
+        # "it kept its money" half would pass for the wrong reason (nothing was stale yet)
+        mods[module]["last_funded"] = -10 ** 6
+        world.cur.execute("DELETE FROM entities WHERE type='structure' AND attrs->>'shape'='colony'")
+        world.cur.execute("INSERT INTO entities(type,x,y,attrs) VALUES('structure',78,78,%s)",
+                          (J({"shape": "colony", "body": body, "name": eng.COLONY_LABEL[body], "modules": mods,
+                              "ctotal": {}, "complete": False, "alt": eng.SKY_TOP, "hp": 100, "hp_max": 100}),))
+        world.conn.commit()
+        world.forget_world()
+        return short_r
+
+    def topped_up(r):
+        world.cur.execute("SELECT attrs->'modules'->%s->'have' FROM entities WHERE type='structure' "
+                          "AND attrs->>'shape'='colony'", (module,))
+        have = world.cur.fetchone()[0] or {}
+        return int(have.get(r, 0)) >= need[r]
+
+    # BELOW the funder floor: the purse must keep its money.
+    r = board(eng.COLONY_MIN[body] - 1)
+    world.ticks(eng.TREASURY_EVERY + 2)
+    assert not topped_up(r), "the republic bought into a board that could never then be completed"
+
+    # AT the floor: it pays, and the board is left releasable rather than stranded.
+    r = board(eng.COLONY_MIN[body])
+    world.ticks(eng.TREASURY_EVERY + 2)
+    assert topped_up(r), "the republic ignored a board that only needed money"
+    aid = world.agent("bystander", body=body)
+    status, result = world.do(aid, "construct", {"shape": "colony", "body": body, "module": module})
+    world.cur.execute("SELECT COALESCE((attrs->'modules'->%s->>'complete')::boolean,false) FROM entities "
+                      "WHERE type='structure' AND attrs->>'shape'='colony'", (module,))
+    done = world.cur.fetchone()[0]
+    assert done, f"a fully funded board with enough funders stayed incomplete: {status} {result}"
