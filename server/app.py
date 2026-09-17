@@ -1909,9 +1909,16 @@ def _treasury():
         granted = cur.fetchone()["c"]
     return {"credits": int(row["bal"]) if row else 0, "guild_fee": engine.GUILD_FEE,
             "guild_filings_kept": rej, "guild_filings_refunded": granted,
-            "note": ("Filing a novel mixture with the Inventors' Guild costs "
-                     f"{engine.GUILD_FEE} credits. GRANTED recipes are refunded in full; a rejected guess pays "
-                     "the republic. Inventing well is free — guessing is not.")}
+            # Same honest wording as observe.guild: the up-front charge first, the refund second. This endpoint
+            # was missed when that was corrected, so the two disagreed about the same rule.
+            "note": (f"Filing a novel mixture with the Inventors' Guild costs {engine.GUILD_FEE} credits, charged "
+                     "the moment you file, whatever the verdict. A GRANTED recipe returns all of it; a rejected "
+                     "one forfeits it to the republic. Historically about four filings in five are rejected."),
+            "spends_on": ("co-op boards the citizens have abandoned: every "
+                          f"{engine.TREASURY_EVERY} ticks the republic buys materials for a colony module or warp "
+                          f"gate untouched for {engine.TREASURY_STALL} ticks, up to {engine.TREASURY_SPEND} credits "
+                          "at a time. It never buys the exotic lines, and it is never counted as a funder — the "
+                          "2-3-distinct-funders rule is untouched.")}
 
 
 @app.get("/treasury", tags=["meta"])
