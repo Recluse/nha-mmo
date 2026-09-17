@@ -548,6 +548,13 @@ def _invest_colony(a, body, args, ents, cur, t):
             contrib.setdefault(aid, {})[r] = already + units
             ct[aid] = int(ct.get(aid, 0)) + units
             moved[r] = units
+    if not moved and all(int(have.get(r, 0)) >= need[r] for r in need) and len(contrib) >= COLONY_MIN[body] \
+            and not mod.get("complete"):
+        # The republic only funds boards abandoned for TREASURY_STALL, which means by definition nobody is standing
+        # on that body — so `construct` (which requires at_body) cannot release what the purse finished. `invest`
+        # is the route that reaches an outer world from Earth, and it needed the same net (audit, pass 3).
+        return "applied", (f"{COLONY_LABEL[body]} · {mods_def[module]['label']} needed nothing more" +
+                           _colony_award(a, st, body, module, {}, mod, ents, cur, t, new_funder=False))
     if not moved:
         buyable = sorted(r for r in need if EXPANSION_PRICES.get(r))
         return "rejected", (f"invested nothing in {COLONY_LABEL[body]} · {mods_def[module]['label']} — you may be at "
@@ -624,8 +631,14 @@ def _colony_award(a, st, body, module, moved, mod, ents, cur, t, new_funder=Fals
             fe = ents.get(int(fid))
             if fe and pts > 0:
                 fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
+        # CREDIT THE BUILDERS, NOT THE PASSER-BY. `moved` can be empty on the safety-net path (the republic
+        # supplied the last unit and somebody merely touched the board), and this agent may not appear in
+        # `contrib` at all — attributing the completion to them would put a stranger's name on the milestone feed.
+        credit = (a["id"] if str(a["id"]) in contrib
+                  else int(sorted(contrib, key=lambda k: (-sum(contrib[k].values()), int(k)))[0]) if contrib
+                  else a["id"])
         cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
-                    (t, a["id"], Json({"colony": body, "colony_module": module, "complete": True, "funders": len(contrib)})))
+                    (t, credit, Json({"colony": body, "colony_module": module, "complete": True, "funders": len(contrib)})))
         msg += f" — MODULE COMPLETE! {mods_def[module]['label']} online ({len(contrib)} funders)"
         if all(st["attrs"]["modules"].get(k, {}).get("complete") for k in mods_def):
             st["attrs"]["complete"] = True
@@ -639,7 +652,8 @@ def _colony_award(a, st, body, module, moved, mod, ents, cur, t, new_funder=Fals
                     fe["attrs"]["inventor_points"] = int(fe["attrs"].get("inventor_points", 0)) + pts
                     award_title(fe, COLONY_TITLE[body])
             cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
-                        (t, a["id"], Json({"colony": body, "complete": True, "architect": order[0] if order else None})))
+                        (t, (int(order[0]) if order else credit),
+                         Json({"colony": body, "complete": True, "architect": order[0] if order else None})))
             extra = " Mars & Venus routes are now cheaper for EVERYONE (−5 Δv per moon base)." if body in ("phobos", "deimos") else ""
             msg += f" — 🪐 {COLONY_LABEL[body].upper()} IS COMPLETE!{extra}"
             msg += _check_solar_accord(a, ents, cur, t)   # a colony finishing last can complete the Accord too
@@ -2176,12 +2190,18 @@ def apply_intent(it, ents, cur, t, events):
                     have[r] = cur_have + give
                     contrib.setdefault(aid, {})[r] = already + give
                     moved[r] = give
-            if not moved:
+            released = (not moved and all(int(have.get(r, 0)) >= need[r] for r in need)
+                        and len(contrib) >= WARP_MIN)
+            # THE SAME NET THE COLONY BRANCH GOT, and the gate needs it more: a stranded gate cannot even be
+            # replaced, because the singleton lookup above matches on shape+place and never checks `complete`.
+            # Without this the board reads "funded nothing — it still needs {}" forever (audit, pass 3).
+            if not moved and not released:
                 short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
                 return "rejected", (f"funded nothing to the {BODY_LABEL[place]} gate — it still needs {short}. You may be "
                                     f"at your {WARP_CAP}% per-resource cap (someone else must chip in), or hold none of these.")
             st["attrs"]["last_funded"] = t     # same stall clock the republic reads for colony modules
-            msg = f"funded {moved} to the {BODY_LABEL[place]} warp gate"
+            msg = (f"the {BODY_LABEL[place]} gate needed nothing more" if released
+                   else f"funded {moved} to the {BODY_LABEL[place]} warp gate")
             imm = sum(moved.values()) // 10
             if imm > 0:
                 a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + imm

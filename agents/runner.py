@@ -466,6 +466,9 @@ def register(model, mats=None):
                            f"put its real token in {TOKENS_PATH} under key {key!r}")
     tok = got or tok                      # a fresh agent is minted one server-side; a reuse echoes ours back
     _save_token(key, tok)
+    remember_token(r["agent_id"], tok)   # every /observe for this agent now proves who it is (audit, pass 3): the
+    # production bots (dumb/baryga/miner/varvar/...) call register() and never go through turn(), so wiring this
+    # only into turn() left every one of them blind to its own Vault symbols.
     return r["agent_id"], tok
 
 
