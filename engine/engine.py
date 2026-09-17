@@ -675,6 +675,28 @@ ACID_REFUND_COST = {"acid_skin": 2, "cloud_acid": 4}   # re-fund the acid shield
 ACID_RESTORE = 20                  # integrity restored per re-fund
 
 
+def settle_geese(ents, cur, t, events):
+    """A terraformed world HAS geese — it does not merely get given some at the moment it finishes.
+
+    The first cut spawned them in the terraform-completion branch, which meant Mars and Venus, terraformed days
+    before that code existed, would never have any: the ceremony had already happened. Same shape as the
+    Gatekeeper title that could never be awarded. So the flock follows from the STATE and is idempotent — if a
+    living world is short of geese, the missing ones walk in. Deterministic, no RNG, safe to replay.
+    """
+    for e in sorted(ents.values(), key=lambda x: x["id"]):
+        if e["type"] != "structure" or e["attrs"].get("shape") != "terraform" or not e["attrs"].get("complete"):
+            continue
+        body = e["attrs"].get("body")
+        if not body:
+            continue
+        have = sum(1 for g in ents.values() if g["type"] == "goose" and g["attrs"].get("at_body") == body)
+        for j in range(have, TERRAFORM_GEESE):
+            gid = new_entity(ents, cur, "goose", W // 2, H // 2, None,
+                             {"at_body": body, "seq": j, "flock": body + "-biosphere",
+                              "hp": HP_BY_TYPE["goose"], "hp_max": HP_BY_TYPE["goose"]})
+            events.append((t, gid, "goose_spawn", {"body": body, "biosphere": True}))
+
+
 def treasury_spend(ents, t, events, cur):
     """THE REPUBLIC FINISHES WHAT THE CITIZENS ABANDONED.
 
@@ -2087,10 +2109,6 @@ def apply_intent(it, ents, cur, t, events):
                     cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'build',%s)",
                                 (t, a["id"], Json({"terraform": body, "complete": True, "architect": order[0] if order else None})))
                     msg += f" — 🌍 {BODY_LABEL[body].upper()} IS TERRAFORMED! ({TERRAFORM_TITLE[body]})"
-                    for j in range(TERRAFORM_GEESE):         # the biosphere took: geese
-                        new_entity(ents, cur, "goose", W // 2, H // 2, None,
-                                   {"at_body": body, "seq": j, "flock": f"{body}-biosphere",
-                                    "hp": HP_BY_TYPE["goose"], "hp_max": HP_BY_TYPE["goose"]})
                     msg += (f" — lakes and forests spread across it (mine now yields water and wood here), "
                             f"and {TERRAFORM_GEESE} geese have arrived. The biosphere took.")
                     msg += _check_solar_accord(a, ents, cur, t)
@@ -3584,6 +3602,7 @@ def _tick_body(conn, s):
     run_producers(ents, t, events, cur)                    # EXPANSION Phase 4: ISRU auto-extractors drip into owners' holds (no-op if none built)
     body_upkeep(ents, t, events, cur)                      # EXPANSION Phase 5: Venus acid-shield corrosion (no-op without a complete Venus city)
     treasury_spend(ents, t, events, cur)                  # SEASON 7b: the republic finishes abandoned co-op boards (no-op unless one has gone quiet)
+    settle_geese(ents, cur, t, events)                    # a terraformed world HAS geese — idempotent, so it also fixes worlds terraformed before this existed
     respawn_deposits(by_type, t)
     respawn_agents(by_type, cur, t, events)               # season 3 per-tick systems (after respawn_deposits, before write-back)
     cool_reputation(by_type, t)
