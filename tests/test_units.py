@@ -157,7 +157,7 @@ def test_observe_helpers_have_no_unresolved_globals():
     import sys, os, builtins
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
     import play
-    for fn in (play._needs_you, play._preflight, play._warp_block,
+    for fn in (play._needs_you, play._preflight, play._warp_block, play._vault_block,
                play._fair_window, play._collapse_repeats):
         unresolved = [n for n in fn.__code__.co_names
                       if n.isupper() and n not in play.__dict__ and not hasattr(builtins, n)]

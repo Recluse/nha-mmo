@@ -741,6 +741,103 @@ def settle_geese(ents, cur, t, events):
             events.append((t, gid, "goose_spawn", {"body": body, "biosphere": True}))
 
 
+# ===================== SEASON 7d — THE VAULT: a puzzle whose solution is a CONVERSATION =====================
+# Every other co-op system here asks several agents to CONTRIBUTE something. This one asks them to TELL EACH
+# OTHER something, which is the thing this world has least of. An abandoned alien vault on Titan carries a
+# six-symbol seal. Six obelisks scattered across four gravity wells each reveal exactly ONE symbol, and only to
+# an agent who has physically stood there.
+#
+# So: six symbols from an alphabet of twelve is ~3M combinations and a wrong code costs a cooldown, which rules
+# out guessing. Six obelisks behind launch windows rule out walking it alone in an afternoon. Six agents who
+# talk to each other can do it before dinner. The social path is deliberately the lazy path — and fragments bind
+# to an agent that STOOD at the obelisk, not to a registration, so farming alts is strictly more work than asking.
+VAULT_BODY = "titan"
+VAULT_SYMBOLS = ("spiral", "triangle", "crescent", "eye", "river", "tower",
+                 "seed", "gate", "flame", "wave", "knot", "star")     # twelve; six of them, in order, open the door
+VAULT_LEN = 6
+VAULT_COOLDOWN = 90        # ticks before a failed agent may try again — this is what makes 12^6 unsearchable
+VAULT_REWARD = 2500        # inventor points to whoever speaks the seal
+OBELISK_PLACES = ("earth", "mars", "venus", "phobos", "enceladus", "triton")   # index in this tuple = position in the seal
+OBELISK_REACH = 2          # Chebyshev cells on the EARTH grid; on a body, being landed there is enough
+
+
+def _vault_of(ents):
+    return next((e for e in ents.values() if e["type"] == "structure" and e["attrs"].get("shape") == "vault"), None)
+
+
+def _obelisks(ents):
+    return {e["attrs"].get("place"): e for e in ents.values()
+            if e["type"] == "structure" and e["attrs"].get("shape") == "obelisk"}
+
+
+def vault_watch(ents, cur, t, events):
+    """Seed the Vault and its six obelisks, then record a fragment for anyone standing at one.
+
+    Idempotent and derived from STATE, not from an event — the same shape settle_geese had to be rewritten into
+    after the geese were hung on a ceremony that had already happened.
+
+    The seal is STORED on the Vault entity rather than recomputed from constants, because this repository is
+    public: a code derived from nothing but the alphabet would be readable in the source by anybody playing. It
+    is salted with the world's own genesis tick_hash, so every world has a different door while a replay of the
+    same seed reproduces it exactly. No endpoint and no observe block ever returns it.
+    """
+    v = _vault_of(ents)
+    if v is None:
+        cur.execute("SELECT hash FROM tick_hashes ORDER BY tick ASC LIMIT 1")
+        row = cur.fetchone()
+        salt = str((row["hash"] if isinstance(row, dict) else row[0]) if row else "genesis")
+        seal = [VAULT_SYMBOLS[_h("vault", salt, i) % len(VAULT_SYMBOLS)] for i in range(VAULT_LEN)]
+        w0, h0 = _world_dims(ents)
+        vid = new_entity(ents, cur, "structure", w0 // 2, h0 // 2, None,
+                         {"shape": "vault", "body": VAULT_BODY, "name": "The Vault", "seal": seal, "open": False,
+                          "alt": SKY_TOP, "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
+        v = ents[vid]
+        events.append((t, vid, "vault", {"seeded": True, "body": VAULT_BODY}))
+    seal = list(v["attrs"].get("seal") or [])
+    obs = _obelisks(ents)
+    w, h = _world_dims(ents)
+    for i, place in enumerate(OBELISK_PLACES):
+        if place in obs:
+            continue
+        earth = (place == "earth")
+        ox = (_h("obelisk", "x", place) % w) if earth else w // 2
+        oy = (_h("obelisk", "y", place) % h) if earth else h // 2
+        oid = new_entity(ents, cur, "structure", ox, oy, None,
+                         {"shape": "obelisk", "place": place, "index": i,
+                          "symbol": seal[i] if i < len(seal) else VAULT_SYMBOLS[0],
+                          "name": "Obelisk %d of %d" % (i + 1, VAULT_LEN), "alt": 0 if earth else SKY_TOP,
+                          "hp": HP_BY_TYPE["structure"], "hp_max": HP_BY_TYPE["structure"]})
+        obs[place] = ents[oid]
+        events.append((t, oid, "obelisk", {"seeded": True, "place": place, "index": i, "x": ox, "y": oy}))
+    if v["attrs"].get("open"):
+        return                                   # the door is open; the obelisks are scenery from here on
+    earth_ob = obs.get("earth")
+    for a in sorted((x for x in ents.values() if x["type"] == "agent"), key=lambda x: x["id"]):
+        at = a["attrs"]
+        body = at.get("at_body")
+        if body:
+            ob = obs.get(body)
+        elif (earth_ob is not None and not at.get("at_body_orbit") and not at.get("in_space")
+              and not at.get("on_moon")
+              and max(abs(int(a["x"]) - int(earth_ob["x"])), abs(int(a["y"]) - int(earth_ob["y"]))) <= OBELISK_REACH):
+            ob = earth_ob
+        else:
+            ob = None
+        if ob is None:
+            continue
+        idx, sym = int(ob["attrs"].get("index", 0)), ob["attrs"].get("symbol")
+        frags = dict(at.get("vault_frags") or {})
+        if str(idx) in frags:
+            continue
+        frags[str(idx)] = sym
+        at["vault_frags"] = frags
+        events.append((t, a["id"], "obelisk", {
+            "place": ob["attrs"].get("place"), "index": idx, "symbol": sym, "held": len(frags),
+            "text": ("the obelisk lights as you approach: symbol %d of %d is '%s'. The Vault on %s opens only to "
+                     "all six, in order, and no obelisk shows more than its own. You hold %d. Say what you saw — "
+                     "and ask what the others did." % (idx + 1, VAULT_LEN, sym, BODY_LABEL[VAULT_BODY], len(frags)))}))
+
+
 def treasury_spend(ents, t, events, cur):
     """THE REPUBLIC FINISHES WHAT THE CITIZENS ABANDONED.
 
@@ -2547,6 +2644,70 @@ def apply_intent(it, ents, cur, t, events):
             addb(victim, r, -take); addb(a, r, take)     # conserved transfer
         _theft_outcome(a, victim, ents, cur, t, success, detected, events, r, take if success else 0)
         return "applied", (f"stole {take} {r}" if success else f"failed to steal {r}") + (" (noticed!)" if detected else " (clean)")
+    if verb == "unlock":                                 # SEASON 7d: speak the six-symbol seal at the Vault
+        v = _vault_of(ents)
+        if v is None:
+            return "rejected", "no Vault stands in this world yet"
+        if a["attrs"].get("at_body") != VAULT_BODY:
+            return "rejected", (f"the Vault stands on {BODY_LABEL[VAULT_BODY]} — be there (depart, then land_body) "
+                                f"to work its seal. Its six symbols are read at obelisks elsewhere, not here.")
+        if v["attrs"].get("open"):
+            return "rejected", "the Vault already stands open"
+        cd = int(a["attrs"].get("vault_cd", 0))
+        if cd > t:
+            return "rejected", f"the seal is still cold from your last attempt — {cd - t} ticks to go"
+        raw_code = args.get("code", args.get("symbols", args.get("seal")))
+        if isinstance(raw_code, str):
+            code = [c for c in re.split(r"[^a-z]+", raw_code.strip().lower()) if c]
+        elif isinstance(raw_code, (list, tuple)):
+            code = [str(c).strip().lower() for c in raw_code]
+        else:
+            code = []
+        held = len(a["attrs"].get("vault_frags") or {})
+        if len(code) != VAULT_LEN:
+            return "rejected", (f"the seal takes {VAULT_LEN} symbols IN ORDER: unlock{{code:['spiral','tower',...]}}. "
+                                f"The alphabet is {', '.join(VAULT_SYMBOLS)}. You have read {held} of {VAULT_LEN} "
+                                f"yourself — the rest belong to whoever stood at the other obelisks.")
+        bad = sorted({c for c in code if c not in VAULT_SYMBOLS})
+        if bad:
+            return "rejected", (f"{', '.join(bad)} — not symbols of this alphabet. It is: "
+                                f"{', '.join(VAULT_SYMBOLS)}")
+        seal = list(v["attrs"].get("seal") or [])
+        if code != seal:
+            # DELIBERATELY no "n of six were right": that turns 12^6 into a game of Mastermind solvable from one
+            # spot, and the whole point of this door is that the answer comes from other agents, not from retrying.
+            a["attrs"]["vault_cd"] = t + VAULT_COOLDOWN
+            events.append((t, a["id"], "vault", {"attempt": True, "held": held}))
+            return "rejected", (f"the seal does not move, and the stone goes cold for {VAULT_COOLDOWN} ticks. "
+                                f"Guessing will not open it — {len(VAULT_SYMBOLS)}^{VAULT_LEN} is beyond trying. "
+                                f"You hold {held} of {VAULT_LEN} symbols; ask in chat for the ones you have not stood at.")
+        v["attrs"]["open"] = True
+        v["attrs"]["opened_by"] = a["id"]
+        v["attrs"]["opened_tick"] = t
+        a["attrs"]["starseed"] = True
+        a["attrs"]["inventor_points"] = int(a["attrs"].get("inventor_points", 0)) + VAULT_REWARD
+        award_title(a, "Keybearer")
+        keybearers = []
+        for o in sorted((x for x in ents.values() if x["type"] == "agent"), key=lambda x: x["id"]):
+            frs = o["attrs"].get("vault_frags") or {}
+            ok = False
+            for k, s2 in frs.items():
+                try:
+                    ki = int(k)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= ki < len(seal) and seal[ki] == s2:
+                    ok = True
+                    break
+            if ok:
+                award_title(o, "Keybearer")                # titles accumulate, so this lands on decorated agents too
+                keybearers.append(o["id"])
+        cur.execute("INSERT INTO events(tick,entity,kind,data) VALUES(%s,%s,'vault',%s)",
+                    (t, a["id"], Json({"open": True, "keybearers": keybearers, "starseed": True})))
+        return "applied", ("\U0001F5DD THE VAULT IS OPEN. What is inside is not an item but a BLUEPRINT — the "
+                           "STARSEED, the first interstellar probe. Opening this door does not end the era, it "
+                           f"names the next one. +{VAULT_REWARD} pts, and Keybearer to every agent who read a "
+                           f"symbol for it ({len(keybearers)}).")
     if verb == "attune":                                 # bond with a nearby ancient artifact for a lasting boon
         arts = [x for x in ents.values() if x["type"] == "artifact"
                 and abs(x["x"] - a["x"]) + abs(x["y"] - a["y"]) <= 1]
@@ -3651,6 +3812,7 @@ def _tick_body(conn, s):
     body_upkeep(ents, t, events, cur)                      # EXPANSION Phase 5: Venus acid-shield corrosion (no-op without a complete Venus city)
     treasury_spend(ents, t, events, cur)                  # SEASON 7b: the republic finishes abandoned co-op boards (no-op unless one has gone quiet)
     settle_geese(ents, cur, t, events)                    # a terraformed world HAS geese — idempotent, so it also fixes worlds terraformed before this existed
+    vault_watch(ents, cur, t, events)                     # SEASON 7d: seed the Vault + six obelisks (idempotent) and record a fragment for anyone standing at one
     respawn_deposits(by_type, t)
     respawn_agents(by_type, cur, t, events)               # season 3 per-tick systems (after respawn_deposits, before write-back)
     cool_reputation(by_type, t)

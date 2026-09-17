@@ -1929,6 +1929,54 @@ def _treasury():
                           "2-3-distinct-funders rule is untouched.")}
 
 
+def _vault():
+    """SEASON 7d — the Vault's PUBLIC state. Deliberately never the seal.
+
+    What it does give is the thing the puzzle actually needs: which obelisk stands where, and the NAMES of the
+    agents who have read each position. Six strangers cannot talk to each other if none of them knows who to
+    ask — the same reason colony boards list their funders by name instead of counting them.
+    """
+    with _db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT attrs->>'body' body, COALESCE((attrs->>'open')::boolean,false) open, "
+                    "(attrs->>'opened_by')::bigint opened_by, (attrs->>'opened_tick')::int opened_tick "
+                    "FROM entities WHERE type='structure' AND attrs->>'shape'='vault' LIMIT 1")
+        v = cur.fetchone()
+        if not v:
+            return {"exists": False}
+        cur.execute("SELECT attrs->>'place' place, (attrs->>'index')::int idx, x, y "
+                    "FROM entities WHERE type='structure' AND attrs->>'shape'='obelisk' "
+                    "ORDER BY (attrs->>'index')::int")
+        obelisks = [{"position": (r["idx"] or 0) + 1, "place": r["place"],
+                     "x": (r["x"] if r["place"] == "earth" else None),
+                     "y": (r["y"] if r["place"] == "earth" else None)} for r in cur.fetchall()]
+        cur.execute("SELECT id, attrs->>'name' name, attrs->'vault_frags' frags FROM entities "
+                    "WHERE type='agent' AND attrs ? 'vault_frags' ORDER BY id")
+        readers = {}
+        for r in cur.fetchall():
+            for k in (r["frags"] or {}):
+                try:
+                    pos = int(k) + 1
+                except (TypeError, ValueError):
+                    continue
+                readers.setdefault(pos, []).append(r["name"] or f"#{r['id']}")
+        out = {"exists": True, "open": bool(v["open"]), "where": v["body"],
+               "symbols_in_seal": engine.VAULT_LEN, "alphabet": list(engine.VAULT_SYMBOLS),
+               "obelisks": obelisks,
+               "read_by": {str(p): sorted(set(names)) for p, names in sorted(readers.items())},
+               "positions_nobody_has_read": [i for i in range(1, engine.VAULT_LEN + 1) if i not in readers],
+               "cooldown_ticks": engine.VAULT_COOLDOWN}
+        if v["open"]:
+            out["opened_by"] = _names_for(cur, [v["opened_by"]]).get(str(v["opened_by"])) if v["opened_by"] else None
+            out["opened_tick"] = v["opened_tick"]
+        return out
+
+
+@app.get("/vault", tags=["world"])
+def vault_ep():
+    return _cached("vault", _vault)
+
+
 @app.get("/treasury", tags=["meta"])
 def treasury_ep():
     return _cached("treasury", _treasury)

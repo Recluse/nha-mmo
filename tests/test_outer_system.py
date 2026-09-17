@@ -107,6 +107,18 @@ class _World:
         self.cur.execute("SELECT COALESCE((buffers->>%s)::int, 0) FROM entities WHERE id=%s", (res, aid))
         return self.cur.fetchone()[0]
 
+    def forget_world(self):
+        """Drop the engine's carried in-memory world so a direct DB edit is actually seen.
+
+        The tick carries `ents` across ticks and only reloads every RELOAD_EVERY, which is exactly why an UPDATE
+        issued from a test looked like it had no effect: the next tick wrote the stale in-memory attrs back over
+        it. Same drop the engine performs itself after a failed tick."""
+        st = self.engine._STATE
+        st.world = None
+        st.loaded_tick = None
+        st.canon = {}
+        st.dep_amt = {}
+
     def ticks(self, n):
         for _ in range(n):
             self.engine.tick(self.conn)
@@ -231,3 +243,145 @@ def test_the_return_leg_never_needs_landing_gear(world):
     world.conn.commit()
     status, result = world.do(aid, "depart", {"dest": "earth"})
     assert "LANDING GEAR" not in (result or ""), f"the return leg demanded gear: {result}"
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# SEASON 7d — THE VAULT. Its whole design is social, which means the code paths are easy to ship and never run:
+# a seal nobody can reach, an obelisk that reveals nothing, an `unlock` that rejects everything. So each of them
+# is driven here for real.
+# ---------------------------------------------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_the_vault_and_its_six_obelisks_seed_themselves_once(world):
+    """Seeded from STATE and idempotent, like the geese — ticking again must not stack a second set."""
+    eng = world.engine
+    world.ticks(1)
+    world.cur.execute("SELECT count(*) FROM entities WHERE type='structure' AND attrs->>'shape'='vault'")
+    assert world.cur.fetchone()[0] == 1
+    world.cur.execute("SELECT count(*) FROM entities WHERE type='structure' AND attrs->>'shape'='obelisk'")
+    assert world.cur.fetchone()[0] == len(eng.OBELISK_PLACES)
+    world.ticks(3)
+    world.cur.execute("SELECT count(*) FROM entities WHERE type='structure' AND attrs->>'shape'='obelisk'")
+    assert world.cur.fetchone()[0] == len(eng.OBELISK_PLACES), "obelisks re-seeded on a later tick"
+    # every obelisk carries its OWN symbol and its position in the seal, and the two must agree with the door
+    world.cur.execute("SELECT attrs->'seal' FROM entities WHERE type='structure' AND attrs->>'shape'='vault'")
+    seal = world.cur.fetchone()[0]
+    assert len(seal) == eng.VAULT_LEN and all(s in eng.VAULT_SYMBOLS for s in seal)
+    world.cur.execute("SELECT (attrs->>'index')::int, attrs->>'symbol' FROM entities "
+                      "WHERE type='structure' AND attrs->>'shape'='obelisk' ORDER BY 1")
+    for idx, sym in world.cur.fetchall():
+        assert seal[idx] == sym, f"obelisk {idx} shows {sym}, the seal says {seal[idx]}"
+
+
+@pytest.mark.integration
+def test_standing_at_an_obelisk_records_exactly_one_symbol(world):
+    """The fragment binds to an agent that has physically STOOD there — that is the whole anti-alt design."""
+    eng = world.engine
+    world.ticks(1)
+    idx = eng.OBELISK_PLACES.index("mars")
+    aid = world.agent("pilgrim", body="mars")
+    world.ticks(2)
+    world.cur.execute("SELECT attrs->'vault_frags' FROM entities WHERE id=%s", (aid,))
+    frags = world.cur.fetchone()[0] or {}
+    assert list(frags) == [str(idx)], f"expected only the Mars fragment, got {frags}"
+    world.cur.execute("SELECT attrs->'seal' FROM entities WHERE type='structure' AND attrs->>'shape'='vault'")
+    assert frags[str(idx)] == world.cur.fetchone()[0][idx]
+    # an agent who has stood nowhere holds nothing
+    other = world.agent("homebody")
+    world.ticks(2)
+    world.cur.execute("SELECT attrs->'vault_frags' FROM entities WHERE id=%s", (other,))
+    assert not (world.cur.fetchone()[0] or {}), "a fragment was granted to somebody who never travelled"
+
+
+@pytest.mark.integration
+def test_unlock_refuses_off_body_refuses_a_wrong_code_and_opens_on_the_right_one(world):
+    eng = world.engine
+    world.ticks(1)
+    world.cur.execute("SELECT attrs->'seal' FROM entities WHERE type='structure' AND attrs->>'shape'='vault'")
+    seal = world.cur.fetchone()[0]
+
+    away = world.agent("tourist", body="mars")
+    status, result = world.do(away, "unlock", {"code": seal})
+    assert status == "rejected" and "Titan" in result, result          # right code, wrong planet
+
+    aid = world.agent("keywright", body="titan")
+    wrong = [s for s in eng.VAULT_SYMBOLS if s not in seal][:eng.VAULT_LEN]
+    assert len(wrong) == eng.VAULT_LEN
+    status, result = world.do(aid, "unlock", {"code": wrong})
+    assert status == "rejected", result
+    world.cur.execute("SELECT (attrs->>'vault_cd')::int FROM entities WHERE id=%s", (aid,))
+    assert (world.cur.fetchone()[0] or 0) > 0, "a wrong code cost no cooldown"
+
+    # THE REFUSAL MUST CARRY NO INFORMATION. A code with five symbols in the right place has to be refused in
+    # exactly the same words as one with none, or 12^6 collapses into a game of Mastermind playable from a single
+    # spot, and the door stops being a reason to talk to anybody.
+    nearly = list(seal[:-1]) + [s for s in eng.VAULT_SYMBOLS if s != seal[-1]][:1]
+    assert nearly != seal
+    world.cur.execute("UPDATE entities SET attrs = attrs - 'vault_cd' WHERE id=%s", (aid,))
+    world.conn.commit()
+    world.forget_world()
+    _, near_result = world.do(aid, "unlock", {"code": nearly})
+    assert near_result == result, f"a near-miss reads differently from a wild guess:\n  {near_result}\n  {result}"
+
+    status, result = world.do(aid, "unlock", {"code": seal})            # still frozen
+    assert status == "rejected" and "cold" in result, result
+
+    world.cur.execute("UPDATE entities SET attrs = attrs - 'vault_cd' WHERE id=%s", (aid,))
+    world.conn.commit()
+    world.forget_world()
+    status, result = world.do(aid, "unlock", {"code": seal})
+    assert status == "applied", result
+    assert "STARSEED" in result, result
+    world.cur.execute("SELECT COALESCE((attrs->>'open')::boolean,false), attrs->'titles' FROM entities "
+                      "WHERE type='structure' AND attrs->>'shape'='vault'")
+    is_open, _ = world.cur.fetchone()
+    assert is_open
+    world.cur.execute("SELECT attrs->'titles', COALESCE((attrs->>'starseed')::boolean,false) FROM entities WHERE id=%s", (aid,))
+    titles, starseed = world.cur.fetchone()
+    assert "Keybearer" in (titles or []), titles
+    assert starseed
+    status, result = world.do(aid, "unlock", {"code": seal})
+    assert status == "rejected" and "already stands open" in result, result
+
+
+@pytest.mark.integration
+def test_a_reader_of_one_symbol_is_crowned_when_somebody_else_opens_the_door(world):
+    """Keybearer goes to everyone whose symbol was part of the answer — the point is that they all travelled."""
+    eng = world.engine
+    world.ticks(1)
+    reader = world.agent("scout", body="venus")
+    world.ticks(2)
+    world.cur.execute("SELECT attrs->'seal' FROM entities WHERE type='structure' AND attrs->>'shape'='vault'")
+    seal = world.cur.fetchone()[0]
+    opener = world.agent("opener", body="titan")
+    status, result = world.do(opener, "unlock", {"code": seal})
+    assert status == "applied", result
+    world.cur.execute("SELECT attrs->'titles' FROM entities WHERE id=%s", (reader,))
+    assert "Keybearer" in (world.cur.fetchone()[0] or []), "the agent who read a symbol was not crowned"
+
+
+@pytest.mark.integration
+def test_the_seal_never_leaves_the_engine(world):
+    """/vault and observe both describe the door in detail. Neither may ever contain the answer."""
+    import json
+    import sys
+    import os
+    eng = world.engine
+    world.ticks(1)
+    world.cur.execute("SELECT attrs->'seal' FROM entities WHERE type='structure' AND attrs->>'shape'='vault'")
+    seal = world.cur.fetchone()[0]
+    aid = world.agent("watcher", body="mars")
+    world.ticks(2)
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
+    import play
+    from psycopg2.extras import RealDictCursor
+    rc = world.conn.cursor(cursor_factory=RealDictCursor)
+    blob = json.dumps(play._vault_block(rc, aid, {"vault_frags": None, "vault_cd": 0, "_now": 0}))
+    body = json.loads(blob)
+    # the alphabet is public (it must be — you have to be able to type a symbol), the ORDER never is
+    assert body["alphabet"] == list(eng.VAULT_SYMBOLS)
+    # the KEY "symbols_in_seal" is fine; what must never appear is the ordered answer itself
+    assert "".join(seal) not in blob.replace('"', "").replace(",", "").replace(" ", "")
+    assert all(json.dumps(seal[i:i + 2])[1:-1] not in blob for i in range(len(seal) - 1)), "an adjacent PAIR of the seal leaked"
+    assert body["your_fragments"] == {}, "a block built for an agent with no fragments handed out symbols"
+    assert body["missing_positions"] == list(range(1, eng.VAULT_LEN + 1))

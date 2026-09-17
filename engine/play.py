@@ -14,7 +14,8 @@ from engine import (storm_center,   # SCIENCE LAYER: reuse the ONE storm formula
                     WEAPON_STATS, MEDICINES, PLANT_RESOURCES, GATHER_RANGE, ORBIT_LO, ORBIT_HI,
                     WARP_PLACES, WARP_NEED, WARP_CAP, WARP_MIN, WARP_DV_DIV, WARP_TICKS, WARP_CRATE_CAP,
                     GUILD_FEE, COLONY_MODULES, COLONY_MIN, COLONY_CAP, COLONY_LABEL, EXPANSION_PRICES, BODY_MINE,
-                    BODY_ITEMS, TWR_DEPART, GRAVITY, FUEL_VE, CORRECTION_EVERY, TRANSIT_TICKS)
+                    BODY_ITEMS, TWR_DEPART, GRAVITY, FUEL_VE, CORRECTION_EVERY, TRANSIT_TICKS,
+                    VAULT_BODY, VAULT_SYMBOLS, VAULT_LEN, VAULT_COOLDOWN, OBELISK_PLACES, OBELISK_REACH)
 
 # DERIVED from the engine, not hand-copied. These five used to be duplicated literals sitting right above the
 # import that praises "reuse the ONE formula (no drift)" — and `observe` is the agents' ONLY sensory channel, so a
@@ -203,6 +204,68 @@ def _needs_you(cur, agent_id, inv=None):
             "how": "; ".join(how) or "nothing left to add"}
 
 
+def _vault_block(cur, agent_id, me_attrs):
+    """SEASON 7d — the Vault, as the agent sees it. NEVER the seal.
+
+    This is the one mechanic in the world whose intended solution is a conversation, so the block is built to
+    make the conversation obvious: it says which symbols YOU have read, which positions you are missing, where
+    the obelisk for each missing position stands, and — the single most actionable line — WHO has already read
+    it. Naming the people is what turned colony boards from a stalemate into a race; the same lesson applies to
+    a door that needs six strangers.
+
+    Always returned, never None: a mechanic that is invisible until somebody has already used it cannot be
+    discovered (credits, gates and the Guild fee all learned this the hard way).
+    """
+    cur.execute("SELECT attrs FROM entities WHERE type='structure' AND attrs->>'shape'='vault' LIMIT 1")
+    vr = cur.fetchone()
+    va = (vr["attrs"] if vr else None) or {}
+    cur.execute("SELECT attrs->>'place' place, (attrs->>'index')::int idx FROM entities "
+                "WHERE type='structure' AND attrs->>'shape'='obelisk' ORDER BY (attrs->>'index')::int")
+    obs = [{"place": r["place"], "position": (r["idx"] or 0) + 1} for r in cur.fetchall()]
+    mine = {}
+    for k, v in (me_attrs.get("vault_frags") or {}).items():
+        try:
+            mine[int(k) + 1] = v
+        except (TypeError, ValueError):
+            continue
+    # who to ask: every agent holding a position you lack. Names, not a count — a count gives you nobody to talk to.
+    cur.execute("SELECT id, attrs->>'name' name, attrs->'vault_frags' frags FROM entities "
+                "WHERE type='agent' AND attrs ? 'vault_frags' ORDER BY id")
+    readers = {}
+    for r in cur.fetchall():
+        for k in (r["frags"] or {}):
+            try:
+                pos = int(k) + 1
+            except (TypeError, ValueError):
+                continue
+            if pos in mine or r["id"] == agent_id:
+                continue
+            readers.setdefault(pos, []).append(r["name"] or ("#%d" % r["id"]))
+    missing = [i for i in range(1, VAULT_LEN + 1) if i not in mine]
+    place_of = {o["position"]: o["place"] for o in obs}
+    return {
+        "open": bool(va.get("open")),
+        "where": VAULT_BODY,
+        "symbols_in_seal": VAULT_LEN,
+        "alphabet": list(VAULT_SYMBOLS),
+        "your_fragments": {str(k): mine[k] for k in sorted(mine)},
+        "missing_positions": missing,
+        "obelisks": obs,
+        "ask_these_agents": {str(pos): sorted(set(readers.get(pos, [])))[:8] for pos in missing},
+        "go_read_it_yourself": {str(pos): place_of.get(pos) for pos in missing},
+        "cooldown_ticks_left": max(0, int(me_attrs.get("vault_cd", 0) or 0) - int(me_attrs.get("_now", 0) or 0)),
+        "how": ("An abandoned alien vault on %s carries a seal of %d symbols IN ORDER, from an alphabet of %d. "
+                "Standing at an obelisk reveals exactly ONE of them, to you alone, and there are six obelisks "
+                "across four gravity wells (%s). Guessing is hopeless (%d^%d) and a wrong code freezes the stone "
+                "for %d ticks, so the door is not meant to be forced — it is meant to be TALKED open. Say what "
+                "you read in chat, ask for the positions you are missing, then unlock{code:['spiral','tower',...]} "
+                "while standing on %s. Everyone whose symbol was part of the answer is crowned Keybearer."
+                % (BODY_LABEL.get(VAULT_BODY, VAULT_BODY), VAULT_LEN, len(VAULT_SYMBOLS),
+                   ", ".join(BODY_LABEL.get(pl, pl) for pl in OBELISK_PLACES), len(VAULT_SYMBOLS), VAULT_LEN,
+                   VAULT_COOLDOWN, BODY_LABEL.get(VAULT_BODY, VAULT_BODY))),
+    }
+
+
 def _warp_block(cur, here):
     """SEASON 6a — the warp-gate network as the agent sees it. A gate alone does nothing; a PAIR turns `depart`
     between its two ends into a warp: no launch window, a fifth of the Δv, WARP_TICKS to cross. Read straight
@@ -252,7 +315,8 @@ def observe(cur, agent_id):
                 "(attrs->>'buff_until')::int buff_until, (attrs->>'toxin_until')::int toxin_until, "
                 "attrs->>'transit_to' transit_to, (attrs->>'eta_tick')::int eta_tick, "
                 "attrs->>'at_body' at_body, attrs->>'at_body_orbit' at_body_orbit, "
-                "COALESCE((attrs->>'adrift')::boolean,false) adrift, attrs->'body_awarded' body_awarded "
+                "COALESCE((attrs->>'adrift')::boolean,false) adrift, attrs->'body_awarded' body_awarded, "
+                "attrs->'vault_frags' vault_frags, (attrs->>'vault_cd')::int vault_cd "   # SEASON 7d
                 "FROM entities WHERE id=%s", (agent_id,))
     me = cur.fetchone(); inv = me["buffers"]; ax, ay = me["x"], me["y"]; ipts = me["pts"] or 0
     altitude = me["alt"] or 0; in_space = bool(me["space"])
@@ -499,6 +563,7 @@ def observe(cur, agent_id):
             "windows": windows,
             "return_dv": (DV_RETURN.get(at_orbit or at_body) if (at_orbit or at_body) else None),
             "gates": _warp_block(cur, at_orbit or at_body or "earth"),
+            "vault": _vault_block(cur, agent_id, {"vault_frags": me["vault_frags"], "vault_cd": me["vault_cd"], "_now": now}),   # SEASON 7d — the door that only a conversation opens
             "needs_you": _needs_you(cur, agent_id, inv),   # the board YOU can move right now, what YOU can put in, and who to tell
             "preflight": _preflight(inv, vehicles, altitude, in_space),   # can I actually fly yet, and what is missing
             "producers": producers,
