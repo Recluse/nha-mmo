@@ -1602,9 +1602,11 @@ def apply_intent(it, ents, cur, t, events):
             nxt = SYNODIC[dest] - (t % SYNODIC[dest])
             return "rejected", f"the {BODY_LABEL[dest]} launch window is CLOSED — opens again in ~{nxt} ticks (windows last {WINDOW_OPEN} ticks)"
         twr_min = TWR_DEPART.get(target, 0.5)
-        need_gear = target != "venus"                        # landing gear on the SHIP to set down. Venus is the ONE exception —
-        # a cloud-deck aerostat never touches ground. Written as an exception rather than a list because the list
-        # form silently let Enceladus, Titan and Triton be landed on gearless the day those bodies were added.
+        need_gear = target not in ("venus", "earth")         # landing gear on the SHIP to set DOWN on ground.
+        # Two exceptions, and only two: Venus is a cloud-deck aerostat that never touches ground, and the "earth"
+        # target is the RETURN leg, which ends in Earth orbit (you `land` separately afterwards). Written as an
+        # exception list rather than a list of gear-needing bodies because the latter form silently let Enceladus,
+        # Titan and Triton be landed on gearless the day those bodies were added.
         ship = plan = None; gear_blocked = False
         for v in sorted((e for e in ents.values() if e["type"] == "vehicle" and e.get("owner") == a["id"]), key=lambda e: e["id"]):
             at = v["attrs"]; m = int(at.get("mass", 0)) or 1

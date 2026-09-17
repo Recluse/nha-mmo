@@ -216,3 +216,18 @@ def test_the_outer_bodies_demand_landing_gear(world):
     world.conn.commit()
     status, result = world.do(aid, "depart", {"dest": "titan"})
     assert status == "rejected" and "LANDING GEAR" in result, f"gearless ship cleared for Titan: {result}"
+
+@pytest.mark.integration
+def test_the_return_leg_never_needs_landing_gear(world):
+    """The gear rule is about setting DOWN on ground. `depart{dest:'earth'}` ends in Earth ORBIT — you `land`
+    separately afterwards — so it must not demand gear. Rewriting the rule as "every body except Venus" made the
+    return leg demand it, which would have stranded anyone who flew to Venus in a gearless aerostat ship."""
+    from psycopg2.extras import Json
+    aid = world.agent("homebound", body="venus")
+    world.cur.execute("UPDATE entities SET buffers=%s WHERE id=%s", (Json({"cryo_fuel": 900}), aid))
+    world.cur.execute("INSERT INTO entities(type,x,y,owner,attrs) VALUES('vehicle',0,0,%s,%s)",
+                      (aid, Json({"name": "aerostat", "controllable": True, "flies": True, "orbital_engine": True,
+                                  "mass": 300, "thrust": 1600, "fuel_cap": 900, "hp": 100, "hp_max": 100})))
+    world.conn.commit()
+    status, result = world.do(aid, "depart", {"dest": "earth"})
+    assert "LANDING GEAR" not in (result or ""), f"the return leg demanded gear: {result}"
