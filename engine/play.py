@@ -93,7 +93,7 @@ def _preflight(inv, vehicles, altitude, in_space):
             blockers.append("no usable fuel held (cryo_fuel or helium3 carry the most per unit)")
         out["destinations"][body] = {
             "needs_in_hold": list(items) or [],
-            "needs_landing_gear_on_ship": body in ("deimos", "phobos", "mars"),
+            "needs_landing_gear_on_ship": body != "venus",   # every body with GROUND; Venus alone is an aerostat deck
             "min_thrust_to_weight": TWR_DEPART[body],
             "course_correction_fuel": corr,     # spare units the crossing burns on top of the departure Δv
             "ready": not blockers,

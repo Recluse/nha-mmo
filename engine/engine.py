@@ -288,8 +288,12 @@ EXPANSION_CARGO = ("c_regolith", "stickney_glass", "void_pumice", "mars_regolith
 
 # Per-body co-op COLONY boards — the station funding engine (cap-fraction / distinct-funder / split-reward), cloned and
 # keyed on `body`. Moons use the loosest floor (2 funders) as the entry rung; Mars/Venus match the station (40%/3).
-COLONY_CAP = {"phobos": 60, "deimos": 60, "mars": 40, "venus": 40}   # ceil-% one funder may cover per resource line
-COLONY_MIN = {"phobos": 2, "deimos": 2, "mars": 3, "venus": 3}       # distinct funders a module needs before it completes
+# SEASON 7b — the outer bodies. The floors are set by REACHABILITY, not by prestige: 16 agents are alive and a
+# Triton window opens every 1400 ticks, so demanding Mars' 3 distinct funders out there would be a board nobody
+# could ever close. Enceladus and Triton take the moons' 2-funder entry rung; Titan, the one that pays (methane
+# into methalox), is worth a real joint effort at 3.
+COLONY_CAP = {"phobos": 60, "deimos": 60, "mars": 40, "venus": 40, "enceladus": 60, "titan": 50, "triton": 60}   # ceil-% one funder may cover per resource line
+COLONY_MIN = {"phobos": 2, "deimos": 2, "mars": 3, "venus": 3, "enceladus": 2, "titan": 3, "triton": 2}          # distinct funders a module needs before it completes
 COLONY_MODULE_REWARD = 180
 COLONY_FINISH_REWARD = 1600
 
@@ -325,13 +329,19 @@ TREASURY_EVERY = 300       # how often the republic looks at what the citizens a
 TREASURY_STALL = 3000      # a co-op board untouched this long counts as stalled (~100 min)
 TREASURY_SPEND = 2000      # max credits the purse puts into one board per intervention
 WARP_REWARD = 900          # inventor points split among funders when a gate completes
-WARP_BODY_EXOTIC = {"phobos": "c_regolith", "deimos": "c_regolith", "mars": "mars_regolith", "venus": "cloud_acid"}
+WARP_BODY_EXOTIC = {"phobos": "c_regolith", "deimos": "c_regolith", "mars": "mars_regolith", "venus": "cloud_acid",
+                    # The outer gates cost the SAME as the inner ones on purpose. Out here a gate is not a
+                    # convenience, it is the difference between a route and a rumour — a 1400-tick Triton window
+                    # is already the toll, and a premium on top would simply mean no outer gate is ever built.
+                    "enceladus": "clean_ice", "titan": "methane", "triton": "nitrogen_ice"}
 WARP_NEED = {"earth": {"superalloy": 200, "iridium": 60, "chip": 150, "crystal": 200, "titanium": 300}}
 for _b, _x in WARP_BODY_EXOTIC.items():   # a body gate is paid for largely in that body's own exotic — only
     WARP_NEED[_b] = {"superalloy": 160, "chip": 120, _x: 200}   # somebody who has actually been out there can pay
 WARP_PLACES = ("earth",) + EXPANSION_BODIES
-COLONY_LABEL = {"phobos": "Forward Base (Phobos)", "deimos": "Forward Base (Deimos)", "mars": "Ares Base", "venus": "Aphrodite Terrace"}
-COLONY_TITLE = {"phobos": "Moonwright", "deimos": "Moonwright", "mars": "Areoformer", "venus": "Cytherean"}
+COLONY_LABEL = {"phobos": "Forward Base (Phobos)", "deimos": "Forward Base (Deimos)", "mars": "Ares Base", "venus": "Aphrodite Terrace",
+                "enceladus": "Tiger Stripe Station", "titan": "Kraken Harbour", "triton": "Geyser Watch"}
+COLONY_TITLE = {"phobos": "Moonwright", "deimos": "Moonwright", "mars": "Areoformer", "venus": "Cytherean",
+                "enceladus": "Cryowright", "titan": "Harbourmaster", "triton": "Geyserwarden"}
 COLONY_MODULES = {
     "phobos": {
         "anchor_truss": {"label": "Anchor Truss", "need": {"metal": 200, "titanium": 60, "c_regolith": 120}},
@@ -359,6 +369,26 @@ COLONY_MODULES = {
         "sky_farm":      {"label": "Sky Farm",      "need": {"graphite": 350, "crystal": 400, "mars_ice": 400, "co2": 300, "chip": 120}},
         "sky_lab":       {"label": "Sky Lab",       "need": {"crystal": 500, "silicon": 450, "iridium": 100, "acid_skin": 200, "chip": 260}},
         "water_import":  {"label": "Water Import",  "need": {"mars_ice": 800, "ice": 400}},   # the pure-water sink — forces a Mars→Venus supply chain
+    },
+    # ---- SEASON 7b: the outer system. Bills sit between the moons and Mars — nearer the moons, because out there
+    # the JOURNEY is the cost. Every board leans on its own body's exotic, so a funder has to have actually been
+    # there, and Titan's Cryogenic Hab takes Enceladus' clean_ice on purpose: the Saturn system is meant to be
+    # worked as a pair, the way Venus' Water Import forces a Mars supply line.
+    "enceladus": {
+        "ice_anchor":  {"label": "Ice Anchor",          "need": {"metal": 220, "titanium": 80, "clean_ice": 140}},
+        "plume_tap":   {"label": "Plume Tap",           "need": {"composite": 120, "chip": 40, "cryo_brine": 160}},
+        "life_plant":  {"label": "Life-Support Plant",  "need": {"titanium": 150, "crystal": 100, "chip": 60, "clean_ice": 180}},
+    },
+    "titan": {
+        "harbour_pad":   {"label": "Harbour Pad",     "need": {"metal": 500, "titanium": 260, "composite": 180, "chip": 60}},
+        "cryo_hab":      {"label": "Cryogenic Hab",   "need": {"metal": 400, "composite": 250, "clean_ice": 200, "chip": 90}},
+        "methane_works": {"label": "Methane Works",   "need": {"titanium": 350, "crystal": 200, "chip": 150, "methane": 400}},
+        "haze_lab":      {"label": "Haze Laboratory", "need": {"crystal": 300, "silicon": 250, "chip": 180, "tholin": 250}},
+    },
+    "triton": {
+        "geyser_mast": {"label": "Geyser Mast", "need": {"superalloy": 180, "titanium": 200, "nitrogen_ice": 200}},
+        "cryo_vault":  {"label": "Cryo Vault",  "need": {"composite": 300, "crystal": 200, "chip": 120, "nitrogen_ice": 250}},
+        "neon_array":  {"label": "Neon Array",  "need": {"iridium": 90, "crystal": 350, "chip": 200, "neon": 180}},
     },
 }
 
@@ -664,6 +694,19 @@ PRODUCERS = {
     "sabatier":          {"bodies": ("mars",),            "cost": {"titanium": 80, "chip": 40},    "period": 6, "out": {"methalox": 2}, "consume": {"co2": 3, "mars_ice": 2}, "solar": False, "label": "Sabatier Refinery"},
     "scrubber":          {"bodies": ("mars",),            "cost": {"metal": 90, "chip": 20},       "period": 5, "out": {"o2": 2},       "consume": {"perchlorate": 2},        "solar": False, "label": "Perchlorate Scrubber"},
     "bosch":             {"bodies": ("venus",),           "cost": {"composite": 80, "chip": 40},   "period": 6, "out": {"water": 2},    "consume": {"co2": 3, "hydrogen": 2}, "solar": False, "label": "Bosch Reactor"},
+    # ---- SEASON 7b: outer-system ISRU. Nothing out here is solar — at Saturn sunlight is about 1% of Earth's, so
+    # every one of these runs off its own heat source and none is weather-sensitive.
+    "brine_tap":         {"bodies": ("enceladus",),       "cost": {"metal": 90, "chip": 20},       "period": 5, "out": {"cryo_brine": 3, "clean_ice": 2}, "solar": False, "label": "Plume Brine Tap"},
+    "ice_sublimator":    {"bodies": ("enceladus",),       "cost": {"metal": 100, "composite": 30}, "period": 5, "out": {"clean_ice": 4},                  "solar": False, "label": "Ice Sublimator"},
+    "methane_still":     {"bodies": ("titan",),           "cost": {"titanium": 80, "chip": 30},    "period": 5, "out": {"methane": 4},                    "solar": False, "label": "Methane Still"},
+    "haze_collector":    {"bodies": ("titan",),           "cost": {"composite": 50, "chip": 30},   "period": 6, "out": {"tholin": 3},                     "solar": False, "label": "Haze Collector"},
+    "n2_harvester":      {"bodies": ("triton",),          "cost": {"metal": 110, "composite": 40}, "period": 5, "out": {"nitrogen_ice": 4},               "solar": False, "label": "Nitrogen Harvester"},
+    "neon_trap":         {"bodies": ("triton",),          "cost": {"iridium": 40, "crystal": 60, "chip": 40}, "period": 7, "out": {"neon": 2},            "solar": False, "label": "Neon Trap"},
+    # THE SPINE OF THE SEASON. methalox was reachable only through the Mars Sabatier, so Titan's methane — the
+    # stated reason to fly out at all — had nowhere to go. This closes the loop: Titan methane plus Enceladus
+    # clean_ice (electrolysed for the oxidiser) becomes top-tier fuel, so the far frontier RETURNS FUEL and pays
+    # for its own expansion instead of bringing home souvenirs. It needs both Saturn moons worked, by design.
+    "methalox_plant":    {"bodies": ("titan",),           "cost": {"titanium": 120, "chip": 60},   "period": 6, "out": {"methalox": 3}, "consume": {"methane": 3, "clean_ice": 2}, "solar": False, "label": "Methalox Plant"},
 }
 MAX_PRODUCERS_PER_AGENT = 12       # bound the per-tick producer scan + stop a whale spamming a resource fountain
 
@@ -1559,7 +1602,9 @@ def apply_intent(it, ents, cur, t, events):
             nxt = SYNODIC[dest] - (t % SYNODIC[dest])
             return "rejected", f"the {BODY_LABEL[dest]} launch window is CLOSED — opens again in ~{nxt} ticks (windows last {WINDOW_OPEN} ticks)"
         twr_min = TWR_DEPART.get(target, 0.5)
-        need_gear = target in ("deimos", "phobos", "mars")   # landing gear on the SHIP to set down (Venus is a cloud-deck aerostat, none)
+        need_gear = target != "venus"                        # landing gear on the SHIP to set down. Venus is the ONE exception —
+        # a cloud-deck aerostat never touches ground. Written as an exception rather than a list because the list
+        # form silently let Enceladus, Titan and Triton be landed on gearless the day those bodies were added.
         ship = plan = None; gear_blocked = False
         for v in sorted((e for e in ents.values() if e["type"] == "vehicle" and e.get("owner") == a["id"]), key=lambda e: e["id"]):
             at = v["attrs"]; m = int(at.get("mass", 0)) or 1

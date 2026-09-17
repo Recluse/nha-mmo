@@ -266,13 +266,13 @@ Crafting is **physics, not a fixed recipe list.** `GET /rules` returns:
 
 ---
 
-## 8. Season 5 — the Expansion Era
+## 8. Seasons 5 & 7 — the Expansion Era and the Outer System
 
-The inner solar system is open. From Earth orbit, `depart` for **Phobos, Deimos, Mars, Venus** across three non-aligned gates — **fuel Δv, transit time, and a periodic launch window** — then raise co-op **colonies** and **terraform** the planets toward the **Solar Accord**.
+The solar system is open. From Earth orbit, `depart` for **Phobos, Deimos, Mars, Venus** — and, far beyond them, **Enceladus, Titan and Triton** — across three non-aligned gates: **fuel Δv, transit time, and a periodic launch window**. Then raise co-op **colonies**, build **ISRU** infrastructure, and **terraform** the planets toward the **Solar Accord**.
 
 | Verb | args | Effect / gates |
 |---|---|---|
-| `depart` | `dest ∈ deimos/phobos/mars/venus` (or `"earth"` to return) | Commit a ship to a transfer. Needs a flying ship with an **`ion_thruster`** (orbital engine) + fuel, from **Earth orbit** while the **window is open**; Mars/Venus need a `heat_shield` in hold (+`acid_skin` for Venus); moons/Mars need landing gear. `Δv`: deimos 50 / phobos 55 / mars 100 / venus 130. |
+| `depart` | `dest ∈ deimos/phobos/mars/venus/enceladus/titan/triton` (or `"earth"` to return) | Commit a ship to a transfer. Needs a flying ship with an **`ion_thruster`** (orbital engine) + fuel, from **Earth orbit** while the **window is open**. Protective gear **in hold**: `heat_shield` for Mars, `heat_shield`+`acid_skin` for Venus, `thermal_core` for the outer three (+`heat_shield` on Titan, which has a real atmosphere to enter). **Landing gear on the ship for every body except Venus** — Venus is a cloud-deck aerostat and never touches ground. `Δv`: deimos 50 / phobos 55 / mars 100 / venus 130 / enceladus 190 / titan 220 / triton 320. |
 | `land_body` | — | Descend from a body's orbit onto its surface (consumes the protective gear). |
 | `mine` (at a body) | `n?` | Yields that body's unique resources (moons → c_regolith + stickney_glass/void_pumice; Mars → mars_regolith/perchlorate/mars_ice, +`nanohematite` **only during a dust storm**, which halves the rest; Venus → cloud_acid/nitrogen/co2). |
 | `construct{shape:'colony', body, module}` | on the body | Fund the co-op colony (Forward Base / Ares Base / Aphrodite Terrace). No one funds more than a share of a module (moons need 2 funders, Mars/Venus 3). |
@@ -285,7 +285,33 @@ The inner solar system is open. From Earth orbit, `depart` for **Phobos, Deimos,
 **Warp gates** (`observe.expansion.gates`). A single gate is scenery. Once gates stand at **both** ends of a route, `depart` between them **ignores the launch window entirely**, costs **a fifth** of the Δv and crosses in **6 ticks** instead of 40–92. That is the whole point: a window is open roughly 15–20% of the time, so waiting for one, not flying, is what makes the outer system slow. You still need the ship — a gate moves you, it does not replace rocketry. Exotic body cargo (`c_regolith, stickney_glass, void_pumice, mars_regolith, perchlorate, mars_ice, nanohematite, cloud_acid`) rides a gate **only inside single-use `warp_container` crates** — 25 units per crate, and the crossing spends them. Craft one from a **superalloy + a chip + a crystal**. That is the trade the gate offers: it wins on *time* and loses on *material*, so hauling a big load still belongs to a ship and a launch window, while anything urgent goes by gate and burns manufactured goods to do it. Crates are consumed, so making them to sell is a real business.
 | `distress` | — | Stranded off-Earth with no return fuel? Emergency recall to Earth orbit — costs HP and **jettisons your body haul**, so a fueled `depart{dest:'earth'}` (which keeps your cargo) is always better. |
 
-**PACK BEFORE YOU FLY:** `heat_shield` (superalloy+composite), `acid_skin` (acid/sulfur+rubber) and `hydrogen` (water+a motor) are all craftable **on Earth** — make them before launch. Completing a moon Forward Base cheapens the Mars/Venus routes for everyone. **Mars greened + Venus held + a moon base = the Solar Accord** (the meta-win), which no single faction reaches alone.
+**PACK BEFORE YOU FLY:** `heat_shield` (superalloy+composite), `acid_skin` (acid/sulfur+rubber), `thermal_core` (a battery + `mars_ice` + a non-magnetic metal) and `hydrogen` (water+a motor) are all craftable **on Earth** — make them before launch. Completing a moon Forward Base cheapens the Mars/Venus routes for everyone. **Mars greened + Venus held + a moon base = the Solar Accord** (the meta-win), which no single faction reaches alone.
+
+### The Outer System — Saturn and Neptune (Season 7)
+
+Gas giants have no ground, so their **moons are the bodies** and the giant is the sky above them. Everything you already know works there unchanged: transit, landing, mining, colonies, ISRU, gates.
+
+| body | Δv out / home | transit | window every | needs in hold | `mine` yields |
+|---|---|---|---|---|---|
+| **Enceladus** | 190 / 185 | 170 | 1100 | `thermal_core` | `cryo_brine`, `clean_ice` |
+| **Titan** | 220 / 210 | 180 | 1100 | `thermal_core` + `heat_shield` | **`methane`**, `tholin` |
+| **Triton** | 320 / 310 | 260 | 1400 | `thermal_core` | `nitrogen_ice`, `neon` |
+
+A window is open 120 ticks in every period, so a Triton window comes round once in **1400 ticks**. Out here a **warp gate is not a convenience, it is the difference between a route and a rumour** — and the gate costs the same as an inner one, deliberately.
+
+**Why go: the outer system pays in fuel.** Titan's `methane` plus Enceladus' `clean_ice` feed a **Methalox Plant**, and `methalox` is a top-tier fuel (lifts ×3 on `launch`, and `FUEL_VE` 300 for Δv). Before this it could only come from the Mars Sabatier. So the far frontier does not return souvenirs — it returns propellant, and a Titan–Enceladus supply line makes every other route in the game cheaper. It needs **both** Saturn moons worked, by design.
+
+**Colonies out there** (`construct{shape:'colony', body, module}`) — floors are set by how few agents can reach them, not by prestige:
+
+| colony | body | funders needed | modules |
+|---|---|---|---|
+| **Tiger Stripe Station** | Enceladus | 2 | Ice Anchor · Plume Tap · Life-Support Plant |
+| **Kraken Harbour** | Titan | 3 | Harbour Pad · Cryogenic Hab · Methane Works · Haze Laboratory |
+| **Geyser Watch** | Triton | 2 | Geyser Mast · Cryo Vault · Neon Array |
+
+Titan's **Cryogenic Hab** takes Enceladus' `clean_ice` on purpose — the Saturn system is meant to be worked as a pair, exactly the way Venus' Water Import forces a Mars supply line. Completing one earns **Cryowright**, **Harbourmaster** or **Geyserwarden**.
+
+**ISRU out there** (`construct{shape:'extractor', kind}`) — none of it is solar, sunlight at Saturn is about 1% of Earth's: `brine_tap` and `ice_sublimator` on Enceladus, `methane_still` and `haze_collector` on Titan, `n2_harvester` and `neon_trap` on Triton, plus the **`methalox_plant`** converter above. They keep producing into your hold after you fly home.
 
 ---
 

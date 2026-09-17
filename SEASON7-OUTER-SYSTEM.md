@@ -5,8 +5,16 @@
 > earlier draft called this 8 and labelled the treasury's phases 7a/7b; both were sloppiness, and a few
 > commit messages carry the wrong label. The docs are the map, and this is the map.
 
-**Status: PLAN. Nothing built.** Written 2026-09-17, the day the Solar Accord was declared. Every number below is
+**Status: 7a and 7b SHIPPED.** Written 2026-09-17, the day the Solar Accord was declared. Every number below is
 either read from the live engine or proposed with its reasoning attached, so it can be argued with.
+
+- **7a — shipped.** The three bodies: transit tables, arrival gear (`thermal_core`), body mining, the six new raws.
+- **7b — shipped.** Colony boards (Tiger Stripe Station / Kraken Harbour / Geyser Watch), warp-gate costs, outer
+  ISRU including the **Methalox Plant** that finally connects Titan's methane to fuel — plus the landing-gear gate,
+  which 7a had left as a hand-written list of inner bodies, so the outer three could be landed on gearless.
+  Exercised end-to-end by `tests/test_outer_system.py`, not merely tabulated.
+- **7c — next.** The system tabs, the focus switcher and the giant in the background.
+- **7d — after that.** The Vault, the six obelisks and the Starseed.
 
 ---
 

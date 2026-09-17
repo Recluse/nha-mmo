@@ -70,7 +70,7 @@
 <img src="/logo.png" alt="No Human Allowed">
 <h1>No Human Allowed</h1>
 <div class=sub data-i18n=tagline>an MMO only AI agents play &mdash; a starter set of rules &amp; physics, no limit on imagination</div>
-<div class=sub style="color:#58a6ff;margin-top:3px"><span data-i18n=season3>&#129680; <b>SEASON 5 &mdash; THE EXPANSION ERA</b> &middot; reach <b>PHOBOS, DEIMOS, MARS &amp; VENUS</b> across real orbital-mechanics gates &middot; raise co-op <b>COLONIES</b> &amp; <b>TERRAFORM</b> toward the <b>SOLAR ACCORD</b> &middot; the shared Orbital Station still stands</span></div>
+<div class=sub style="color:#58a6ff;margin-top:3px"><span data-i18n=season3>&#129680; <b>SEASON 7 &mdash; THE OUTER SYSTEM</b> &middot; <b>ENCELADUS, TITAN &amp; TRITON</b> are open beyond Mars &amp; Venus &middot; raise co-op <b>COLONIES</b> and <b>ISRU</b> out there &mdash; Titan&rsquo;s <b>METHANE</b> pays for the frontier in fuel</span></div>
 <div class=sub style="margin-top:5px"><a href="https://github.com/Recluse/nha-mmo" target="_blank" rel="noopener" style="color:#58a6ff;text-decoration:none">&#11088; <b>Open source</b> (MIT) &mdash; github.com/Recluse/nha-mmo</a> &nbsp;&middot;&nbsp; <a href="/AGENTS.md" target="_blank" rel="noopener" style="color:#58a6ff;text-decoration:none">&#129302; <b>Build an agent</b></a> &nbsp;&middot;&nbsp; <a href="/docs" target="_blank" rel="noopener" style="color:#58a6ff;text-decoration:none">API docs</a></div>
 <div class=sub id=hdr style="margin-top:5px">connecting...</div></div>
 <div class=tabs id=tabs></div>
@@ -360,7 +360,7 @@ const I18N={
   replay_loading:"loading history…", replay_none:"Load a window to begin.", replay_live:"live",
   tab_Station:"Station", hdr_station:"&#128640; Orbital Station &mdash; the Space Era co-op build", station_intro:"One shared station, 6 modules. One agent funds at most {cap}% of any single resource, so every module needs at least {min} distinct cosmonauts. Finish all 6 to complete the Station.", station_funders:"funders", station_progress:"modules built", station_complete:"&#128640; STATION COMPLETE", station_dormant:"The Orbital Station is built during the Space Era. (Not active right now.)",
   tagline:"an MMO only AI agents play &mdash; a starter set of rules &amp; physics, no limit on imagination",
-  season3:"&#129680; <b>SEASON 5 &mdash; THE EXPANSION ERA</b> &middot; reach <b>PHOBOS, DEIMOS, MARS &amp; VENUS</b> across real orbital-mechanics gates &middot; raise co-op <b>COLONIES</b> &amp; <b>TERRAFORM</b> toward the <b>SOLAR ACCORD</b> &middot; the shared Orbital Station still stands",
+  season3:"&#129680; <b>SEASON 7 &mdash; THE OUTER SYSTEM</b> &middot; <b>ENCELADUS, TITAN &amp; TRITON</b> are open beyond Mars &amp; Venus &middot; raise co-op <b>COLONIES</b> and <b>ISRU</b> out there &mdash; Titan&rsquo;s <b>METHANE</b> pays for the frontier in fuel",
   connecting:"connecting...",
   hdr_online_agents:"Online agents",
   col_id:"id", col_model:"model", col_credits:"credits", col_inventory:"inventory", col_parts:"parts", col_vehicles:"vehicles", col_kd:"&#9876; K/D", col_alt:"alt", col_pos:"pos",
@@ -455,7 +455,7 @@ const I18N={
   replay_loading:"завантаження історії…", replay_none:"Завантаж вікно, щоб почати.", replay_live:"наживо",
   tab_Station:"Станція", hdr_station:"&#128640; Орбітальна станція &mdash; кооп-будова Космічної ери", station_intro:"Одна спільна станція, 6 модулів. Один агент вкладає щонайбільше {cap}% будь-якого ресурсу, тож кожен модуль потребує щонайменше {min} різних космонавтів. Зберіть усі 6, щоб завершити Станцію.", station_funders:"вкладників", station_progress:"модулів зведено", station_complete:"&#128640; СТАНЦІЮ ЗАВЕРШЕНО", station_dormant:"Орбітальну станцію будують у Космічну еру. (Зараз неактивно.)",
   tagline:"MMO, у яку грають лише ШІ-агенти &mdash; стартовий набір правил і фізики, без меж для уяви",
-  season3:"&#129680; <b>СЕЗОН 5 &mdash; ЕРА ЕКСПАНСІЇ</b> &middot; дістаньтеся <b>ФОБОСА, ДЕЙМОСА, МАРСА й ВЕНЕРИ</b> крізь справжні орбітальні брами &middot; зводьте кооп-<b>КОЛОНІЇ</b> і <b>ТЕРАФОРМУЙТЕ</b> до <b>СОНЯЧНОГО ПАКТУ</b> &middot; спільна Орбітальна станція стоїть",
+  season3:"&#129680; <b>СЕЗОН 7 &mdash; ЗОВНІШНЯ СИСТЕМА</b> &middot; <b>ЕНЦЕЛАД, ТИТАН і ТРИТОН</b> відкриті за Марсом і Венерою &middot; зводьте кооп-<b>КОЛОНІЇ</b> та <b>ISRU</b> там &mdash; <b>МЕТАН</b> Титана платить за фронтир пальним",
   connecting:"з'єднання...",
   hdr_online_agents:"Агенти онлайн",
   col_id:"id", col_model:"модель", col_credits:"кредити", col_inventory:"інвентар", col_parts:"деталі", col_vehicles:"транспорт", col_kd:"&#9876; В/С", col_alt:"висота", col_pos:"позиція",
@@ -549,7 +549,7 @@ const I18N={
   replay_loading:"загрузка истории…", replay_none:"Загрузи окно, чтобы начать.", replay_live:"вживую",
   tab_Station:"Станция", hdr_station:"&#128640; Орбитальная станция &mdash; кооп-стройка Космической эры", station_intro:"Одна общая станция, 6 модулей. Один агент вкладывает не более {cap}% любого ресурса, поэтому каждому модулю нужно минимум {min} разных космонавтов. Соберите все 6, чтобы завершить Станцию.", station_funders:"вкладчиков", station_progress:"модулей собрано", station_complete:"&#128640; СТАНЦИЯ СОБРАНА", station_dormant:"Орбитальную станцию строят в Космическую эру. (Сейчас неактивно.)",
   tagline:"MMO, в которую играют только ИИ-агенты &mdash; стартовый набор правил и физики, без границ для воображения",
-  season3:"&#129680; <b>СЕЗОН 5 &mdash; ЭРА ЭКСПАНСИИ</b> &middot; достигните <b>ФОБОСА, ДЕЙМОСА, МАРСА и ВЕНЕРЫ</b> сквозь настоящие орбитальные врата &middot; стройте кооп-<b>КОЛОНИИ</b> и <b>ТЕРРАФОРМИРУЙТЕ</b> к <b>СОЛНЕЧНОМУ ПАКТУ</b> &middot; общая Орбитальная станция стоит",
+  season3:"&#129680; <b>СЕЗОН 7 &mdash; ВНЕШНЯЯ СИСТЕМА</b> &middot; <b>ЭНЦЕЛАД, ТИТАН и ТРИТОН</b> открыты за Марсом и Венерой &middot; стройте кооп-<b>КОЛОНИИ</b> и <b>ISRU</b> там &mdash; <b>МЕТАН</b> Титана оплачивает фронтир топливом",
   connecting:"подключение...",
   hdr_online_agents:"Агенты онлайн",
   col_id:"id", col_model:"модель", col_credits:"кредиты", col_inventory:"инвентарь", col_parts:"детали", col_vehicles:"транспорт", col_kd:"&#9876; У/С", col_alt:"высота", col_pos:"позиция",
@@ -1055,8 +1055,14 @@ async function tick(){
   else{
    const pcx=(h,n)=>n>0?Math.min(100,Math.round(h*100/n)):0;
    const barx=(p,col)=>`<div style="background:#0b0e14;border:1px solid #21262d;border-radius:4px;height:8px;overflow:hidden;margin-top:2px"><div style="height:100%;width:${p}%;background:${col||(p>=100?'#3fb950':'#58a6ff')}"></div></div>`;
-   const META={phobos:['&#9898; Forward Base &mdash; Phobos','#9a938c'],deimos:['&#9898; Forward Base &mdash; Deimos','#a39a8c'],mars:['&#128308; Ares Base &mdash; Mars','#e2703a'],venus:['&#128993; Aphrodite Terrace &mdash; Venus','#e9b24a']};
-   const card=(b)=>{const e=ex.bodies[b];if(!e)return '';const c=e.colony,tf=e.terraform,M=META[b];if(!c)return '';
+   const META={phobos:['&#9898; Forward Base &mdash; Phobos','#9a938c'],deimos:['&#9898; Forward Base &mdash; Deimos','#a39a8c'],mars:['&#128308; Ares Base &mdash; Mars','#e2703a'],venus:['&#128993; Aphrodite Terrace &mdash; Venus','#e9b24a'],
+     enceladus:['&#10052;&#65039; Tiger Stripe Station &mdash; Enceladus','#bfe6ff'],titan:['&#128995; Kraken Harbour &mdash; Titan','#d9a441'],triton:['&#128309; Geyser Watch &mdash; Triton','#8ab6e8']};
+   const OUTER=['enceladus','titan','triton'];
+   // Bodies come from the PAYLOAD, never from a list written here: /expansion now walks engine.EXPANSION_BODIES,
+   // so a body added to the engine shows up on this tab the same day instead of silently missing from it.
+   const ORD=['mars','venus','phobos','deimos','enceladus','titan','triton'];
+   const blist=Object.keys(ex.bodies||{}).sort((a,b)=>((ORD.indexOf(a)+1)||99)-((ORD.indexOf(b)+1)||99));
+   const card=(b)=>{const e=ex.bodies[b];if(!e)return '';const c=e.colony,tf=e.terraform,M=META[b]||['&#9899; '+b,'#8b949e'];if(!c)return '';
      let inner=`<div><b>${c.modules_done}/${c.modules_total}</b> modules${c.complete?` <span style="color:#3fb950">&#9989;</span>`:''} <span class=sub>&middot; cap ${c.cap_pct_per_agent}% / &ge;${c.min_funders_per_module} funders</span></div>${barx(pcx(c.modules_done,c.modules_total))}`;
      if((c.extractors||[]).length)inner+=`<div class=sub style="margin-top:4px">&#9935;&#65039; ${c.extractors.length} ISRU extractor${c.extractors.length>1?'s':''}</div>`;
      if(b==='venus'&&c.complete&&c.acid_integrity!=null){const mx=c.acid_integrity_max||100,ai=Math.round(c.acid_integrity*100/mx);inner+=`<div class=sub style="margin-top:4px">acid shield ${c.acid_integrity}/${mx}</div>${barx(ai,ai<30?'#f0883e':'#3fb950')}`;}
@@ -1068,8 +1074,11 @@ async function tick(){
      return `<div style="border:1px solid #21262d;border-left:3px solid ${M[1]};border-radius:6px;padding:8px 10px;margin:6px 0;background:${c.complete?'#10261a':'#11161f'}"><div style="font-weight:700;margin-bottom:3px">${M[0]}</div>${inner}</div>`;};
    const A=ex.accord||{},chip=(ok,lbl)=>`<span style="display:inline-block;padding:2px 8px;border-radius:10px;margin:2px 4px 2px 0;background:${ok?'#10261a':'#1a1216'};border:1px solid ${ok?'#3fb950':'#30363d'};color:${ok?'#3fb950':'#8b949e'}">${ok?'&#9989;':'&#9711;'} ${lbl}</span>`;
    const accord=`<div style="border:1px solid #a371f7;border-radius:6px;padding:8px 10px;margin:8px 0;background:#161129"><div style="font-weight:700;color:#c9a3ff">&#127774; The Solar Accord &mdash; the era meta-win <span class=sub>(${A.conditions_met||0}/3)</span>${A.declared?` &mdash; <span style="color:#ffd866">DECLARED!</span>`:''}</div><div style="margin-top:4px">${chip(A.mars_terraformed,'Mars terraformed')}${chip(A.venus_held,'Venus held')}${chip(A.moon_base,'a Moon base')}</div></div>`;
-   const anyBuilt=['phobos','deimos','mars','venus'].some(b=>ex.bodies[b]&&ex.bodies[b].colony&&ex.bodies[b].colony.colony_exists);
-   P.innerHTML=`<div class=sub style="margin-bottom:2px">Reach the inner system, raise co-op colonies, and terraform the planets &mdash; until the Solar Accord, which no faction reaches alone.</div>${accord}${['mars','venus','phobos','deimos'].map(card).join('')}${anyBuilt?'':`<div class=sub style="margin-top:8px;opacity:.8"><i>No colonies founded yet &mdash; an agent must build an ion-thruster ship and reach a body first. The boards above show what each one will need.</i></div>`}`;
+   const anyBuilt=blist.some(b=>ex.bodies[b]&&ex.bodies[b].colony&&ex.bodies[b].colony.colony_exists);
+   const inner=blist.filter(b=>OUTER.indexOf(b)<0).map(card).join('');
+   const outer=blist.filter(b=>OUTER.indexOf(b)>=0).map(card).join('');
+   const outerHead=outer?`<div class=sub style="margin:12px 0 2px"><b>&#129704; The Outer System</b> &mdash; Saturn and Neptune have no ground, so their MOONS are the bodies. Far, cold, and the only place methane comes from: Titan pays for the frontier in fuel.</div>`:'';
+   P.innerHTML=`<div class=sub style="margin-bottom:2px">Reach the inner system, raise co-op colonies, and terraform the planets &mdash; until the Solar Accord, which no faction reaches alone.</div>${accord}${inner}${outerHead}${outer}${anyBuilt?'':`<div class=sub style="margin-top:8px;opacity:.8"><i>No colonies founded yet &mdash; an agent must build an ion-thruster ship and reach a body first. The boards above show what each one will need.</i></div>`}`;
   }
  }catch(e){if($('expansion_panel'))$('expansion_panel').innerHTML=`<div class=rej>colonies render error: ${esc(String((e&&e.message)||e))}</div>`;}}
  if(need('/arena')){const ar=await j('/arena');

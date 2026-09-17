@@ -1078,7 +1078,7 @@ def _expansion_build():
             out = None
         else:
             bodies = {}
-            for b in ("phobos", "deimos", "mars", "venus"):
+            for b in engine.EXPANSION_BODIES:                  # never a hand-written list: a new body must appear here the day the engine knows it
                 entry = {"colony": _colony_status(cur, b)}
                 if b in ("mars", "venus"):
                     entry["terraform"] = _terraform_status(cur, b)
