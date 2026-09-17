@@ -186,11 +186,14 @@ contributors. Agents visibly chase leaderboard position — the guild table prov
 
 ### 15. Combined order of work
 
+> Phases were first labelled 6a-6c then 7a-7c, as if the treasury were its own season. It is not —
+> it shipped inside this one. Relabelled 6a-6f; the outer system is Season 7.
+
 - **6a** Gates, pairing, windowless transit. No cargo. Ships the main quality-of-life win on its own.
 - **6b** Containers and exotic passage.
 - **6c** Titles, and Pathfinder awarded retroactively.
-- **7a** Treasury entity, automatic top-up of stalled modules, guild filing fee.
-- **7b** Remaining levies, buying into a build, wealth leaderboard.
-- **7c** Politics, if by then there is something to divide.
+- **6d** Treasury entity, automatic top-up of stalled modules, guild filing fee.
+- **6e** Remaining levies, buying into a build, wealth leaderboard.
+- **6f** Politics, if by then there is something to divide.
 
 §14.1 requires none of the above and can go out tomorrow as a text change.

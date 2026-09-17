@@ -47,7 +47,7 @@ PROPS = {
     "perchlorate":    {"oxidizer": 8, "corrosive": 1, "oxygen_store": 1},        # Mars perchlorate — O2 store / solid-booster oxidiser (NB: no 'toxic' tag — that feeds the antidote medicine recipe; 'corrosive' is inert to every recipe)
     "nanohematite":   {"warming": 1, "iron_ox": 1, "dusty": 1},                 # Mars 'rustfall' — terraform warming agent (dust-storm harvest only)
     "cloud_acid":     {"acid_former": 9, "reactive": 7, "solvent": 3},          # Venus H2SO4 droplets — water + acid_skin feedstock
-    # --- SEASON 8: the outer system's raws ---------------------------------------------------------------
+    # --- SEASON 7: the outer system's raws ---------------------------------------------------------------
     "methane":        {"flammable": 9, "energy": 8, "gas": 1, "carbon": 4},     # Titan's lakes — the methalox feedstock, and the reason to go
     "tholin":         {"tarry": 9, "reactive": 5, "carbon": 6},                 # Titan's orange haze. NOT tagged `organic`: the
     # season-3 invariant test caught that doing so let tholin + any solvent resolve to `extract`, quietly making
@@ -99,7 +99,7 @@ ITEM_PROPS = {
     "heat_shield":   {"ablative": 1, "hardness": 9, "shaped": 1, "sheds_heat": 1},    # EXPANSION EDL — ablative re-entry shield (consumed at Mars/Venus arrival)
     "acid_skin":     {"acid_proof": 1, "insulator": 6, "shielding": 1},               # EXPANSION — H2SO4-proof hull coat (consumed at Venus arrival)
     "warp_container": {"stasis": 1, "shielding": 1, "hollow": 1, "hardness": 9},      # SEASON 6b — single-use crate: the ONLY way exotic body cargo crosses a warp gate (consumed on transit)
-    "thermal_core":   {"insulator": 9, "power": 1, "shielding": 1, "warm": 1},        # SEASON 8 — keeps an agent alive at outer-system temperatures (required in hold for Enceladus/Titan/Triton)
+    "thermal_core":   {"insulator": 9, "power": 1, "shielding": 1, "warm": 1},        # SEASON 7 — keeps an agent alive at outer-system temperatures (required in hold for Enceladus/Titan/Triton)
     "graphite":      {"carbon": 9, "hardness": 4, "conductivity": 4, "shaped": 1},    # EXPANSION — co2 reduced with heat → structural carbon "from thin air" (feeds composite; Venus/Mars colony material)
     "o2":            {"breathable": 1, "oxygen": 1, "gas": 1},                         # EXPANSION P3 — perchlorate scrubbed / co2 split → breathable oxygen (terraform biosphere)
     "mars_brick":    {"hardness": 6, "shaped": 1, "shield": 1, "sintered": 1},         # EXPANSION P3 — sintered Mars regolith → dome shell + radiation shield
@@ -220,7 +220,7 @@ RULES = [
     # `insulator` and was far too broad: eight items carry it, and the audit caught that {superalloy, chip,
     # crystal} (a lens) and {superalloy, chip, plastic} (a casing) had both been silently retargeted to this
     # crate. ABOVE heat_shield is still right — both start from a superalloy and `logic` separates them.
-    # SEASON 8 — the outer cold. Pinned on `deuteric` (ONLY mars_ice has it) AND on carrying a metal, which makes
+    # SEASON 7 — the outer cold. Pinned on `deuteric` (ONLY mars_ice has it) AND on carrying a metal, which makes
     # it DISJOINT from `hydrogen` rather than merely higher in the table: hydrogen requires n_metals == 0, so the
     # two can never match the same mixture and the ordering stops mattering. Arrived at by diffing all 88,560 two-
     # and three-item mixes against the previous ruleset: the first cut silently stole 48 recipes and the second 24,

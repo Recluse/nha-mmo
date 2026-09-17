@@ -165,7 +165,7 @@ STATION_MODULES = {                # insertion order is fixed → deterministic 
 # byte-for-byte no-op under the Season-3 determinism seed (which never flips the era nor builds a ship).
 # Three non-aligned reach gates: fuel Δv (moons<Mars<Venus), transit TIME, and terminal-maneuver SPEED (TWR).
 EXPANSION_BODIES = ("deimos", "phobos", "mars", "venus", "enceladus", "titan", "triton")   # ordered cheapest→hardest by Δv
-# SEASON 8 — THE OUTER SYSTEM. Saturn and Neptune have no surface, so the BODIES are their moons and the giant
+# SEASON 7 — THE OUTER SYSTEM. Saturn and Neptune have no surface, so the BODIES are their moons and the giant
 # is the sky above them: every existing mechanism (transit, landing, colonies, ISRU, gates) works unchanged on
 # a body that has ground. The distances are a step change, not an increment — a 1400-tick Triton window is what
 # finally makes a warp gate load-bearing instead of a luxury. Titan is the spine: it yields METHANE, methalox is
@@ -274,7 +274,7 @@ BODY_MINE = {
     "deimos": [("c_regolith", 2), ("void_pumice", 1)],
     "mars":   [("mars_regolith", 2), ("perchlorate", 1), ("mars_ice", 1)],
     "venus":  [("cloud_acid", 2), ("nitrogen", 1), ("co2", 2)],
-    # SEASON 8. Titan's methane is the point of the whole outer system — it feeds methalox, already a top-tier
+    # SEASON 7. Titan's methane is the point of the whole outer system — it feeds methalox, already a top-tier
     # fuel, so a Titan supply line makes every other route cheaper instead of just being further away.
     "enceladus": [("cryo_brine", 2), ("clean_ice", 2)],
     "titan":     [("methane", 2), ("tholin", 1)],
