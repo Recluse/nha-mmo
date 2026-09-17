@@ -972,6 +972,14 @@ def _colony_status(cur, body):
     cur.execute("SELECT id, attrs->>'kind' kind, owner FROM entities WHERE type='structure' AND attrs->>'shape'='extractor' "
                 "AND attrs->>'body'=%s ORDER BY id LIMIT 80", (body,))
     out["extractors"] = [{"id": r["id"], "kind": r["kind"], "owner": r["owner"]} for r in cur.fetchall()]
+    # A terraformed world is ALIVE, and the 3D view has to show it: a finished terraform means lakes, forests and
+    # geese on the ground, so the globe should stop looking like the rock it used to be.
+    cur.execute("SELECT COALESCE((attrs->>'complete')::boolean,false) done FROM entities WHERE type='structure' "
+                "AND attrs->>'shape'='terraform' AND attrs->>'body'=%s LIMIT 1", (body,))
+    trow = cur.fetchone()
+    out["terraformed"] = bool(trow and trow["done"])
+    cur.execute("SELECT count(*) c FROM entities WHERE type='goose' AND attrs->>'at_body'=%s", (body,))
+    out["geese"] = cur.fetchone()["c"]
     if body == "venus" and out["complete"]:   # Phase 5: the cloud city's acid-shield integrity (re-fund acid_shield to top it up)
         out["acid_integrity"] = int((srow["attrs"].get("acid_integrity") if srow else None) or engine.ACID_INTEGRITY_MAX)
         out["acid_integrity_max"] = engine.ACID_INTEGRITY_MAX

@@ -1188,6 +1188,7 @@ function initBodyScene(hostId,cfg){
   const R=cfg.radius, pm=new T.MeshLambertMaterial({color:cfg.tint,emissive:0x0a0a0c});
   new T.TextureLoader().load(cfg.tex,function(tx){pm.map=tx;pm.color.setHex(0xffffff);pm.needsUpdate=true;},undefined,function(){});
   const planet=new T.Mesh(new T.SphereGeometry(R,64,48),pm); sc.add(planet);
+  const baseTint=pm.color.clone();     // kept so a terraform tint is re-applied from the original and never compounds
   const bstruct=new T.Group(); planet.add(bstruct);   // EXPANSION: colony base + ISRU rigs ride the surface (rotate with the planet); populated by fetchBodyStructures
   const moons=(cfg.moons||[]).map(function(m){const mm=new T.MeshLambertMaterial({color:m.tint,emissive:0x060608});
     if(m.tex)new T.TextureLoader().load(m.tex,function(tx){mm.map=tx;mm.color.setHex(0xffffff);mm.needsUpdate=true;},undefined,function(){});
@@ -1233,7 +1234,7 @@ function initBodyScene(hostId,cfg){
   // another pair still driving a discarded camera. They are removable now and torn down on swap (see `off`).
   const onResize=function(){const w=host.clientWidth,h=host.clientHeight;if(w>10&&h>10){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();}};
   window.addEventListener('resize',onResize);
-  S=_bodyScene.cur={body:cfg.body,ren:ren,cam:cam,sc:sc,R:R,bstruct:bstruct,moons:moons,poll:null,
+  S=_bodyScene.cur={body:cfg.body,ren:ren,cam:cam,sc:sc,R:R,bstruct:bstruct,moons:moons,poll:null,planet:planet,baseTint:baseTint,
     off:function(){window.removeEventListener('mousemove',onMove);window.removeEventListener('mouseup',onUp);window.removeEventListener('resize',onResize);}};
   fetchBodyStructures(cfg.body);   // draw the colony/rigs/terraform that exist on this body now…
   S.poll=setInterval(function(){ if(_bodyScene.cur!==S){clearInterval(S.poll);return;} if(active==='World'&&_world3dBody===cfg.body)fetchBodyStructures(cfg.body); },6000);   // …and keep them fresh as agents build
@@ -1330,6 +1331,32 @@ function paintBodyStructures(S,col,tf,moonCols){
   const up=new T.Vector3(0,1,0);
   function dir(k){ const a=k*2.399963238, z=(((k*0.6180339887)%1)+1)%1*2-1, r=Math.sqrt(Math.max(0,1-z*z)); return new T.Vector3(r*Math.cos(a),z,r*Math.sin(a)); }
   function sit(mesh,d,lift,scale){ mesh.scale.setScalar(scale||1); mesh.quaternion.setFromUnitVectors(up,d); mesh.position.copy(d).multiplyScalar(R*(lift||1)); g.add(mesh); }
+  // A TERRAFORMED WORLD MUST LOOK ALIVE. Finishing all four stages changes what the ground yields (water and wood)
+  // and lands a gaggle of geese — none of which was visible here, so a terraformed Mars looked exactly like the
+  // rust ball it had stopped being. Lakes, forest and the geese are painted from the same refresh.
+  if(col&&col.terraformed&&S.planet){
+    S.planet.material.color.copy(S.baseTint).lerp(new T.Color(0x6fae72),0.55);   // from the ORIGINAL tint, so refreshes never compound
+    S.planet.material.needsUpdate=true;
+    for(let i=0;i<14;i++){                                         // lakes: flat discs bedded into the surface
+      const d=dir(7.3+i*1.7), lake=new T.Mesh(new T.CircleGeometry(R*(0.05+0.05*((i*37%7)/7)),18),
+        new T.MeshBasicMaterial({color:0x2f6fb5,transparent:true,opacity:0.85,side:T.DoubleSide}));
+      sit(lake,d,1.002,1);
+    }
+    for(let i=0;i<22;i++){                                         // forest: little cones, because trees
+      const d=dir(3.1+i*1.13), tree=new T.Mesh(new T.ConeGeometry(R*0.018,R*0.055,6),
+        new T.MeshLambertMaterial({color:0x2f7d3a,emissive:0x0a1a0c}));
+      sit(tree,d,1.02,1);
+    }
+    const flock=Math.max(0,Math.min(12,col.geese|0));
+    for(let i=0;i<flock;i++){                                      // and the geese — the proof the biosphere took
+      const d=dir(11.7+i*2.3), goose=new T.Mesh(new T.SphereGeometry(R*0.016,7,5),
+        new T.MeshLambertMaterial({color:0xf2f2ee,emissive:0x2a2a26}));
+      sit(goose,d,1.035,1);
+    }
+    if(flock){ const gl=_bodyLabel('\u{1F9A2} '+flock+' geese','#eaf7ea'); gl.position.copy(dir(11.7)).multiplyScalar(R+2.2); g.add(gl); }
+  } else if(S.planet&&S.baseTint){
+    S.planet.material.color.copy(S.baseTint); S.planet.material.needsUpdate=true;   // not (yet) alive — keep the rock honest
+  }
   if(col&&col.colony_exists){
     const d=dir(1.0);
     sit(_colonyModel(col.complete,col.modules_done||0),d,1.0,2.4);
