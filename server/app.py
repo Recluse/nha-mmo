@@ -2215,7 +2215,8 @@ def moon_texture():
     return FileResponse(MOON_PATH, media_type="image/jpeg")
 
 
-_TEX_BODIES = {"mars", "venus", "phobos", "deimos"}   # EXPANSION ERA — real, self-hosted, same-origin planet/moon maps
+_TEX_BODIES = {"mars", "venus", "phobos", "deimos",
+               "saturn", "neptune", "enceladus", "titan", "triton"}   # EXPANSION ERA + Season 7 — real, self-hosted, same-origin planet/moon maps
 
 
 @app.get("/tex/{body}.jpg", tags=["world"])
@@ -2228,6 +2229,17 @@ def body_texture(body: str):
     if not os.path.exists(p):
         raise HTTPException(404, "texture not yet installed")
     return FileResponse(p, media_type="image/jpeg")
+
+
+@app.get("/tex/saturn_ring.png", tags=["world"])
+def saturn_ring_texture():
+    """Saturn's rings as a RADIAL ALPHA STRIP — the gaps (the Cassini division above all) are transparency, not
+    paint, so they must be a PNG rather than share the /tex/{body}.jpg route. A ring drawn as a flat translucent
+    annulus is a beige plate; this is what makes it read as Saturn."""
+    p = os.path.join(STATIC_DIR, "saturn_ring.png")
+    if not os.path.exists(p):
+        raise HTTPException(404, "texture not yet installed")
+    return FileResponse(p, media_type="image/png")
 
 
 @app.get("/ground.jpg")

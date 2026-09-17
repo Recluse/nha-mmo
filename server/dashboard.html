@@ -104,7 +104,12 @@
    <span class="wchip on" data-body=earth onclick="setWorld3D('earth')">&#127757; Earth</span>
    <span class="wchip" data-body=mars onclick="setWorld3D('mars')" style="--wc:#e2703a">&#128308; Mars</span>
    <span class="wchip" data-body=venus onclick="setWorld3D('venus')" style="--wc:#e9b24a">&#128993; Venus</span>
+   <span class="wchip" data-body=saturn onclick="setWorld3D('saturn')" style="--wc:#d9c08a">&#129704; Saturn</span>
+   <span class="wchip" data-body=neptune onclick="setWorld3D('neptune')" style="--wc:#4f7fe0">&#128309; Neptune</span>
   </div>
+  <!-- SYSTEM VIEW focus switcher: a gas giant has no ground, so its MOONS are the bodies. These chips move the
+       camera between them (and back out to the giant) without tearing the scene down. Hidden on single-body views. -->
+  <div class=worldsw id=bodyfocus style="display:none;padding-top:0"></div>
   <div id=scene3d></div>
   <div id=scene3d-body style="display:none"></div>
   <div class=sub style="padding:7px 12px;line-height:1.9">
@@ -673,7 +678,7 @@ const TABS=["Agents","Station","Colonies","Arena","Profile","Records","Timeline"
 let active=localStorage.getItem('nha_tab')||"Agents";
 let _arenaRank='impact';   // Model Arena ranking lens: impact|survival|frontier|economy|activity
 try{const _q0=new URLSearchParams(location.search).get('tab');if(_q0&&TABS.includes(_q0))active=_q0;}catch(e){}   // ?tab=… deep-link
-function pageURL(){try{const p=new URLSearchParams();p.set('tab',active);const pid=$('pid')&&$('pid').value;if(active==='Profile'&&pid)p.set('agent',pid);if(active==='World'&&_world3dBody!=='earth')p.set('body',_world3dBody);history.replaceState(null,'',location.pathname+'?'+p.toString());}catch(e){}}   // shareable permalink to the current tab (+ agent profile)
+function pageURL(){try{const p=new URLSearchParams();p.set('tab',active);const pid=$('pid')&&$('pid').value;if(active==='Profile'&&pid)p.set('agent',pid);if(active==='World'&&_world3dBody!=='earth')p.set('body',_world3dBody);if(active==='World'&&_bodyScene.cur&&_bodyScene.cur.system){const fc=document.querySelector('#bodyfocus .wchip.on');if(fc&&fc.dataset.focus)p.set('focus',fc.dataset.focus);}history.replaceState(null,'',location.pathname+'?'+p.toString());}catch(e){}}   // shareable permalink to the current tab (+ agent profile)
 // Tab-gated polling: tick() fetches ONLY the endpoints the active tab renders (plus /world + /roster, always).
 // Cuts a viewer from ~15 endpoints/2s to 1-4. Panels for other tabs keep their last content until you switch.
 const TAB_EP={Agents:['/map','/agents','/depot','/market'],Map:['/map'],Records:['/records','/milestones'],
@@ -1166,18 +1171,50 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)tick();});
 // full terrain+agents scene (initWorld3D); Mars & Venus get a lightweight planet(+moons) scene in a second host. =====
 let _world3dBody='earth';
 const _bodyScene={cur:null};
+// SEASON 7c — Saturn and Neptune are SYSTEMS, not destinations. A gas giant has no surface to land on, so the
+// giant is rendered huge in the background as the sky, and its MOONS are the bodies: each one carries its own
+// colony and ISRU rigs exactly the way Mars does. No textures are shipped for them, and none are needed — the
+// material keeps its tint when a texture is absent, and these worlds are ice, haze and frost, not geology.
+const SYSTEMS={
+  saturn:{body:'saturn', label:'Saturn', system:true, tex:'/tex/saturn.jpg', tint:0xbe9d5e, radius:52, spin:0.0009,
+          ring:true, ringTex:'/tex/saturn_ring.png', viewDist:520,
+          worlds:[{body:'enceladus', label:'Enceladus', tex:'/tex/enceladus.jpg', tint:0xcddeea, radius:3.4, dist:148, speed:0.0075, phase:0.6},
+                  // Titan's map is greyscale (Cassini saw through the haze in the near-infrared), so the tint is KEPT
+                  // and multiplies it. Resetting the colour to white, as a colour map wants, would leave the one
+                  // orange world in the solar system looking like a dirty snowball.
+                  {body:'titan', label:'Titan', tex:'/tex/titan.jpg', keepTint:true, tint:0xc98b33, radius:6.2, dist:252, speed:0.0042, phase:3.1, haze:0xe8a94e}]},
+  neptune:{body:'neptune', label:'Neptune', system:true, tex:'/tex/neptune.jpg', tint:0x2f57a8, radius:38, spin:0.0011, ring:false, viewDist:330,
+          // Voyager 2 photographed ONE hemisphere of Triton in 1989 and nothing has been back since, so every real
+          // map of it carries a black unimaged cap. Ours has that cap filled and blurred into the terrain below it
+          // (see server/TEXTURES.md) — a smooth pale region rather than a hole punched through the globe.
+          worlds:[{body:'triton', label:'Triton', tex:'/tex/triton.jpg', tint:0xd8cfc9, radius:5.0, dist:112, speed:-0.0050, phase:1.4}]}
+};
 function setWorld3D(body){
   _world3dBody=body;
   document.querySelectorAll('#worldsw .wchip').forEach(function(c){c.classList.toggle('on',c.dataset.body===body);});
   const eH=$('scene3d'), bH=$('scene3d-body'); if(!eH||!bH)return;
+  _buildFocusChips(SYSTEMS[body]||null);
   if(body==='earth'){ eH.style.display='block'; bH.style.display='none'; setTimeout(initWorld3D,30); return; }
   eH.style.display='none'; bH.style.display='block';
-  const cfg = body==='mars'
+  const cfg = SYSTEMS[body] ? SYSTEMS[body]
+    : body==='mars'
     ? {body:'mars', tex:'/tex/mars.jpg', tint:0xa0522d, radius:13, spin:0.0016,
        moons:[{body:'phobos',tex:'/tex/phobos.jpg',tint:0x9a938c,radius:1.1,dist:22,speed:0.020},
               {body:'deimos',tex:'/tex/deimos.jpg',tint:0xa39a8c,radius:0.7,dist:33,speed:0.011}]}
     : {body:'venus', tex:'/tex/venus.jpg', tint:0xd8b878, radius:14, spin:0.0009, moons:[]};
   setTimeout(function(){initBodyScene('scene3d-body',cfg);},30);
+}
+function _buildFocusChips(sys){
+  const F=$('bodyfocus'); if(!F)return;
+  if(!sys){ F.style.display='none'; F.innerHTML=''; return; }
+  F.style.display='flex';
+  F.innerHTML='<span class="wchip on" data-focus="" onclick="focusBody(\'\')">&#129704; '+sys.label+'</span>'
+    + sys.worlds.map(function(w){return '<span class=wchip data-focus="'+w.body+'" onclick="focusBody(\''+w.body+'\')">&#9898; '+w.label+'</span>';}).join('');
+}
+function focusBody(key){
+  const S=_bodyScene.cur; if(!S||!S.setFocus)return;
+  S.setFocus(key?(S.worlds||[]).find(function(w){return w.body===key;}):null);
+  document.querySelectorAll('#bodyfocus .wchip').forEach(function(c){c.classList.toggle('on',(c.dataset.focus||'')===(key||''));});
 }
 function initBodyScene(hostId,cfg){
   if(!window.THREE)return; const T=window.THREE;
@@ -1191,8 +1228,9 @@ function initBodyScene(hostId,cfg){
    for(let i=0;i<N;i++){const th=Math.random()*6.2832,u=2*Math.random()-1,s=Math.sqrt(1-u*u),r=700+Math.random()*350;P[i*3]=s*Math.cos(th)*r;P[i*3+1]=u*r;P[i*3+2]=s*Math.sin(th)*r;const b=0.35+0.6*Math.random();C[i*3]=b*0.9;C[i*3+1]=b*0.95;C[i*3+2]=b;}
    const g=new T.BufferGeometry();g.setAttribute('position',new T.BufferAttribute(P,3));g.setAttribute('color',new T.BufferAttribute(C,3));
    sc.add(new T.Points(g,new T.PointsMaterial({size:1.5,sizeAttenuation:false,vertexColors:true,transparent:true,opacity:0.95})));}
-  sc.add(new T.AmbientLight(0xffffff,0.5));
-  const sun=new T.DirectionalLight(0xfff2d8,1.15); sun.position.set(70,40,90); sc.add(sun);
+  // A gas giant's own map is already bright; Mars' lighting blew its cloud tops to white. Systems are lit softer.
+  sc.add(new T.AmbientLight(0xffffff,cfg.system?0.42:0.5));
+  const sun=new T.DirectionalLight(0xfff2d8,cfg.system?0.82:1.15); sun.position.set(70,40,90); sc.add(sun);
   const cam=new T.PerspectiveCamera(50,host.clientWidth/host.clientHeight,0.1,4000);
   const R=cfg.radius, pm=new T.MeshLambertMaterial({color:cfg.tint,emissive:0x0a0a0c});
   new T.TextureLoader().load(cfg.tex,function(tx){pm.map=tx;pm.color.setHex(0xffffff);pm.needsUpdate=true;},undefined,function(){});
@@ -1202,18 +1240,69 @@ function initBodyScene(hostId,cfg){
   const moons=(cfg.moons||[]).map(function(m){const mm=new T.MeshLambertMaterial({color:m.tint,emissive:0x060608});
     if(m.tex)new T.TextureLoader().load(m.tex,function(tx){mm.map=tx;mm.color.setHex(0xffffff);mm.needsUpdate=true;},undefined,function(){});
     const mesh=new T.Mesh(new T.SphereGeometry(m.radius,32,24),mm); sc.add(mesh); return {mesh:mesh,dist:m.dist,speed:m.speed,phase:Math.random()*6.28,body:m.body,radius:m.radius};});
+  // SYSTEM VIEW (Season 7c). `planet` above is the GIANT — the sky, not a destination. Its moons are the real
+  // bodies: each gets a surface group of its own, so paintBodyStructures() writes a colony and its ISRU rigs onto
+  // a moon with the identical code that paints Mars. Nothing here is a second rendering path.
+  const worlds=[];
+  if(cfg.system){
+    if(cfg.ring){                                   // Saturn without its rings is just a beige ball
+      // RingGeometry's own UVs run around the ring, not across it — so a radial strip texture maps as smeared
+      // streaks. Rewriting u to the normalised RADIUS is what turns the strip into actual rings, gaps and all.
+      // The rings end at 2.27 Saturn radii in reality and EVERY moon orbits outside them: Enceladus at ~3.9.
+      // The first cut had Enceladus orbiting at 1.85 R, i.e. inside the A ring, which is both wrong and put the
+      // camera inside a vast blended plane the moment you focused on it.
+      const RI=R*1.19,RO=R*2.27,rgeo=new T.RingGeometry(RI,RO,128,1);
+      {const pos=rgeo.attributes.position,uv=rgeo.attributes.uv,v=new T.Vector3();
+       for(let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);uv.setXY(i,(v.length()-RI)/(RO-RI),0.5);}
+       uv.needsUpdate=true;}
+      const rmat=new T.MeshBasicMaterial({color:0xf2e4c2,transparent:true,opacity:0.92,side:T.DoubleSide,depthWrite:false});   // the strip is near-greyscale; the warm tint is what makes it read as ice and dust rather than slate
+      if(cfg.ringTex)new T.TextureLoader().load(cfg.ringTex,function(tx){tx.wrapS=tx.wrapT=T.ClampToEdgeWrapping;rmat.map=tx;rmat.needsUpdate=true;},undefined,function(){rmat.color.setHex(0xe3d3a8);rmat.opacity=0.5;rmat.needsUpdate=true;});
+      else{rmat.color.setHex(0xe3d3a8);rmat.opacity=0.5;}
+      const rg=new T.Mesh(rgeo,rmat); rg.rotation.x=Math.PI/2-0.17; planet.add(rg);
+    }
+    (cfg.worlds||[]).forEach(function(w){
+      const wm=new T.MeshLambertMaterial({color:w.tint,emissive:0x0a0a0c});
+      const mesh=new T.Mesh(new T.SphereGeometry(w.radius,48,32),wm); sc.add(mesh);
+      const bs=new T.Group(); mesh.add(bs);
+      if(w.tex)new T.TextureLoader().load(w.tex,function(tx){wm.map=tx;
+        if(!w.keepTint)wm.color.setHex(0xffffff);              // a COLOUR map wants a white base; a greyscale one keeps its tint
+        wm.needsUpdate=true;
+        const wo=worlds.find(function(x){return x.body===w.body;}); if(wo)wo.baseTint=wm.color.clone();
+      },undefined,function(){});
+      if(w.haze){                                   // Titan's atmosphere is the reason it can be entered at all
+        const hz=new T.Mesh(new T.SphereGeometry(w.radius*1.14,28,20),
+          new T.MeshBasicMaterial({color:w.haze,transparent:true,opacity:0.22,side:T.BackSide,blending:T.AdditiveBlending,depthWrite:false}));
+        mesh.add(hz);
+      }
+      const lb=_bodyLabel(w.label,'#dbe4ee'); lb.position.set(0,w.radius*2.0,0); lb.material.depthTest=true; mesh.add(lb);
+      const orb=new T.Mesh(new T.RingGeometry(w.dist-0.06,w.dist+0.06,160,1),
+        new T.MeshBasicMaterial({color:0x4a5668,transparent:true,opacity:0.35,side:T.DoubleSide,depthWrite:false}));
+      orb.rotation.x=Math.PI/2; sc.add(orb);        // a faint orbit line, so the system reads as a system
+      worlds.push({body:w.body,label:w.label,mesh:mesh,planet:mesh,R:w.radius,bstruct:bs,baseTint:wm.color.clone(),
+                   moons:[],dist:w.dist,speed:w.speed,phase:w.phase||0});
+    });
+  }
   // CAMERA — the same controls the Earth view has: drag orbits, ctrl/shift/right/middle-drag PANS, wheel zooms,
   // one finger orbits and two fingers pinch-zoom + pan. Until now a body view could only orbit a FIXED centre,
   // so a colony sitting on the far limb could never be brought into the middle of the screen. `dist`/`pitch`/
   // the pan target are NaN-guarded for the same reason the Earth view guards them: one non-finite value used to
   // blank the whole canvas and only a reload brought it back.
   const bfin=(v,d)=>(Number.isFinite(v)?v:d);
-  let yaw=0.7,pitch=0.22,dist=R*3.0,drag=null,panM=false,tx=0,ty=0,tz=0,pd=0,pmx=0,pmy=0;
-  const PANLIM=R*2.5;
+  const WIDE=cfg.viewDist||R*3.0;        // how far back the view OPENS: a system has to frame its moons, not its giant
+  let yaw=0.7,pitch=0.22,dist=WIDE,drag=null,panM=false,tx=0,ty=0,tz=0,pd=0,pmx=0,pmy=0;
+  // FOCUS (7c): what the camera orbits. null = the body/giant at the origin; otherwise one of the system's moons,
+  // which is MOVING — so the zoom limits, the pan limits and the orbit centre all follow the focused world. A
+  // fixed R*1.2 floor computed from a 52-unit Saturn would have made a 3.4-unit Enceladus impossible to approach.
+  let focus=null, focR=R;
   function clampB(){yaw=bfin(yaw,0.7);pitch=Math.max(-1.35,Math.min(1.35,bfin(pitch,0.22)));
-   dist=Math.max(R*1.2,Math.min(R*9,bfin(dist,R*3)));
-   tx=Math.max(-PANLIM,Math.min(PANLIM,bfin(tx,0)));ty=Math.max(-PANLIM,Math.min(PANLIM,bfin(ty,0)));tz=Math.max(-PANLIM,Math.min(PANLIM,bfin(tz,0)));}
-  function place(){clampB();cam.position.set(tx+dist*Math.cos(pitch)*Math.sin(yaw),ty+dist*Math.sin(pitch),tz+dist*Math.cos(pitch)*Math.cos(yaw));cam.lookAt(tx,ty,tz);}
+   dist=Math.max(focR*1.25,Math.min(Math.max(focR*9,WIDE*1.6),bfin(dist,focR*3)));
+   const PL=focR*2.5;
+   tx=Math.max(-PL,Math.min(PL,bfin(tx,0)));ty=Math.max(-PL,Math.min(PL,bfin(ty,0)));tz=Math.max(-PL,Math.min(PL,bfin(tz,0)));}
+  function place(){clampB();
+   const c=focus?focus.mesh.position:null, cx=c?c.x:0, cy=c?c.y:0, cz=c?c.z:0;
+   cam.position.set(cx+tx+dist*Math.cos(pitch)*Math.sin(yaw),cy+ty+dist*Math.sin(pitch),cz+tz+dist*Math.cos(pitch)*Math.cos(yaw));
+   cam.lookAt(cx+tx,cy+ty,cz+tz);}
+  function setFocus(w){focus=w||null;focR=focus?focus.R:R;dist=focus?focR*3.4:WIDE;tx=ty=tz=0;pitch=0.22;place();}
   function panB(dx,dy){const sy=Math.sin(yaw),cy=Math.cos(yaw),sp=Math.sin(pitch),cp=Math.cos(pitch),k=dist*0.0016;
    const rx=cy,rz=-sy,ux=-sy*sp,uy=cp,uz=-cy*sp;                       // camera right + up, same basis as the Earth pan
    tx+=(-rx*dx+ux*dy)*k;ty+=uy*dy*k;tz+=(-rz*dx+uz*dy)*k;clampB();}
@@ -1244,6 +1333,7 @@ function initBodyScene(hostId,cfg){
   const onResize=function(){const w=host.clientWidth,h=host.clientHeight;if(w>10&&h>10){ren.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix();}};
   window.addEventListener('resize',onResize);
   S=_bodyScene.cur={body:cfg.body,ren:ren,cam:cam,sc:sc,R:R,bstruct:bstruct,moons:moons,poll:null,planet:planet,baseTint:baseTint,
+    system:!!cfg.system,worlds:worlds,setFocus:setFocus,
     off:function(){window.removeEventListener('mousemove',onMove);window.removeEventListener('mouseup',onUp);window.removeEventListener('resize',onResize);}};
   fetchBodyStructures(cfg.body);   // draw the colony/rigs/terraform that exist on this body now…
   S.poll=setInterval(function(){ if(_bodyScene.cur!==S){clearInterval(S.poll);return;} if(active==='World'&&_world3dBody===cfg.body)fetchBodyStructures(cfg.body); },6000);   // …and keep them fresh as agents build
@@ -1251,6 +1341,8 @@ function initBodyScene(hostId,cfg){
     if(active!=='World'||_world3dBody!==cfg.body||host.offsetParent===null)return;   // pause when hidden
     planet.rotation.y+=cfg.spin;
     for(let i=0;i<moons.length;i++){const m=moons[i];m.phase+=m.speed;m.mesh.position.set(Math.cos(m.phase)*m.dist,Math.sin(m.phase*0.5)*m.dist*0.12,Math.sin(m.phase)*m.dist);m.mesh.rotation.y+=0.02;}
+    for(let i=0;i<worlds.length;i++){const w=worlds[i];w.phase+=w.speed;w.mesh.position.set(Math.cos(w.phase)*w.dist,0,Math.sin(w.phase)*w.dist);w.mesh.rotation.y+=0.004;}
+    if(focus)place();                       // the focused moon is in orbit — the camera has to travel with it
     ren.render(sc,cam);
   })();
 }
@@ -1260,6 +1352,16 @@ function fetchBodyStructures(body){
   if(!body||body==='earth'||!window.THREE)return;
   const ok=function(r){return r.ok?r.json():null;};
   const grab=function(u){return fetch(u).then(ok).catch(function(){return null;});};
+  const S0=_bodyScene.cur;
+  if(S0&&S0.system&&S0.body===body){        // a SYSTEM: every moon is its own body, fetched and painted separately
+    S0.worlds.forEach(function(w){
+      Promise.all([grab('/colony/'+w.body),grab('/terraform/'+w.body)]).then(function(res){
+        const S=_bodyScene.cur; if(!S||S.body!==body)return;
+        paintBodyStructures(w,res[0],res[1],null);   // w is S-shaped on purpose: R / bstruct / planet / baseTint / moons
+      }).catch(function(){});
+    });
+    return;
+  }
   const mb=body==='mars'?['phobos','deimos']:[];   // the Mars view also shows Forward Bases on its moons
   Promise.all([grab('/colony/'+body),grab('/terraform/'+body)].concat(mb.map(function(x){return grab('/colony/'+x);})))
   .then(function(res){ const S=_bodyScene.cur; if(!S||S.body!==body)return;
@@ -1927,6 +2029,9 @@ tick(); setInterval(tick, 2000);
 // ?body=earth|mars|venus deep-links straight to a world inside the World tab. Worth having for its own sake
 // (a shareable link to Mars), and it means a screenshot needs no driver at all: any headless browser's plain
 // --screenshot can now reach the Martian globe, because no click has to be simulated to get there.
-try{const _qb=new URLSearchParams(location.search).get('body');if(['earth','mars','venus'].includes(_qb))_world3dBody=_qb;}catch(e){}
+try{const _qb=new URLSearchParams(location.search).get('body');if(['earth','mars','venus','saturn','neptune'].includes(_qb))_world3dBody=_qb;}catch(e){}
+// ?focus=titan lands you ON a moon inside a system view. Same reason as ?body=: a view you cannot reach by URL
+// is a view nobody can share and nobody can screenshot without scripting a click.
+try{const _qf=new URLSearchParams(location.search).get('focus');if(_qf)setTimeout(function(){focusBody(_qf);},700);}catch(e){}
 if(active=='World')setTimeout(()=>setWorld3D(_world3dBody),150);
 </script></body></html>
