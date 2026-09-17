@@ -298,6 +298,9 @@ WARP_CRATE_CAP = 25        # exotic units one single-use `warp_container` carrie
 # call — actual money, spent on blind guessing. The fee is REFUNDED when the Guild grants the recipe, so
 # inventing well is free and guessing is not. What the fee catches stays in the purse.
 GUILD_FEE = 50             # credits escrowed to file a novel mixture with the Inventors' Guild
+TREASURY_EVERY = 300       # how often the republic looks at what the citizens abandoned (ticks)
+TREASURY_STALL = 3000      # a co-op board untouched this long counts as stalled (~100 min)
+TREASURY_SPEND = 2000      # max credits the purse puts into one board per intervention
 WARP_REWARD = 900          # inventor points split among funders when a gate completes
 WARP_BODY_EXOTIC = {"phobos": "c_regolith", "deimos": "c_regolith", "mars": "mars_regolith", "venus": "cloud_acid"}
 WARP_NEED = {"earth": {"superalloy": 200, "iridium": 60, "chip": 150, "crystal": 200, "titanium": 300}}
@@ -535,6 +538,7 @@ def _colony_award(a, st, body, module, moved, mod, ents, cur, t, new_funder=Fals
     have = mod.setdefault("have", {}); contrib = mod.setdefault("contrib", {})
     ct = st["attrs"].setdefault("ctotal", {})
     msg = ""
+    mod["last_funded"] = t                # when the citizens last touched this — the republic watches for silence
     # SOMEBODY JOINED YOUR BUILD. Sent ONLY when a NEW funder appears on a module, never on a top-up, so the
     # volume stays at the rate real social events happen. A module needs 2-3 DISTINCT funders BY RULE, so the
     # people who need to find each other are exactly these — and until now they could not: the board showed a
@@ -646,6 +650,65 @@ ACID_UPKEEP_EVERY = 30             # every N ticks a COMPLETE Venus colony loses
 ACID_DECAY = 1
 ACID_REFUND_COST = {"acid_skin": 2, "cloud_acid": 4}   # re-fund the acid shield (construct{shape:'colony',body:'venus',module:'acid_shield'} on the finished city)
 ACID_RESTORE = 20                  # integrity restored per re-fund
+
+
+def treasury_spend(ents, t, events, cur):
+    """THE REPUBLIC FINISHES WHAT THE CITIZENS ABANDONED.
+
+    The purse collected Guild fees and had no way to spend them — a tax with no government. Every TREASURY_EVERY
+    ticks it looks for a co-op board (colony module or warp gate) that nobody has touched for TREASURY_STALL and
+    buys what it is short of, at the same fixed prices `invest` uses.
+
+    Two deliberate limits. It buys MATERIAL only, never the exotic lines, so somebody still has to fly out and dig
+    for the things only a surface yields. And it is NOT recorded as a funder: `have` goes up, `contrib` does not,
+    so the 2-3-distinct-funders rule stands exactly as before. The republic pays for a job; it does not pretend to
+    be a citizen who did it.
+    """
+    if t % TREASURY_EVERY or not (uni := _treasury(ents)):
+        return
+    purse = int(get(uni, "credits"))
+    if purse <= 0:
+        return
+    boards = []                                       # (structure, module key or None, need dict, have dict)
+    for e in sorted(ents.values(), key=lambda x: x["id"]):
+        if e["type"] != "structure" or e["attrs"].get("complete"):
+            continue
+        shape, at = e["attrs"].get("shape"), e["attrs"]
+        if shape == "colony" and at.get("body") in COLONY_MODULES:
+            for key, spec in COLONY_MODULES[at["body"]].items():
+                mod = (at.get("modules") or {}).get(key) or {}
+                if not mod.get("complete") and t - int(mod.get("last_funded", 0) or 0) >= TREASURY_STALL:
+                    boards.append((e, key, spec["need"], mod.setdefault("have", {}),
+                                   f"{COLONY_LABEL[at['body']]} · {spec['label']}"))
+        elif shape == "warpgate" and at.get("place") in WARP_NEED:
+            if t - int(at.get("last_funded", 0) or 0) >= TREASURY_STALL:
+                boards.append((e, None, WARP_NEED[at["place"]], at.setdefault("have", {}),
+                               f"{BODY_LABEL[at['place']]} warp gate"))
+    if not boards:
+        return
+    st, key, need, have, label = boards[0]             # id-ordered → the same board every replay
+    spent, bought = 0, {}
+    for r in sorted(need):
+        price = EXPANSION_PRICES.get(r)
+        if not price:
+            continue                                   # exotic line — the republic cannot buy what must be dug
+        want = need[r] - int(have.get(r, 0))
+        units = min(want, (min(purse, TREASURY_SPEND) - spent) // price) if want > 0 else 0
+        if units > 0:
+            have[r] = int(have.get(r, 0)) + units
+            bought[r] = units
+            spent += units * price
+    if not bought:
+        return
+    _treasury_add(ents, -spent)
+    if key is not None:
+        st["attrs"]["modules"][key]["last_funded"] = t
+    else:
+        st["attrs"]["last_funded"] = t
+    cur.execute("INSERT INTO messages(tick,sender,recipient,text) VALUES(%s,%s,NULL,%s)",
+                (t, uni["id"], f"THE REPUBLIC has spent {spent} credits on {label}, abandoned for "
+                               f"{TREASURY_STALL} ticks: {bought}. It still needs hands for what money cannot buy."))
+    events.append((t, uni["id"], "treasury", {"board": label, "spent": spent, "bought": bought}))
 
 
 def run_producers(ents, t, events, cur):
@@ -1869,6 +1932,7 @@ def apply_intent(it, ents, cur, t, events):
                 short = {r: need[r] - int(have.get(r, 0)) for r in sorted(need) if int(have.get(r, 0)) < need[r]}
                 return "rejected", (f"funded nothing to the {BODY_LABEL[place]} gate — it still needs {short}. You may be "
                                     f"at your {WARP_CAP}% per-resource cap (someone else must chip in), or hold none of these.")
+            st["attrs"]["last_funded"] = t     # same stall clock the republic reads for colony modules
             msg = f"funded {moved} to the {BODY_LABEL[place]} warp gate"
             imm = sum(moved.values()) // 10
             if imm > 0:
@@ -3487,6 +3551,7 @@ def _tick_body(conn, s):
     advance_transits(ents, t, events, cur)                 # EXPANSION ERA: interplanetary transit countdown (no-op if nobody's in transit)
     run_producers(ents, t, events, cur)                    # EXPANSION Phase 4: ISRU auto-extractors drip into owners' holds (no-op if none built)
     body_upkeep(ents, t, events, cur)                      # EXPANSION Phase 5: Venus acid-shield corrosion (no-op without a complete Venus city)
+    treasury_spend(ents, t, events, cur)                  # SEASON 7b: the republic finishes abandoned co-op boards (no-op unless one has gone quiet)
     respawn_deposits(by_type, t)
     respawn_agents(by_type, cur, t, events)               # season 3 per-tick systems (after respawn_deposits, before write-back)
     cool_reputation(by_type, t)

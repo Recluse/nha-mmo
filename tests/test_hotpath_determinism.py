@@ -30,9 +30,14 @@ HOTPATH_FINGERPRINT = 709fffb1f1793eec  (measured 2026-09-07, engine at 339ccae 
     stump, so a cell could hold 162 mature trees and 3416 wood that no agent could ever reach. This harness
     stacks same-cell wood deposits of differing amounts, so it SEES that choice.
 
-    Across BOTH of these changes the published 9922767f180849f0 and expansion's 50ed051e1545e3b8 stayed
+    Across BOTH of these changes the published 9922767f180849f0 and expansion's fingerprint stayed
     byte-identical (each harness run on the engine with and without), which is the expected blast radius:
     only the deposit-scan and plant paths moved, and only this file watches them.
+
+    EXPANSION_FINGERPRINT (test_expansion_determinism.py) = 1d936d4abee6a3de as of 2026-09-17, re-baselined
+    from 50ed051e1545e3b8 when colony modules began stamping `last_funded`. That field is hashed world state
+    and the expansion harness funds colonies, so it moved; nothing else did. The republic reads that stamp to
+    find boards the citizens have abandoned (engine.treasury_spend).
 
 Gate for any hot-path change: all THREE fingerprints byte-identical (this one, the published one, expansion's).
 Needs the same throwaway Postgres as the other determinism tests; SKIPS if unreachable.
