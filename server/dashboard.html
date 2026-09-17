@@ -1359,7 +1359,10 @@ function paintBodyStructures(S,col,tf,moonCols){
       body.scale.set(1,0.8,1.35); goose.add(body);
       const head=new T.Mesh(new T.SphereGeometry(R*0.014,7,6),new T.MeshLambertMaterial({color:0x23282c,emissive:0x0b0d0f}));
       head.position.set(0,R*0.034,R*0.030); goose.add(head);
-      sit(goose,d,1.030,1);
+      // 1.018 seats the BELLY on the ground: the body's half-height is R*0.030*0.8 = R*0.024, so the bird is
+      // bedded ~0.006R into the surface exactly like the tree cones. At 1.030 it cleared the ground by its own
+      // width, which at the limb read as a goose that had left the atmosphere.
+      sit(goose,d,1.018,1);
     }
     if(flock){ const gl=_bodyLabel('\u{1F9A2} '+flock+' geese','#eaf7ea'); gl.position.copy(dir(11.7)).multiplyScalar(R+2.2); g.add(gl); }
   } else if(S.planet&&S.baseTint){
