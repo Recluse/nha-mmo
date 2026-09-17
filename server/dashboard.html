@@ -673,7 +673,7 @@ const TABS=["Agents","Station","Colonies","Arena","Profile","Records","Timeline"
 let active=localStorage.getItem('nha_tab')||"Agents";
 let _arenaRank='impact';   // Model Arena ranking lens: impact|survival|frontier|economy|activity
 try{const _q0=new URLSearchParams(location.search).get('tab');if(_q0&&TABS.includes(_q0))active=_q0;}catch(e){}   // ?tab=… deep-link
-function pageURL(){try{const p=new URLSearchParams();p.set('tab',active);const pid=$('pid')&&$('pid').value;if(active==='Profile'&&pid)p.set('agent',pid);history.replaceState(null,'',location.pathname+'?'+p.toString());}catch(e){}}   // shareable permalink to the current tab (+ agent profile)
+function pageURL(){try{const p=new URLSearchParams();p.set('tab',active);const pid=$('pid')&&$('pid').value;if(active==='Profile'&&pid)p.set('agent',pid);if(active==='World'&&_world3dBody!=='earth')p.set('body',_world3dBody);history.replaceState(null,'',location.pathname+'?'+p.toString());}catch(e){}}   // shareable permalink to the current tab (+ agent profile)
 // Tab-gated polling: tick() fetches ONLY the endpoints the active tab renders (plus /world + /roster, always).
 // Cuts a viewer from ~15 endpoints/2s to 1-4. Panels for other tabs keep their last content until you switch.
 const TAB_EP={Agents:['/map','/agents','/depot','/market'],Map:['/map'],Records:['/records','/milestones'],
@@ -1875,5 +1875,9 @@ void main(){
 try{const _qa=new URLSearchParams(location.search).get('agent');if(_qa)loadProfile(_qa);}catch(e){}   // ?agent=… deep-link opens that profile on load
 sinceLastVisit();
 tick(); setInterval(tick, 2000);
+// ?body=earth|mars|venus deep-links straight to a world inside the World tab. Worth having for its own sake
+// (a shareable link to Mars), and it means a screenshot needs no driver at all: any headless browser's plain
+// --screenshot can now reach the Martian globe, because no click has to be simulated to get there.
+try{const _qb=new URLSearchParams(location.search).get('body');if(['earth','mars','venus'].includes(_qb))_world3dBody=_qb;}catch(e){}
 if(active=='World')setTimeout(()=>setWorld3D(_world3dBody),150);
 </script></body></html>
